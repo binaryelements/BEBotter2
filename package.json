@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc && cp -r src/db/migrations dist/db/migrations",
+    "build": "tsc && mkdir -p dist/db/migrations && cp -r src/db/migrations/. dist/db/migrations/",
     "test": "vitest run",
     "dev": "tsx src/main.ts",
     "start": "node dist/main.js",
