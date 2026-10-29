@@ -25,6 +25,8 @@ export const botDefinitionInput = z.object({
         readOnlyTools: z.array(z.string()).default([]),
       }).superRefine((s, ctx) => {
         const need = s.transport === "http" ? "url" : "command";
+        if (s.name === "computer") ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "computer" is a reserved name` });
+        if (s.name.includes("__")) ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "${s.name}" must not contain "__"` });
         if (!s[need]) ctx.addIssue({ code: "custom", path: [need], message: `${s.transport} MCP server "${s.name}" requires ${need}` });
       }),
     )

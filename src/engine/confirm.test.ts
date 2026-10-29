@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Confirmations } from "./confirm.js";
 
 const make = () => {
@@ -8,6 +8,7 @@ const make = () => {
 };
 
 describe("Confirmations", () => {
+  beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
   it("confirms when the asker says yes, once", async () => {
@@ -34,7 +35,6 @@ describe("Confirmations", () => {
   });
 
   it("expires after the ttl", async () => {
-    vi.useFakeTimers();
     const { c, actionId, outcome } = make();
     vi.advanceTimersByTime(600_000);
     await expect(outcome).resolves.toBe("expired");

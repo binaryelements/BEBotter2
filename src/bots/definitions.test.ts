@@ -46,6 +46,18 @@ describe("bot definitions", () => {
     expect(botDefinitionInput.safeParse({ ...base, mcpServers: [{ name: "x", transport: "stdio", command: "run" }] }).success).toBe(true);
   });
 
+  it("rejects the reserved server name computer", () => {
+    const r = botDefinitionInput.safeParse({ name: "a", label: "A", persona: "p", mcpServers: [{ name: "computer", transport: "http", url: "https://x.test/" }] });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain("is a reserved name");
+  });
+
+  it("rejects a server name containing __", () => {
+    const r = botDefinitionInput.safeParse({ name: "a", label: "A", persona: "p", mcpServers: [{ name: "a__b", transport: "http", url: "https://x.test/" }] });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain("a__b");
+  });
+
   it("builds a stdio server config and refuses a record without its command", async () => {
     const db = await testDb();
     const key = Buffer.alloc(32, 3);

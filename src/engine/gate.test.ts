@@ -14,6 +14,10 @@ describe("classify", () => {
   it("treats the computer's bash as read", () => {
     expect(classify("mcp__computer__bash", def)).toBe("read");
   });
+  it("does not let a declared server named computer claim the built-in read rule", () => {
+    const d = { mcpServers: [{ name: "computer", transport: "http", readOnlyTools: [] }] } as unknown as BotDefinition;
+    expect(classify("mcp__computer__bash", d)).toBe("write");
+  });
   it("treats a listed read-only MCP tool as read", () => {
     expect(classify("mcp__tickets__list_tickets", def)).toBe("read");
   });

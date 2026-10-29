@@ -19,7 +19,8 @@ export class Confirmations {
         resolve(o);
       };
       this.pending.set(actionId, { askerPersonId: opts.askerPersonId, settle });
-      this.schedule(() => settle("expired"), opts.ttlMs ?? 600_000);
+      const timer = this.schedule(() => settle("expired"), opts.ttlMs ?? 600_000);
+      (timer as { unref?: () => void } | undefined)?.unref?.(); // a pending timer must not hold the process open
     });
     return { actionId, outcome };
   }
