@@ -64,14 +64,16 @@ export async function definitionsForChat(db: Db, chatId: string): Promise<BotDef
 export function mcpServerConfigs(def: BotDefinition, secretsKey: Buffer): Record<string, McpServerConfig> {
   const out: Record<string, McpServerConfig> = {};
   for (const s of def.mcpServers) {
+    if (s.transport === "http" && !s.url) throw new Error(`MCP server ${s.name} has no url`);
+    if (s.transport === "stdio" && !s.command) throw new Error(`MCP server ${s.name} has no command`);
     out[s.name] =
       s.transport === "http"
         ? {
             type: "http",
-            url: s.url ?? "",
+            url: s.url!,
             ...(s.headersCipher ? { headers: JSON.parse(decrypt(secretsKey, s.headersCipher)) as Record<string, string> } : {}),
           }
-        : { type: "stdio", command: s.command ?? "", ...(s.args ? { args: s.args } : {}) };
+        : { type: "stdio", command: s.command!, ...(s.args ? { args: s.args } : {}) };
   }
   return out;
 }

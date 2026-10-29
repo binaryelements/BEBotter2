@@ -49,7 +49,7 @@ async function main(): Promise<void> {
       .where(and(eq(botDefinitions.tenantId, values.tenant), eq(botDefinitions.name, values.name)));
     if (!def) throw new Error(`No definition "${values.name}" for tenant ${values.tenant}`);
     const [chat] = await db.select().from(chats).where(eq(chats.id, values.chat));
-    if (!chat) throw new Error(`No chat ${values.chat}; it is created when the first message arrives`);
+    if (!chat || chat.tenantId !== values.tenant) throw new Error(`No chat ${values.chat} for tenant ${values.tenant}; it is created when the first message arrives`);
     await assignToChat(db, chat.id, def.id);
     console.log(def.id);
   } else {

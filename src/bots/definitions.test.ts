@@ -45,4 +45,17 @@ describe("bot definitions", () => {
     expect(botDefinitionInput.safeParse({ ...base, mcpServers: [{ name: "x", transport: "stdio" }] }).success).toBe(false);
     expect(botDefinitionInput.safeParse({ ...base, mcpServers: [{ name: "x", transport: "stdio", command: "run" }] }).success).toBe(true);
   });
+
+  it("builds a stdio server config and refuses a record without its command", async () => {
+    const db = await testDb();
+    const key = Buffer.alloc(32, 3);
+    await upsertTenant(db, { id: "t1" });
+    const def = await upsertDefinition(db, key, "t1", {
+      name: "s", label: "S", persona: "p",
+      mcpServers: [{ name: "local", transport: "stdio", command: "run-mcp", args: ["--x"] }],
+    });
+    expect(mcpServerConfigs(def, key)).toEqual({ local: { type: "stdio", command: "run-mcp", args: ["--x"] } });
+    const broken = { ...def, mcpServers: [{ name: "local", transport: "stdio" as const, readOnlyTools: [] }] };
+    expect(() => mcpServerConfigs(broken, key)).toThrow("MCP server local has no command");
+  });
 });
