@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { computers } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertDefinition } from "../bots/definitions.js";
 import { upsertTenant } from "../org/org.js";
@@ -29,6 +31,26 @@ describe("computer", () => {
     docker.isRunning = async (cid) => (docker.calls.push(["isRunning", cid]), false);
     expect(await ensureComputer(db, docker, "img", def.id)).toBe(id);
     expect(docker.calls).toContainEqual(["start", id]);
+  });
+
+  it("recreates a container that is gone (404)", async () => {
+    const { db, def } = await setup();
+    const docker = fakeDockerClient();
+    const old = await ensureComputer(db, docker, "img", def.id);
+    docker.isRunning = async () => { throw { statusCode: 404 }; };
+    const next = await ensureComputer(db, docker, "img", def.id);
+    expect(next).not.toBe(old);
+    expect(docker.calls.filter((c) => c[0] === "createContainer")).toHaveLength(2);
+    const [row] = await db.select().from(computers).where(eq(computers.definitionId, def.id));
+    expect(row?.containerId).toBe(next);
+  });
+
+  it("rethrows other errors from isRunning", async () => {
+    const { db, def } = await setup();
+    const docker = fakeDockerClient();
+    await ensureComputer(db, docker, "img", def.id);
+    docker.isRunning = async () => { throw Object.assign(new Error("boom"), { statusCode: 500 }); };
+    await expect(ensureComputer(db, docker, "img", def.id)).rejects.toThrow("boom");
   });
 
   it("formats stderr and exit code", async () => {
