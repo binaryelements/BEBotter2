@@ -21,17 +21,16 @@ export type RunResult = { text: string; costUsd: number; sessionId: string };
 const MAX_AUDIT_INPUT = 2000;
 const FAILED_TEXT = "I couldn't finish that.";
 
-export async function runTurn(
-  deps: RunnerDeps,
-  turn: {
-    tenantId: string;
-    chatId: string;
-    definition: BotDefinition;
-    person: Person;
-    text: string;
-    askConfirmation: (req: ConfirmationRequest) => Promise<void>;
-  },
-): Promise<RunResult> {
+export type RunTurnInput = {
+  tenantId: string;
+  chatId: string;
+  definition: BotDefinition;
+  person: Person;
+  text: string;
+  askConfirmation: (req: ConfirmationRequest) => Promise<void>;
+};
+
+export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
   const { db } = deps;
   const { tenantId, chatId, definition, person } = turn;
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id };
