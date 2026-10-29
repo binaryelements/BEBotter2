@@ -1,3 +1,4 @@
 import { defineConfig } from "vitest/config";
 
-export default defineConfig({ test: { include: ["src/**/*.test.ts"] } });
+// PGlite boots a WASM Postgres per testDb(); allow for slow or loaded machines.
+export default defineConfig({ test: { include: ["src/**/*.test.ts"], testTimeout: 120_000, hookTimeout: 120_000 } });
