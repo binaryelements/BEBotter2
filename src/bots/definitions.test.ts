@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertTenant } from "../org/org.js";
-import { assignToChat, definitionsForChat, mcpServerConfigs, upsertDefinition } from "./definitions.js";
+import { assignToChat, botDefinitionInput, definitionsForChat, mcpServerConfigs, upsertDefinition } from "./definitions.js";
 
 describe("bot definitions", () => {
   it("stores MCP headers encrypted and gives them back decrypted", async () => {
@@ -37,5 +37,12 @@ describe("bot definitions", () => {
     expect(again.id).toBe(def.id);
     expect(again.persona).toBe("two");
     expect((await definitionsForChat(db, "c1"))[0].persona).toBe("two");
+  });
+
+  it("rejects an http MCP server without a url and a stdio one without a command", () => {
+    const base = { name: "a", label: "A", persona: "p" };
+    expect(botDefinitionInput.safeParse({ ...base, mcpServers: [{ name: "x", transport: "http" }] }).success).toBe(false);
+    expect(botDefinitionInput.safeParse({ ...base, mcpServers: [{ name: "x", transport: "stdio" }] }).success).toBe(false);
+    expect(botDefinitionInput.safeParse({ ...base, mcpServers: [{ name: "x", transport: "stdio", command: "run" }] }).success).toBe(true);
   });
 });

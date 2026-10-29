@@ -23,6 +23,9 @@ export const botDefinitionInput = z.object({
         args: z.array(z.string()).optional(),
         headers: z.record(z.string(), z.string()).optional(),
         readOnlyTools: z.array(z.string()).default([]),
+      }).superRefine((s, ctx) => {
+        const need = s.transport === "http" ? "url" : "command";
+        if (!s[need]) ctx.addIssue({ code: "custom", path: [need], message: `${s.transport} MCP server "${s.name}" requires ${need}` });
       }),
     )
     .default([]),
