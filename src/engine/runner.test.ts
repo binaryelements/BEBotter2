@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HookCallback, Options, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, Options, PostToolUseFailureHookInput, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
 import { listActions } from "../audit/audit.js";
 import { upsertDefinition } from "../bots/definitions.js";
 import type { BotDefinitionInput } from "../bots/definitions.js";
@@ -19,23 +19,30 @@ const calls: [string, Record<string, unknown>][] = [
 ];
 
 /** Drives options.canUseTool and the PostToolUse hook the way the SDK does, then yields a result. */
-function fakeQuery() {
+function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown> } = {}) {
   const seen: Options[] = [];
+  const decisions: (string | undefined)[] = [];
   const fn = (({ options }: { prompt: string; options: Options }) => {
     seen.push(options);
     return (async function* () {
       const signal = new AbortController().signal;
       for (const [name, input] of calls) {
         const r = await options.canUseTool!(name, input, { signal, toolUseID: "tu-1" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+        decisions.push(r?.behavior);
         if (r?.behavior !== "allow") continue;
-        const hook = options.hooks!.PostToolUse![0]!.hooks[0] as HookCallback;
-        const hookInput = { hook_event_name: "PostToolUse", tool_name: name, tool_input: input, tool_response: "ok", tool_use_id: "tu-1", session_id: "s-1", transcript_path: "", cwd: "" } as PostToolUseHookInput;
-        await hook(hookInput, "tu-1", { signal });
+        const common = { tool_name: name, tool_input: input, tool_use_id: "tu-1", session_id: "s-1", transcript_path: "", cwd: "" };
+        if (name === opts.failTool) {
+          const hook = options.hooks!.PostToolUseFailure![0]!.hooks[0] as HookCallback;
+          await hook({ ...common, hook_event_name: "PostToolUseFailure", error: "boom" } as PostToolUseFailureHookInput, "tu-1", { signal });
+        } else {
+          const hook = options.hooks!.PostToolUse![0]!.hooks[0] as HookCallback;
+          await hook({ ...common, hook_event_name: "PostToolUse", tool_response: "ok" } as PostToolUseHookInput, "tu-1", { signal });
+        }
       }
-      yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 2, duration_ms: 10, is_error: false };
+      yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 2, duration_ms: 10, is_error: false, ...opts.result };
     })();
   }) as unknown as typeof query;
-  return { fn, seen };
+  return { fn, seen, decisions };
 }
 
 async function setup(db: Db, def: Partial<BotDefinitionInput> = {}) {
@@ -122,6 +129,8 @@ describe("runTurn", () => {
       askConfirmation: async (req: ConfirmationRequest) => { d.confirmations.resolve(req.actionId, person.id, "no"); },
     };
     await runTurn(d, turn);
+    const close = (await listActions(db, { tenantId: "t1" })).find((r) => r.toolName === "mcp__tickets__close_ticket")!;
+    expect(close.status).toBe("denied");
     expect((await db.select().from(sessions))[0]).toMatchObject({ chatId: "c1", definitionId: definition.id, sdkSessionId: "s-1" });
     expect(q.seen[0]!.resume).toBeUndefined();
     await runTurn(d, turn);
@@ -155,5 +164,41 @@ describe("runTurn", () => {
     expect(result).toEqual({ text: "I couldn't finish that.", costUsd: 0.5, sessionId: "s-2" });
     const [row] = await listActions(db, { tenantId: "t1" });
     expect(row).toMatchObject({ kind: "message", status: "failed" });
+  });
+
+  it("fails the audit row of a tool that errors", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db, { computer: true });
+    const q = fakeQuery({ failTool: "mcp__computer__bash" });
+    await runTurn(deps(db, q.fn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: () => Promise.reject(new Error("teams down")),
+    });
+    const rows = await listActions(db, { tenantId: "t1" });
+    expect(rows.find((r) => r.toolName === "mcp__computer__bash")!.status).toBe("failed");
+  });
+
+  it("denies the write tool and fails its row when askConfirmation rejects", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery();
+    const result = await runTurn(deps(db, q.fn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: () => Promise.reject(new Error("teams down")),
+    });
+    expect(result.text).toBe("Done.");
+    expect(q.decisions).toEqual(["allow", "deny"]);
+    const rows = await listActions(db, { tenantId: "t1" });
+    expect(rows.find((r) => r.toolName === "mcp__tickets__close_ticket")!.status).toBe("failed");
+  });
+
+  it("does not send the error text of a success result that is an error", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ result: { is_error: true, result: "API Error: 500 internal" } });
+    const result = await runTurn(deps(db, q.fn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: () => Promise.reject(new Error("teams down")),
+    });
+    expect(result.text).toBe("I couldn't finish that.");
+    const message = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "message")!;
+    expect(message).toMatchObject({ status: "failed", summary: "I couldn't finish that." });
   });
 });

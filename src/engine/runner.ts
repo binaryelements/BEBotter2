@@ -19,6 +19,7 @@ export type ConfirmationRequest = { actionId: string; label: string; summary: st
 export type RunResult = { text: string; costUsd: number; sessionId: string };
 
 const MAX_AUDIT_INPUT = 2000;
+const FAILED_TEXT = "I couldn't finish that.";
 
 export async function runTurn(
   deps: RunnerDeps,
@@ -62,8 +63,13 @@ export async function runTurn(
       return { behavior: "allow", updatedInput: input };
     }
     const { actionId, outcome } = deps.confirmations.create({ auditId, askerPersonId: person.id });
-    await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input) });
-    const o = await outcome;
+    let o: "confirmed" | "denied" | "expired" | "failed";
+    try {
+      await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input) });
+      o = await outcome;
+    } catch {
+      o = "failed"; // the question never reached the asker; the model gets the denial and the turn goes on
+    }
     if (o === "confirmed") {
       inFlight.set(keyOf(toolName, input), { auditId, authority: { type: "confirmation", personId: person.id } });
       return { behavior: "allow", updatedInput: input };
@@ -72,13 +78,14 @@ export async function runTurn(
     return { behavior: "deny", message: "Not confirmed." };
   };
 
-  const postToolUse: HookCallback = async (input) => {
-    if (input.hook_event_name !== "PostToolUse") return {};
+  const afterTool: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PostToolUse" && input.hook_event_name !== "PostToolUseFailure") return {};
     const key = keyOf(input.tool_name, input.tool_input);
     const entry = inFlight.get(key);
     if (entry) {
       inFlight.delete(key);
-      await completeAction(db, entry.auditId, { status: "done", ...(entry.authority ? { authority: entry.authority } : {}) });
+      const status = input.hook_event_name === "PostToolUse" ? "done" : "failed";
+      await completeAction(db, entry.auditId, { status, ...(entry.authority ? { authority: entry.authority } : {}) });
     }
     return {};
   };
@@ -98,21 +105,33 @@ export async function runTurn(
     ...(session ? { resume: session.sdkSessionId } : {}),
     mcpServers: { ...(computer ? { computer } : {}), ...mcpServerConfigs(definition, deps.secretsKey) },
     canUseTool,
-    hooks: { PostToolUse: [{ hooks: [postToolUse] }] },
+    hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };
 
-  for await (const msg of deps.queryFn({ prompt: turn.text, options })) {
-    if (msg.type !== "result") continue;
-    const ok = msg.subtype === "success";
-    const text = ok ? msg.result : "I couldn't finish that.";
-    const now = new Date();
-    await db
-      .insert(sessions)
-      .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
-      .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
-    const auditId = await beginAction(db, { ...base, kind: "message", summary: text.slice(0, 200), model: definition.model });
-    await completeAction(db, auditId, { status: ok ? "done" : "failed", costUsd: msg.total_cost_usd });
-    return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id };
+  const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number) => {
+    const auditId = await beginAction(db, { ...base, kind: "message", summary: summary.slice(0, 200), model: definition.model });
+    await completeAction(db, auditId, { status, ...(costUsd !== undefined ? { costUsd } : {}) });
+  };
+
+  try {
+    for await (const msg of deps.queryFn({ prompt: turn.text, options })) {
+      if (msg.type !== "result") continue;
+      // a "success" with is_error carries API error text in result, which must not reach the chat
+      const ok = msg.subtype === "success" && !msg.is_error;
+      const text = ok && msg.subtype === "success" ? msg.result : FAILED_TEXT;
+      const now = new Date();
+      await db
+        .insert(sessions)
+        .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
+        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
+      await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd);
+      return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id };
+    }
+    await auditMessage(FAILED_TEXT, "failed");
+    throw new Error("Agent SDK query ended without a result");
+  } finally {
+    // allowed but never finished (interrupted, maxTurns hit, stream died)
+    for (const { auditId } of inFlight.values()) await completeAction(db, auditId, { status: "failed" });
+    inFlight.clear();
   }
-  throw new Error("Agent SDK query ended without a result");
 }
