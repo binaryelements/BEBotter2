@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { loadConfig } from "../config/config.js";
+import { loadEnvFile } from "../config/env-file.js";
 import { connect } from "../db/client.js";
 import { botDefinitions, chats } from "../db/schema.js";
 import { assignToChat, botDefinitionInput, upsertDefinition } from "./definitions.js";
@@ -9,15 +10,6 @@ import { assignToChat, botDefinitionInput, upsertDefinition } from "./definition
 const usage = `Usage:
   pnpm bot-def upsert --tenant <id> --file def.json
   pnpm bot-def assign --chat <conversationId> --name <definitionName> --tenant <id>`;
-
-// Minimal .env reader: existing environment values win.
-function loadDotEnv(): void {
-  if (!existsSync(".env")) return;
-  for (const line of readFileSync(".env", "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^(["'])(.*)\1$/, "$2");
-  }
-}
 
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
@@ -33,7 +25,7 @@ async function main(): Promise<void> {
   const command = positionals[0];
   if (values.help || !command) return void console.log(usage);
 
-  loadDotEnv();
+  loadEnvFile();
   const config = loadConfig(process.env);
   const db = await connect(config.databaseUrl);
 

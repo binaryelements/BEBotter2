@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { chats, people, tenants } from "../db/schema.js";
 import type { Chat, Person, Tenant } from "../db/schema.js";
 import type { Db } from "../db/client.js";
@@ -39,4 +39,12 @@ export async function upsertChat(
 
 export async function saveConversationReference(db: Db, chatId: string, reference: unknown): Promise<void> {
   await db.update(chats).set({ conversationReference: reference }).where(eq(chats.id, chatId));
+}
+
+export async function findPersonId(db: Db, tenantId: string, aadObjectId: string): Promise<string | undefined> {
+  const [row] = await db
+    .select({ id: people.id })
+    .from(people)
+    .where(and(eq(people.tenantId, tenantId), eq(people.aadObjectId, aadObjectId)));
+  return row?.id;
 }

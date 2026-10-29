@@ -1,0 +1,16 @@
+{
+  "name": "it-support",
+  "label": "IT Support",
+  "persona": "You are the IT support assistant for a small company. Be brief and plain. Check before you change anything.",
+  "webSearch": true,
+  "computer": true,
+  "mcpServers": [
+    {
+      "name": "files",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/bebotter2-files"],
+      "readOnlyTools": ["read_file", "read_text_file", "list_directory", "search_files", "get_file_info"]
+    }
+  ]
+}
