@@ -19,6 +19,10 @@ export function adminRouter(deps: AdminDeps): Router {
   const sKey = sessionKey(deps.config.secretsKey);
   const router = express.Router();
 
+  router.use((_req, res, next) => {
+    res.set({ "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'" });
+    next();
+  });
   router.use(oidcRoutes(deps));
   router.use(express.urlencoded({ extended: false }));
 
@@ -44,6 +48,9 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(settingsRoutes(db));
 
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    // Body-parser errors (too large, malformed) carry a 4xx status and can arrive before sign-in.
+    const status = (err as { status?: unknown } | null)?.status;
+    if (typeof status === "number" && status < 500) return page(res, 400, "Bad request.");
     if (err instanceof DirectoryError) return page(res, 400, err.message);
     console.error("admin request failed", err);
     page(res, 500, "Something went wrong.");

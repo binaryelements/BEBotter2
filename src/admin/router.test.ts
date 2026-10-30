@@ -72,6 +72,25 @@ describe("admin router", () => {
     expect((await get("/admin/people", "bb_session=garbage")).status).toBe(303);
   });
 
+  it("an oversized form without a session is a plain 400, not logged", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await post("/admin/departments", { name: "x".repeat(200_000) });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("Bad request.");
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("sets no-store and frame-ancestors on pages and the sign-in redirect", async () => {
+    for (const res of [await get("/admin/people", as(admin)), await get("/admin/people"), await get("/admin/auth/login")]) {
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    }
+  });
+
   it("a POST without a session is 403", async () => {
     const res = await post("/admin/departments", { name: "X", csrf: "csrf-1" });
     expect(res.status).toBe(403);
