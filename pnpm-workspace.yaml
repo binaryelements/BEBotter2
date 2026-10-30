@@ -3,5 +3,3 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   ssh2: true
-minimumReleaseAgeExclude:
-  - jose@6.2.14
