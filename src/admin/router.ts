@@ -1,6 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response, Router } from "express";
 import { DirectoryError } from "../org/directory.js";
+import type { FetchUsers } from "../org/directory-sync.js";
 import { isAdmin, loadActor, mayEnter } from "./access.js";
 import { activityRoutes } from "./activity.js";
 import { assignmentRoutes } from "./assignments.js";
@@ -12,7 +13,7 @@ import { peopleRoutes } from "./people.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 
-export type AdminDeps = OidcDeps & { botName: string; defaultModel: string };
+export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; fetchUsers: FetchUsers };
 
 export function adminRouter(deps: AdminDeps): Router {
   const { db } = deps;
@@ -41,7 +42,7 @@ export function adminRouter(deps: AdminDeps): Router {
   );
 
   router.get("/", (_req, res) => res.redirect(303, isAdmin(adminOf(res).actor) ? "/admin/people" : "/admin/departments"));
-  router.use(peopleRoutes(db));
+  router.use(peopleRoutes(db, deps.fetchUsers));
   router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));

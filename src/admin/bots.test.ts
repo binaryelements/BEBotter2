@@ -29,7 +29,7 @@ describe("bots screen", () => {
     await setMembership(db, T, sales, id.Hal, "head");
     await setMembership(db, T, eng, id.Eve, "head");
     const app = express();
-    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m-default" }));
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m-default", fetchUsers: async () => [] }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());

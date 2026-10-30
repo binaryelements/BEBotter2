@@ -6,6 +6,7 @@ import { startAuditPruning } from "./audit/audit.js";
 import { dockerodeClient } from "./computer/docker.js";
 import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
+import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { connect } from "./db/client.js";
 import { Confirmations } from "./engine/confirm.js";
 import { runTurn } from "./engine/runner.js";
@@ -25,15 +26,17 @@ const runnerDeps: RunnerDeps = {
   computerImage: config.computerImage,
   filesDir: config.filesDir,
 };
+const fetchUsers = graphFetchUsers(config);
 const app = createTeamsApp({ db, runTurn: (turn) => runTurn(runnerDeps, turn), confirmations, botName: config.botName });
 
 // The Agents SDK reads clientId, tenantId and clientSecret from the environment; the agent SDK reads ANTHROPIC_API_KEY.
 startServer(app, {
   port: config.port,
   beforeListen: (express) => {
-    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel }));
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, fetchUsers }));
     express.get("/health", (_req, res) => void res.json({ ok: true }));
   },
 });
 
 startAuditPruning(db, 24 * 60 * 60 * 1000);
+startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);

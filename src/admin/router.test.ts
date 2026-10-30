@@ -38,7 +38,7 @@ describe("admin router", () => {
     const sales = await createDepartment(db, "tenant-1", "Sales");
     await setMembership(db, "tenant-1", sales.id, head, "head");
     const app = express();
-    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m" }));
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [] }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());

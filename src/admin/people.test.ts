@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { createDepartment, listDepartments, listPeople, setMembership, setRole } from "../org/directory.js";
+import type { FetchUsers } from "../org/directory-sync.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
@@ -22,6 +23,7 @@ describe("people and departments screens", () => {
   let close: () => Promise<void>;
   const id: Record<string, string> = {};
   let sales: string, eng: string, foreignDept: string;
+  let directory: FetchUsers = async () => [];
 
   beforeAll(async () => {
     db = await testDb();
@@ -39,7 +41,7 @@ describe("people and departments screens", () => {
     await setMembership(db, T, sales, id["<script>alert(1)</script>"], "member");
     await setMembership(db, T, eng, id.Eve, "head");
     const app = express();
-    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m" }));
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: () => directory() }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());
@@ -180,5 +182,33 @@ describe("people and departments screens", () => {
     res = await post(`/admin/people/${id.Ola}/personal-bot`, "Hal", { personalBot: "on" });
     expect(res.status).toBe(403);
     expect((await person(id.Ola)).personalBot).toBe(false);
+  });
+
+  it("an admin syncs people from the directory and sees the counts", async () => {
+    expect(await (await get("/admin/people", "Ann")).text()).toContain('action="/admin/people/sync"');
+    directory = async () => [{ id: "aad-Ola", displayName: "Ola N", mail: "ola@example.test", userPrincipalName: "ola@example.test", accountEnabled: true, userType: "Member" }, { id: "aad-New", displayName: "Newt", mail: null, userPrincipalName: "newt@example.test", accountEnabled: true, userType: "Member" }];
+    const res = await post("/admin/people/sync", "Ann", {});
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/admin/people?synced=1,1");
+    const body = await (await get("/admin/people?synced=1,1", "Ann")).text();
+    expect(body).toContain("Added 1, updated 1.");
+    expect(body).toContain("<td>Newt</td>");
+    expect(await (await get("/admin/people?synced=<b>,2", "Ann")).text()).not.toContain("Added");
+    expect(await (await get("/admin/people", "Ann")).text()).not.toContain("Added");
+  });
+
+  it("only an admin with a valid csrf token may sync", async () => {
+    expect(await (await get("/admin/people", "Hal")).text()).not.toContain("/people/sync");
+    expect((await post("/admin/people/sync", "Hal", {})).status).toBe(403);
+    expect((await post("/admin/people/sync", "Ann", { csrf: "wrong" })).status).toBe(403);
+  });
+
+  it("a failed sync answers 502 without the error text", async () => {
+    directory = async () => { throw new Error("Directory sync failed: 401 sekrit"); };
+    const res = await post("/admin/people/sync", "Ann", {});
+    expect(res.status).toBe(502);
+    const body = await res.text();
+    expect(body).toContain("Directory sync failed.");
+    expect(body).not.toContain("sekrit");
   });
 });

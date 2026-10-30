@@ -4,6 +4,8 @@ import type { Db } from "../db/client.js";
 import {
   DirectoryError, createDepartment, deleteDepartment, listDepartments, listPeople, renameDepartment, setMembership, setPersonalBot, setRole,
 } from "../org/directory.js";
+import { syncPeople } from "../org/directory-sync.js";
+import type { FetchUsers } from "../org/directory-sync.js";
 import { isAdmin, loadActor, mayManageDepartment, mayManagePerson } from "./access.js";
 import { html, layout } from "./html.js";
 import type { SafeHtml } from "./html.js";
@@ -30,7 +32,7 @@ const options = (values: readonly string[], current?: string) =>
   values.map((v) => html`<option value="${v}" ${v === current ? "selected" : ""}>${v}</option>`);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
 
-export function peopleRoutes(db: Db): Router {
+export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
   const router = express.Router();
   const render = (res: Response, title: string, body: SafeHtml) => {
     const { actor, csrf } = adminOf(res);
@@ -40,16 +42,19 @@ export function peopleRoutes(db: Db): Router {
 
   router.get(
     "/people",
-    wrap(async (_req, res) => {
+    wrap(async (req, res) => {
       const { actor } = adminOf(res);
       const admin = isAdmin(actor);
       const all = await listPeople(db, actor.tenantId);
+      const synced = typeof req.query.synced === "string" ? /^(\d+),(\d+)$/.exec(req.query.synced) : null;
       const rows = admin ? all : all.filter((p) => p.memberships.some((m) => actor.headOf.includes(m.departmentId)));
       const csrf = csrfField(res);
       render(
         res,
         "People",
-        html`<h1>People</h1>
+        html`<h1>People</h1>${synced ? html`<p>Added ${synced[1]}, updated ${synced[2]}.</p>` : ""}${
+          admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button>Sync from Microsoft 365</button></form>` : ""
+        }
 <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Personal bot</th><th>Departments</th></tr></thead><tbody>${rows.map((p) => {
           // Heads see only their own departments' people; none may edit their own row.
           const editable = admin || p.id !== actor.personId;
@@ -64,6 +69,22 @@ export function peopleRoutes(db: Db): Router {
           }</td><td>${p.memberships.filter((m) => admin || actor.headOf.includes(m.departmentId)).map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
         })}</tbody></table>`,
       );
+    }),
+  );
+
+  router.post(
+    "/people/sync",
+    wrap(async (_req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      let counts;
+      try {
+        counts = await syncPeople(db, actor.tenantId, fetchUsers);
+      } catch (err) {
+        console.error("people sync failed", err);
+        return page(res, 502, "Directory sync failed.");
+      }
+      res.redirect(303, `/admin/people?synced=${counts.added},${counts.updated}`);
     }),
   );
 

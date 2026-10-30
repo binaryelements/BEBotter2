@@ -25,7 +25,7 @@ describe("settings screen", () => {
     await setRole(db, T, id.Ann, "admin");
     await setMembership(db, T, (await createDepartment(db, T, "Sales")).id, id.Hal, "head");
     const app = express();
-    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m" }));
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [] }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());

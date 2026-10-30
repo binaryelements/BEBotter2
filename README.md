@@ -11,5 +11,6 @@ A Microsoft Teams bot service on the Claude Agent SDK: bot definitions per tenan
 
 The admin page is at `/admin`; set `PUBLIC_URL` and `ADMIN_EMAILS` in `.env`.
 The Entra app registration needs the Web redirect URI `<PUBLIC_URL>/admin/auth/callback`.
+People sync from Microsoft 365 (daily, and from the People screen) needs the Microsoft Graph application permission `User.Read.All` with admin consent.
 
 stdio MCP servers run inside the service container, so install them in the image (the IT Support example's filesystem server is in the Dockerfile).
