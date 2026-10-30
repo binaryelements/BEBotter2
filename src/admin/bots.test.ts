@@ -58,6 +58,7 @@ describe("bots screen", () => {
     expect(page).toContain("headers set");
     expect(page).toContain("list_a, list_b");
     expect(page).not.toContain("s3cret");
+    expect(JSON.stringify((await getDefinition(db, T, d.id))!.mcpServers)).not.toContain("s3cret");
     expect(await (await get("/admin/bots", "Ann")).text()).not.toContain("s3cret");
   });
 
@@ -107,6 +108,10 @@ describe("bots screen", () => {
     expect(await res.text()).toContain("reserved");
     res = await post(`/admin/bots/${d.id}/servers`, "Ann", [["name", "tickets"], ["transport", "stdio"], ["command", "c"]]);
     expect(res.status).toBe(400);
+    for (const h of [[["headerName", "X-A"]], [["headerValue", "v"]], [["headerName", "bad name"], ["headerValue", "v"]]] as [string, string][][]) {
+      res = await post(`/admin/bots/${d.id}/servers`, "Ann", [["name", "s2"], ["transport", "stdio"], ["command", "c"], ...h]);
+      expect(res.status).toBe(400);
+    }
     expect((await getDefinition(db, T, d.id))!.mcpServers.map((s) => s.name)).toEqual(["tickets"]);
   });
 

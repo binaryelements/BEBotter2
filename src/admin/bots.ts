@@ -135,6 +135,9 @@ ${personaBox}
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       const headerName = field(req, "headerName").trim();
+      const headerValue = field(req, "headerValue");
+      if (!headerName !== !headerValue) throw new DirectoryError("Header name and value go together");
+      if (headerName && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(headerName)) throw new DirectoryError("Invalid header name");
       const transport = field(req, "transport");
       await addMcpServer(db, secretsKey, actor.tenantId, req.params.id, {
         name: field(req, "name").trim(),
@@ -142,7 +145,7 @@ ${personaBox}
         url: field(req, "url").trim() || undefined,
         command: field(req, "command").trim() || undefined,
         args: list(field(req, "args")),
-        headers: headerName ? { [headerName]: field(req, "headerValue") } : undefined,
+        headers: headerName ? { [headerName]: headerValue } : undefined,
         readOnlyTools: list(field(req, "readOnlyTools")),
       });
       res.redirect(303, `/admin/bots/${req.params.id}`);

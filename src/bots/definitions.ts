@@ -125,19 +125,27 @@ export async function setAllowedDepartments(db: Db, tenantId: string, id: string
   });
 }
 
+const lockedMcpServers = async (tx: Pick<Db, "select">, tenantId: string, id: string) => {
+  const [def] = await tx.select().from(botDefinitions).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId))).for("update");
+  if (!def) throw new DirectoryError("Bot not found");
+  return def.mcpServers;
+};
+
 export async function addMcpServer(db: Db, secretsKey: Buffer, tenantId: string, id: string, server: McpServerInput): Promise<void> {
   const parsed = mcpServerInput.safeParse(server);
   if (!parsed.success) throw new DirectoryError(parsed.error.issues[0].message);
   const { headers, ...rest } = parsed.data;
-  const def = await getDefinition(db, tenantId, id);
-  if (!def) throw new DirectoryError("Bot not found");
-  if (def.mcpServers.some((s) => s.name === rest.name)) throw new DirectoryError(`MCP server "${rest.name}" already exists`);
   const record: McpServerRecord = { ...rest, ...(headers && Object.keys(headers).length > 0 ? { headersCipher: encrypt(secretsKey, JSON.stringify(headers)) } : {}) };
-  await db.update(botDefinitions).set({ mcpServers: [...def.mcpServers, record], updatedAt: new Date() }).where(eq(botDefinitions.id, id));
+  await db.transaction(async (tx) => {
+    const current = await lockedMcpServers(tx, tenantId, id);
+    if (current.some((s) => s.name === rest.name)) throw new DirectoryError(`MCP server "${rest.name}" already exists`);
+    await tx.update(botDefinitions).set({ mcpServers: [...current, record], updatedAt: new Date() }).where(eq(botDefinitions.id, id));
+  });
 }
 
 export async function removeMcpServer(db: Db, tenantId: string, id: string, name: string): Promise<void> {
-  const def = await getDefinition(db, tenantId, id);
-  if (!def) throw new DirectoryError("Bot not found");
-  await db.update(botDefinitions).set({ mcpServers: def.mcpServers.filter((s) => s.name !== name), updatedAt: new Date() }).where(eq(botDefinitions.id, id));
+  await db.transaction(async (tx) => {
+    const current = await lockedMcpServers(tx, tenantId, id);
+    await tx.update(botDefinitions).set({ mcpServers: current.filter((s) => s.name !== name), updatedAt: new Date() }).where(eq(botDefinitions.id, id));
+  });
 }
