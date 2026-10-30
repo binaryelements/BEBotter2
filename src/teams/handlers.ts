@@ -59,6 +59,13 @@ export async function handleMessage(
   }
 }
 
+// agents-hosting hands the handler the whole invoke action ({ verb, data }), not the card's data alone
+export function clickPayload(action: unknown): { actionId: string; answer: "yes" | "no" } {
+  const obj = (action ?? {}) as { data?: unknown; actionId?: unknown; answer?: unknown };
+  const src = obj.data && typeof obj.data === "object" ? (obj.data as typeof obj) : obj;
+  return { actionId: String(src.actionId ?? ""), answer: src.answer === "yes" ? "yes" : "no" };
+}
+
 export function handleConfirmClick(
   confirmations: Confirmations,
   data: { actionId: string; answer: "yes" | "no" },

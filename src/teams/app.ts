@@ -5,7 +5,7 @@ import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { findPersonId } from "../org/org.js";
 import { resultCard } from "./cards.js";
-import { handleConfirmClick, handleMessage, membersAddedGreeting } from "./handlers.js";
+import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting } from "./handlers.js";
 
 export type TeamsAppDeps = {
   db: Db;
@@ -47,13 +47,13 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     );
   });
 
-  app.adaptiveCards.actionExecute<{ actionId?: unknown; answer?: unknown }>("confirm", async (ctx, _state, data) => {
+  app.adaptiveCards.actionExecute<unknown>("confirm", async (ctx, _state, data) => {
     const { conversation, from } = ctx.activity;
     const personId =
       conversation?.tenantId && from?.aadObjectId ? await findPersonId(deps.db, conversation.tenantId, from.aadObjectId) : undefined;
     const text = handleConfirmClick(
       deps.confirmations,
-      { actionId: String(data.actionId), answer: data.answer === "yes" ? "yes" : "no" },
+      clickPayload(data),
       personId,
       from?.name ?? "",
     );

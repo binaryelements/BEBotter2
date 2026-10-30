@@ -4,7 +4,7 @@ import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { upsertChat, upsertTenant } from "../org/org.js";
-import { handleConfirmClick, handleMessage, membersAddedGreeting } from "./handlers.js";
+import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting } from "./handlers.js";
 import type { IncomingMessage } from "./handlers.js";
 
 const msg = (conversationType: string): IncomingMessage => ({
@@ -115,6 +115,13 @@ describe("handleConfirmClick", () => {
     const b = c.create({ auditId: "y", askerPersonId: "p1" });
     expect(click("no", "p1", c, b.actionId)).toBe("Declined by Bo");
   });
+});
+
+describe("clickPayload", () => {
+  it("reads the full invoke action", () =>
+    expect(clickPayload({ type: "Action.Execute", verb: "confirm", data: { actionId: "a1", answer: "yes" } })).toEqual({ actionId: "a1", answer: "yes" }));
+  it("reads bare card data", () => expect(clickPayload({ actionId: "a1", answer: "no" })).toEqual({ actionId: "a1", answer: "no" }));
+  it("defaults when empty", () => expect(clickPayload({})).toEqual({ actionId: "", answer: "no" }));
 });
 
 it("greets", () => expect(membersAddedGreeting("Bot")).toBe("Hi, I'm Bot. Mention me with a question or a job."));
