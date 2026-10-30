@@ -22,6 +22,10 @@ export async function ensureComputer(db: Db, docker: DockerClient, image: string
 
 export async function runOnComputer(docker: DockerClient, containerId: string, command: string, timeoutMs = 120_000): Promise<string> {
   const r = await docker.exec(containerId, ["bash", "-lc", command], timeoutMs);
+  return formatOutput(r);
+}
+
+export function formatOutput(r: { stdout: string; stderr: string; exitCode: number; timedOut: boolean }): string {
   const parts = [r.stdout];
   if (r.stderr) parts.push(`[stderr]\n${r.stderr}`);
   if (r.exitCode !== 0) parts.push(`[exit ${r.exitCode}]`);
