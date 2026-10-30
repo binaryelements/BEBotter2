@@ -11,6 +11,7 @@ import { connectionsMcpServer } from "../connections/mcp.js";
 import type { SshRunner } from "../connections/ssh.js";
 import { connectionMcpConfigs } from "../connections/store.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
+import { routineMcpServer } from "../routines/mcp.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
 import type { BotDefinition, Person } from "../db/schema.js";
@@ -164,7 +165,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     maxTurns: 25,
     // the model's process gets no service secrets, only what it needs to run
     env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), connections: connectionsMcpServer(deps, { ...base, confirmedBy }), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey), ...conn.servers },
+    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), connections: connectionsMcpServer(deps, { ...base, confirmedBy }), routine: routineMcpServer(deps, { ...base, post: turn.routine?.post }), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey), ...conn.servers },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };

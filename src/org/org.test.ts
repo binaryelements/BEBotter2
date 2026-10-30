@@ -2,7 +2,8 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chats } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
-import { findPersonId, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "./org.js";
+import { DirectoryError } from "./directory.js";
+import { findPersonId, getTenantSettings, setTenantSettings, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "./org.js";
 
 describe("org", () => {
   it("creates then reuses a person, updating the name", async () => {
@@ -27,5 +28,14 @@ describe("org", () => {
     const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" });
     expect(await findPersonId(db, "t1", "a1")).toBe(p.id);
     expect(await findPersonId(db, "t2", "a1")).toBeUndefined();
+  });
+  it("settings refuse an unknown time zone", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const s = await getTenantSettings(db, "t1");
+    expect(s.timezone).toBe("UTC");
+    await expect(setTenantSettings(db, "t1", { ...s, timezone: "Mars/Base" })).rejects.toThrow(DirectoryError);
+    await setTenantSettings(db, "t1", { ...s, timezone: "Australia/Sydney" });
+    expect((await getTenantSettings(db, "t1")).timezone).toBe("Australia/Sydney");
   });
 });

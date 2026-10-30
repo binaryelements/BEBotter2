@@ -50,7 +50,7 @@ export function settingsRoutes(db: Db): Router {
       if (!(retentionDays >= 1 && retentionDays <= 3650)) throw new DirectoryError("Keep activity must be a whole number of days from 1 to 3650");
       const defaultModel = field(req, "defaultModel") || null;
       if (defaultModel && !/^claude-[a-z0-9-]+$/.test(defaultModel)) throw new DirectoryError("Default model is not a valid model id");
-      await setTenantSettings(db, actor.tenantId, { botName, retentionDays, defaultModel });
+      await setTenantSettings(db, actor.tenantId, { botName, retentionDays, defaultModel, timezone: (await getTenantSettings(db, actor.tenantId)).timezone });
       res.redirect(303, "/admin/settings");
     }),
   );

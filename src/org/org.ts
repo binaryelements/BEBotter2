@@ -2,6 +2,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { chats, people, tenants } from "../db/schema.js";
 import type { Chat, Person, Tenant } from "../db/schema.js";
 import type { Db } from "../db/client.js";
+import { validTimeZone } from "../routines/cron.js";
+import { DirectoryError } from "./directory.js";
 
 /** A new tenant gets an empty name until one is known; an existing name is kept when none is given. */
 export async function upsertTenant(db: Db, { id, name }: { id: string; name?: string }): Promise<Tenant> {
@@ -49,16 +51,17 @@ export async function findPersonId(db: Db, tenantId: string, aadObjectId: string
   return row?.id;
 }
 
-export type TenantSettings = { botName: string | null; retentionDays: number; defaultModel: string | null };
+export type TenantSettings = { botName: string | null; retentionDays: number; defaultModel: string | null; timezone: string };
 
 export async function getTenantSettings(db: Db, tenantId: string): Promise<TenantSettings> {
   const [row] = await db
-    .select({ botName: tenants.botName, retentionDays: tenants.retentionDays, defaultModel: tenants.defaultModel })
+    .select({ botName: tenants.botName, retentionDays: tenants.retentionDays, defaultModel: tenants.defaultModel, timezone: tenants.timezone })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
-  return row ?? { botName: null, retentionDays: 90, defaultModel: null };
+  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC" };
 }
 
 export async function setTenantSettings(db: Db, tenantId: string, settings: TenantSettings): Promise<void> {
+  if (!validTimeZone(settings.timezone)) throw new DirectoryError("Unknown time zone");
   await db.update(tenants).set(settings).where(eq(tenants.id, tenantId));
 }

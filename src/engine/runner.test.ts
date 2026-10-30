@@ -97,7 +97,7 @@ describe("runTurn", () => {
     expect(result).toEqual({ text: "Done.", costUsd: 0.001, sessionId: "s-1" });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
-    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "tickets"]);
+    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "routine", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
     expect(q.seen[0]!.cwd).toBe(filesDir);
 

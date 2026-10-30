@@ -40,19 +40,19 @@ describe("settings screen", () => {
     });
 
   it("defaults for a missing tenant", async () => {
-    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null });
+    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC" });
   });
 
   it("saves, trims, and stores an empty bot name as null", async () => {
     const r = await post("Ann", { botName: "  Helper  ", retentionDays: "30", defaultModel: " claude-sonnet-5 " });
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/admin/settings");
-    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "claude-sonnet-5" });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "claude-sonnet-5", timezone: "UTC" });
     const page = await (await get("Ann")).text();
     expect(page).toContain('value="Helper"');
     expect(page).toContain('value="30"');
     await post("Ann", { botName: "  ", retentionDays: "30" });
-    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null, timezone: "UTC" });
   });
 
   it("rejects bad values and keeps the old ones", async () => {
