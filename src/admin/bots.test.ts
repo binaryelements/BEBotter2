@@ -180,6 +180,16 @@ describe("bots screen", () => {
       await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", []);
       expect(await listRoutines(db, T, d.id)).toHaveLength(0);
     });
+    it("a foreign-tenant or unknown connection id gives 400 and changes nothing", async () => {
+      await upsertTenant(db, { id: "other" });
+      const c = await conn("foreign", { tenantId: "other" });
+      const d = await def("helper");
+      for (const p of [`/admin/connections/${c}/revoke`, `/admin/connections/${c}/reset-host-key`, `/admin/connections/nope/revoke`, `/admin/bots/${d.id}/connections/${c}/link`]) {
+        expect((await post(p, "Ann", [["linked", "on"]])).status).toBe(400);
+      }
+      const [row] = await db.select().from(connections).where(eq(connections.id, c));
+      expect([row.status, row.secretCipher]).toEqual(["active", "CIPHER-SECRET"]);
+    });
     it("head gets 403 on every connection and routine post, and sees neither section", async () => {
       const d = await def("helper");
       const c = await conn("hd");
@@ -193,6 +203,8 @@ describe("bots screen", () => {
     it("no admin page contains BEGIN OPENSSH", async () => {
       const d = await def("helper");
       await conn("pk", { secretCipher: "-----BEGIN OPENSSH PRIVATE KEY-----" });
+      const c = await conn("pk2", { secretCipher: "-----BEGIN OPENSSH PRIVATE KEY-----" });
+      expect(await (await post(`/admin/connections/${c}/revoke`, "Ann", [])).text()).not.toContain("BEGIN OPENSSH");
       for (const p of ["/admin/bots", `/admin/bots/${d.id}`, "/admin/settings"]) expect(await (await get(p, "Ann")).text()).not.toContain("BEGIN OPENSSH");
     });
   });
