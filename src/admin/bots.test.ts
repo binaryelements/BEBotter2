@@ -112,6 +112,11 @@ describe("bots screen", () => {
       res = await post(`/admin/bots/${d.id}/servers`, "Ann", [["name", "s2"], ["transport", "stdio"], ["command", "c"], ...h]);
       expect(res.status).toBe(400);
     }
+    for (const v of ["a\r\nX-B: c", "a\nb", "a\0b", "   "]) {
+      res = await post(`/admin/bots/${d.id}/servers`, "Ann", [["name", "s2"], ["transport", "http"], ["url", "https://mcp.example.test/"], ["headerName", "X-A"], ["headerValue", v]]);
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("Invalid header value");
+    }
     expect((await getDefinition(db, T, d.id))!.mcpServers.map((s) => s.name)).toEqual(["tickets"]);
   });
 

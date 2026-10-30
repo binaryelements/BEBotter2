@@ -57,7 +57,7 @@ export async function listActions(
   if (filter.before) {
     // Keyset cursor on (started_at, id), compared in SQL so microseconds are never truncated; an unknown id is ignored.
     const [c] = await db.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.id, filter.before), eq(auditEvents.tenantId, filter.tenantId)));
-    if (c) conditions.push(sql`(${auditEvents.startedAt}, ${auditEvents.id}) < (select started_at, id from audit_events where id = ${filter.before})`);
+    if (c) conditions.push(sql`(${auditEvents.startedAt}, ${auditEvents.id}) < (select started_at, id from audit_events where id = ${filter.before} and tenant_id = ${filter.tenantId})`);
   }
   return db
     .select()

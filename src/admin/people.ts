@@ -61,7 +61,7 @@ export function peopleRoutes(db: Db): Router {
             editable
               ? html`<form method="post" action="/admin/people/${p.id}/personal-bot">${csrf}<input type="checkbox" name="personalBot" aria-label="Personal bot" ${p.personalBot ? "checked" : ""}> <button>Save</button></form>`
               : p.personalBot ? "On" : "Off"
-          }</td><td>${p.memberships.map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
+          }</td><td>${p.memberships.filter((m) => admin || actor.headOf.includes(m.departmentId)).map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
         })}</tbody></table>`,
       );
     }),

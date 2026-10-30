@@ -81,6 +81,12 @@ describe("people and departments screens", () => {
     expect(people).not.toContain("<td>Ola</td>");
     expect(people).not.toContain("<td>Eve</td>");
     expect(people).not.toContain("/role");
+    await setMembership(db, T, eng, id.Mo, "member");
+    const shared = await (await get("/admin/people", "Hal")).text();
+    await setMembership(db, T, eng, id.Mo, "none");
+    expect(shared).toContain("<td>Sales</td>");
+    expect(shared).not.toContain("Engineering");
+    expect(await (await get("/admin/people", "Ann")).text()).toContain("Engineering");
     const depts = await (await get("/admin/departments", "Hal")).text();
     expect(depts).toContain("Sales");
     expect(depts).not.toContain("Engineering");

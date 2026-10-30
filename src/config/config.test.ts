@@ -34,4 +34,7 @@ describe("loadConfig", () => {
   it("names a missing PUBLIC_URL", () => {
     expect(() => loadConfig({ ...full, PUBLIC_URL: undefined })).toThrow(/PUBLIC_URL/);
   });
+  it("requires an absolute https PUBLIC_URL", () => {
+    for (const v of ["http://x.test", "x.test", "/admin", "https://", ""]) expect(() => loadConfig({ ...full, PUBLIC_URL: v })).toThrow(/PUBLIC_URL/);
+  });
 });

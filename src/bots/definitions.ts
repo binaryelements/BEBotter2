@@ -56,10 +56,6 @@ export async function assignToChat(db: Db, chatId: string, definitionId: string)
   await db.insert(chatAssignments).values({ chatId, definitionId }).onConflictDoNothing();
 }
 
-export async function unassignChat(db: Db, chatId: string): Promise<void> {
-  await db.delete(chatAssignments).where(eq(chatAssignments.chatId, chatId));
-}
-
 export async function setChatLabel(db: Db, tenantId: string, chatId: string, label: string): Promise<void> {
   const value = label.trim() || null;
   if (value && value.length > 80) throw new DirectoryError("Label is too long (80 characters at most)");

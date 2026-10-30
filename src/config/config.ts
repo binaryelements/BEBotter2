@@ -9,7 +9,10 @@ const schema = z.object({
     .refine((b) => b.length === 32, "SECRETS_KEY must be 32 bytes"),
   BOT_NAME: z.string().default("BE Bot"),
   DEFAULT_MODEL: z.string().default("claude-haiku-5-5"),
-  PUBLIC_URL: z.string().min(1).transform((s) => s.replace(/\/+$/, "")),
+  PUBLIC_URL: z
+    .string()
+    .refine((s) => s.startsWith("https://") && URL.canParse(s), "PUBLIC_URL must be an absolute https:// URL")
+    .transform((s) => s.replace(/\/+$/, "")),
   ADMIN_EMAILS: z
     .string()
     .default("")

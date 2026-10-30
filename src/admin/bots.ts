@@ -139,6 +139,7 @@ ${personaBox}
       const headerValue = field(req, "headerValue");
       if (!headerName !== !headerValue) throw new DirectoryError("Header name and value go together");
       if (headerName && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(headerName)) throw new DirectoryError("Invalid header name");
+      if (headerValue && (/[\r\n\0]/.test(headerValue) || !headerValue.trim())) throw new DirectoryError("Invalid header value");
       const transport = field(req, "transport");
       await addMcpServer(db, secretsKey, actor.tenantId, req.params.id, {
         name: field(req, "name").trim(),
