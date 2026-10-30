@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { beginAction, completeAction } from "../audit/audit.js";
+import { mayUseDefinition } from "../admin/access.js";
 import { definitionsForChat, getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { chats, people } from "../db/schema.js";
@@ -38,6 +39,7 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
   if (!chat.conversationReference) return fail("its chat cannot be reached yet");
   const [creator] = await db.select().from(people).where(and(eq(people.id, routine.createdByPersonId), eq(people.tenantId, tenantId)));
   if (!creator) return fail("its creator no longer exists");
+  if (!(await mayUseDefinition(db, tenantId, creator.id, definitionId))) return fail("its creator no longer has access to this bot");
   // the grant holds only while its holder is still an admin; otherwise writes wait for a card like any other
   const [granter] = routine.grantPersonId
     ? await db.select({ role: people.role }).from(people).where(and(eq(people.id, routine.grantPersonId), eq(people.tenantId, tenantId)))
@@ -61,7 +63,8 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
       console.error(err);
       return fail("the run failed");
     }
-    if (routine.quiet) return;
+    // a quiet routine still says what it changed under its grant (spec 4.6)
+    if (routine.quiet && !result.changed) return;
     try {
       await post(result.text);
     } catch (err) {
@@ -71,17 +74,18 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
   });
 }
 
-/** Every intervalMs claims due routines and runs them one after another; errors are logged and never stop the loop. Returns a stop function. */
-export function startScheduler(deps: SchedulerDeps, intervalMs = 60_000, now = () => new Date()): () => void {
+/**
+ * Every intervalMs claims due routines and runs them side by side (each serialised with its own chat), so a slow
+ * run or an unanswered card holds back no other routine. Errors are logged and never stop the loop. Returns a stop function.
+ * The interval is well under a minute so timer drift never skips a cron minute; claimDue runs each at most once a minute.
+ */
+export function startScheduler(deps: SchedulerDeps, intervalMs = 20_000, now = () => new Date()): () => void {
   const tick = async () => {
     try {
-      for (const routine of await claimDue(deps.db, now())) {
-        try {
-          await runRoutine(deps, routine);
-        } catch (err) {
-          console.error(`routine ${routine.id} failed`, err);
-        }
-      }
+      const claimed = await claimDue(deps.db, now());
+      await Promise.allSettled(
+        claimed.map((routine) => runRoutine(deps, routine).catch((err) => console.error(`routine ${routine.id} failed`, err))),
+      );
     } catch (err) {
       console.error("scheduler tick failed", err);
     }

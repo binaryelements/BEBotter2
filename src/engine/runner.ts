@@ -35,7 +35,8 @@ export type RunnerDeps = {
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
 };
 export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
-export type RunResult = { text: string; costUsd: number; sessionId: string };
+/** changed: a write completed under a routine grant, so the run must say what it did. */
+export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean };
 
 const TRANSIENT = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "UND_ERR_SOCKET"]);
 const MAX_AUDIT_INPUT = 2000;
@@ -74,6 +75,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   // tool use id → audit row of a call that was allowed and has not finished yet
   const inFlight = new Map<string, string>();
+  const granted = new Set<string>(); // tool use ids allowed by a routine grant
+  let changed = false;
   // SDK tool handlers never see the confirmation. Parallel calls may be confirmed in any order, so only an
   // approve-class call sets the marker and approve calls run one at a time, each waiting for the previous to finish.
   let lastConfirmer: string | undefined;
@@ -106,6 +109,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     if (kind === "write" && grant) {
       await recordAuthority(db, auditId, { type: "grant", personId: grant, routineId: turn.routine!.id });
       inFlight.set(toolUseID, auditId);
+      granted.add(toolUseID);
       return { behavior: "allow", updatedInput: input };
     }
     if (kind === "approve") {
@@ -147,6 +151,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       inFlight.delete(input.tool_use_id);
       releaseApprove(input.tool_use_id);
       await completeAction(db, auditId, { status: input.hook_event_name === "PostToolUse" ? "done" : "failed" });
+      if (input.hook_event_name === "PostToolUse" && granted.has(input.tool_use_id)) changed = true;
     }
     return {};
   };
@@ -227,7 +232,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
       .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
     await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd);
-    return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id };
+    return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id, changed };
   } finally {
     // allowed but never finished (interrupted, maxTurns hit, stream died)
     for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });

@@ -25,7 +25,7 @@ async function setup(assign: boolean) {
   const runTurn = vi.fn(async (turn: RunTurnInput) => {
     turns.push(turn);
     await turn.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
-    return { text: "reply", costUsd: 0, sessionId: "s" };
+    return { text: "reply", costUsd: 0, sessionId: "s", changed: false };
   });
   const sent: string[] = [];
   const cards: unknown[] = [];
@@ -86,7 +86,7 @@ describe("handleMessage ordering", () => {
     const running: { chatId: string; finish: () => void }[] = [];
     const runTurn = vi.fn(async (turn: RunTurnInput) => {
       await new Promise<void>((finish) => running.push({ chatId: turn.chatId, finish }));
-      return { text: "reply", costUsd: 0, sessionId: "s" };
+      return { text: "reply", costUsd: 0, sessionId: "s", changed: false };
     });
     const send = (chatId: string) =>
       handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("groupChat"), chatId }, async () => {}, async () => {});
@@ -156,7 +156,7 @@ describe("handleMessage department access", () => {
     await setMembership(db, "t1", sales.id, mem.id, "member");
     const adm = await upsertPerson(db, { tenantId: "t1", aadObjectId: "admin", name: "Ad" });
     await setRole(db, "t1", adm.id, "admin");
-    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s" }));
+    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s", changed: false }));
     const as = async (aadObjectId: string) => {
       const sent: string[] = [];
       await handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, async (t) => void sent.push(t), async () => {});

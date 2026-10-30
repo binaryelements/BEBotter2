@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HookCallback, Options, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
 import { listActions } from "../audit/audit.js";
-import { assignToChat, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, setAllowedDepartments, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
@@ -12,7 +12,7 @@ import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import { runTurn } from "../engine/runner.js";
 import type { RunTurnInput } from "../engine/runner.js";
-import { setRole } from "../org/directory.js";
+import { createDepartment, setRole } from "../org/directory.js";
 import { saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { AdaptiveCard } from "../teams/cards.js";
 import { serialize } from "../teams/handlers.js";
@@ -56,7 +56,7 @@ const fakeRunTurn = (fn: (turn: RunTurnInput) => Promise<string> = async () => "
   const turns: RunTurnInput[] = [];
   const run = vi.fn(async (turn: RunTurnInput) => {
     turns.push(turn);
-    return { text: await fn(turn), costUsd: 0, sessionId: "s" };
+    return { text: await fn(turn), costUsd: 0, sessionId: "s", changed: false };
   });
   return { run, turns };
 };
@@ -92,6 +92,26 @@ describe("scheduler", () => {
     expect(sent[0]![0]).toBe("c2");
     const [row] = await listActions(db, { tenantId: "t1", chatId: "c1" });
     expect(row).toMatchObject({ kind: "message", status: "failed", summary: "Routine not run: its bot is no longer in its chat" });
+  });
+
+  it("a routine whose creator lost access to the bot is recorded failed without a run", async () => {
+    const r1 = await routine();
+    await setAllowedDepartments(db, "t1", defId, [(await createDepartment(db, "t1", "Sales")).id]);
+    const r = fakeRunTurn();
+    await runRoutine({ db, runTurn: r.run, send }, r1);
+    expect(r.run).not.toHaveBeenCalled();
+    expect((await listActions(db, { tenantId: "t1", chatId: "c1" }))[0]).toMatchObject({
+      status: "failed", summary: "Routine not run: its creator no longer has access to this bot",
+    });
+  });
+
+  it("a routine stuck in one chat does not hold back a routine in another", async () => {
+    await routine();
+    await routine({ chatId: "c2" });
+    const r = fakeRunTurn((turn) => (turn.chatId === "c1" ? new Promise<string>(() => {}) : Promise.resolve("All good.")));
+    stop = startScheduler({ db, runTurn: r.run, send }, 5, due);
+    await vi.waitFor(() => expect(sent).toEqual([["c2", "**Ops**\n\nAll good."]]));
+    expect(r.run).toHaveBeenCalledTimes(2);
   });
 
   it("a routine with no conversation reference is recorded failed without a run", async () => {
@@ -135,9 +155,9 @@ describe("scheduler", () => {
     expect(r.turns[0]!.routine!.grantPersonId).toBeNull();
   });
 
-  it("a granted routine's write is recorded with grant authority", async () => {
+  it("a granted routine's write is recorded with grant authority and a quiet one still posts it", async () => {
     await setRole(db, "t1", annId, "admin");
-    const r1 = await routine({ grantPersonId: annId });
+    const r1 = await routine({ grantPersonId: annId, quiet: true });
     // drives one write tool through canUseTool and PostToolUse, the way the SDK does
     const queryFn = (({ options }: { options: Options }) =>
       (async function* () {

@@ -94,7 +94,7 @@ describe("runTurn", () => {
       },
     });
 
-    expect(result).toEqual({ text: "Done.", costUsd: 0.001, sessionId: "s-1" });
+    expect(result).toEqual({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
     expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "routine", "tickets"]);
@@ -129,10 +129,11 @@ describe("runTurn", () => {
     const { definition, person } = await setup(db);
     const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7 }]] });
     const asked: ConfirmationRequest[] = [];
-    await runTurn(deps(db, q.fn), {
+    const result = await runTurn(deps(db, q.fn), {
       tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => void asked.push(r),
       routine: { id: "r1", grantPersonId: person.id, post: async () => {} },
     });
+    expect(result.changed).toBe(true);
     expect(asked).toEqual([]);
     const row = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "tool")!;
     expect(row).toMatchObject({ status: "done", authority: { type: "grant", personId: person.id, routineId: "r1" } });
@@ -298,7 +299,7 @@ describe("runTurn", () => {
     const result = await runTurn(deps(db, queryFn), {
       tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
     });
-    expect(result).toEqual({ text: "Fresh.", costUsd: 0.002, sessionId: "s-new" });
+    expect(result).toEqual({ text: "Fresh.", costUsd: 0.002, sessionId: "s-new", changed: false });
     expect(seen.map((o) => o.resume)).toEqual(["gone", undefined]);
     expect(await db.select().from(sessions)).toMatchObject([{ chatId: "c1", sdkSessionId: "s-new" }]);
     errors.mockRestore();
@@ -363,7 +364,7 @@ describe("runTurn", () => {
     const result = await runTurn(deps(db, queryFn), {
       tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
     });
-    expect(result).toEqual({ text: "I couldn't finish that.", costUsd: 0.5, sessionId: "s-2" });
+    expect(result).toEqual({ text: "I couldn't finish that.", costUsd: 0.5, sessionId: "s-2", changed: false });
     const [row] = await listActions(db, { tenantId: "t1" });
     expect(row).toMatchObject({ kind: "message", status: "failed" });
   });
