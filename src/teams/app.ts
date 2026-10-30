@@ -19,6 +19,8 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
   const app = new AgentApplication<TurnState>({ startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true });
 
   app.onConversationUpdate("membersAdded", async (ctx) => {
+    const botId = ctx.activity.recipient?.id;
+    if (!ctx.activity.membersAdded?.some((m) => m.id === botId)) return;
     await ctx.sendActivity(membersAddedGreeting(deps.botName));
   });
 
