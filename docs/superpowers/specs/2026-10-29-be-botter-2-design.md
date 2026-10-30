@@ -94,15 +94,15 @@ A bot definition is the unit an admin creates and edits. **[M]** Fields:
 - Connections: SSH hosts with keys, Windows hosts over SSH or WinRM, Proxmox API tokens, and new
   kinds over time. Each connection has a mode, `read-only` or `change`. **[M]** Enforcement **[C]**:
   a `read-only` connection's credential must itself be read-only on the target (a read-only
-  account, a Proxmox token with an audit role); the admin page says so when the connection is
-  created, and that credential is placed in the computer so the shell can use it freely. A
-  `change` connection's credential is never placed in the computer; it is used only by a
-  connection tool in the service process, and every call to that tool is gated by confirmation.
-  So the shell can look anywhere it has been given read access and can change nothing on its own.
+  account, a Proxmox token with an audit role); the admin page says so. No connection credential
+  is ever placed in the computer, because the model can read anything there. Both modes run
+  through connection tools in the service process: the `read-only` tool runs without asking, the
+  `change` tool is gated by confirmation. **[C, revised 2026-10-30]**
+- Connection kinds are not hard coded: version one speaks SSH (Linux, Windows OpenSSH, Proxmox
+  hosts); WinRM and API tokens come later as further kinds. **[C]**
 - Connections are set up from the chat, led by the bot (section 4.9). Nobody pastes a private key
   anywhere. **[M, 2026-10-30]**
-- Computer: on or off. A computer is a Linux container with the bot's read-only connection
-  credentials placed as files or environment and no host mounts. **[M]** One container per bot
+- Computer: on or off. A computer is a Linux container with no credentials and no host mounts. **[M]** One container per bot
   definition for service-account bots, and one per person for bots whose identity is `person`, so
   no two people's sessions share a computer. **[C]**
 - Web search and fetch: on or off.
@@ -147,7 +147,7 @@ computer on) and an empty template. **[C]**
 - Tools given to the session: Graph tools (our own small MCP server backed by the person's or
   service account's token), the definition's MCP servers, web search and fetch, and the computer's
   shell and file tools which run inside the bot's container. **[C]**
-- The model never sees secrets: SSH keys and tokens are placed in the container; the Graph MCP
+- The model never sees secrets: SSH keys stay in the service's connection tools; the Graph MCP
   server holds the delegated token in the service process. **[C]**
 - Confirmation: any tool call that changes something (mail send, calendar write, file write,
   `change`-mode connections, MCP tools marked as writing) is gated: the bot posts what it is about
@@ -207,8 +207,8 @@ the chat. Flow **[C]**:
    encrypted and never leaves the service in readable form, except into the bot's container for a
    `read-only` connection (4.2). The model never sees it.
 3. The bot posts copy-paste instructions: create a dedicated account on the target, add the public
-   key to it, and, for `change`, the exact sudo rights it is asking for. Windows (OpenSSH) and
-   Proxmox (API token with a named role) get their own instructions.
+   key to it, and, for `change`, the exact rights it is asking for. The bot writes these itself
+   for whatever the target is; the service hands it only facts (public key, account name).
 4. The person replies that it is done. The bot tests the connection and records the host's key
    fingerprint (trust on first use, confirmed by the person who set it up). A later fingerprint
    change blocks the connection until an admin accepts it.
@@ -238,9 +238,12 @@ knowledge base per tenant, read and written by all its bots. Knowledge must be k
 - Notes are data, not instructions: text a bot copied from a server or a document cannot change
   its persona or its rules. The confirm-before-write gate still applies to anything a note says
   to do. **[C]**
-- Bootstrap: when a connection becomes active, the bot runs a read-only inventory (OS, services,
-  disks, notable configuration) and writes the host's first note. A weekly routine refreshes notes
-  and posts what changed. **[C]**
+- Bootstrap: when a connection becomes active, the bot maps the system read-only and writes its
+  first note; what it records is the bot's judgement, not a fixed checklist. Refreshing notes is
+  an ordinary routine an admin creates. **[C]**
+- Nothing hard coded: behaviour comes from the model and from admin-editable data (personas,
+  routines, notes, settings), not from per-system scripts or checklists in code.
+  **[M, 2026-10-30]**
 - Backed up with the database. **[C]**
 
 ## 5. Architecture
@@ -292,8 +295,8 @@ secrets key. **[C]**
 
 - Delegated Graph tokens and service-account tokens live only in the service process and the
   database (encrypted); the model never sees them.
-- Connection secrets are placed in the bot's container, never in the model's context or the audit
-  trail; the audit trail records the command, not the key.
+- Connection secrets stay in the service process, never in the bot's container, the model's
+  context or the audit trail; the audit trail records the command, not the key.
 - Bot containers: no host mounts, unprivileged user, CPU, memory and pid limits, network reach only
   what the tenant's connections need (BE's own stack: the container joins the tailnet) **[C]**.
 - The endpoint validates Bot Framework tokens; the admin page validates Entra tokens and tenant
