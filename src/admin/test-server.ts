@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import type { AddressInfo } from "node:net";
+import { sessionKey, signSession } from "./session.js";
 
 export function serve(app: Express): Promise<{ url: string; close(): Promise<void> }> {
   return new Promise((resolve) => {
@@ -16,3 +17,7 @@ export function serve(app: Express): Promise<{ url: string; close(): Promise<voi
     });
   });
 }
+
+/** A signed `bb_session` cookie for the given person, as the sign-in callback would set it. */
+export const sessionCookie = (secretsKey: Buffer, tenantId: string, personId: string, csrf = "csrf-1") =>
+  `bb_session=${signSession(sessionKey(secretsKey), { personId, tenantId, csrf, exp: Date.now() + 60_000 })}`;

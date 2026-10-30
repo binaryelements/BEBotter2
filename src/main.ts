@@ -1,5 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { startServer } from "@microsoft/agents-hosting-express";
+import { realOidcDeps } from "./admin/oidc.js";
+import { adminRouter } from "./admin/router.js";
 import { dockerodeClient } from "./computer/docker.js";
 import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
@@ -27,5 +29,8 @@ const app = createTeamsApp({ db, runTurn: (turn) => runTurn(runnerDeps, turn), c
 // The Agents SDK reads clientId, tenantId and clientSecret from the environment; the agent SDK reads ANTHROPIC_API_KEY.
 startServer(app, {
   port: config.port,
-  beforeListen: (express) => void express.get("/health", (_req, res) => void res.json({ ok: true })),
+  beforeListen: (express) => {
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel }));
+    express.get("/health", (_req, res) => void res.json({ ok: true }));
+  },
 });
