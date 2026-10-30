@@ -7,6 +7,14 @@ export type DirectoryUser = { id: string; displayName: string; mail: string | nu
 export type FetchUsers = () => Promise<DirectoryUser[]>;
 
 const MAX_PAGES = 50;
+const isGraph = (url: string) => {
+  try {
+    return new URL(url).origin === "https://graph.microsoft.com";
+  } catch {
+    return false;
+  }
+};
+const clean = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
 /** Production wiring: Microsoft Graph with the bot's client credentials (needs the User.Read.All application permission). */
 export function graphFetchUsers(config: Pick<Config, "teams">, fetchFn: typeof fetch = fetch): FetchUsers {
@@ -28,7 +36,13 @@ export function graphFetchUsers(config: Pick<Config, "teams">, fetchFn: typeof f
 
     const users: DirectoryUser[] = [];
     let next: string | undefined = "https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType&$top=999";
-    for (let i = 0; next && i < MAX_PAGES; i++) {
+    for (let i = 0; next; i++) {
+      if (i === MAX_PAGES) {
+        console.warn(`people sync: stopped after ${MAX_PAGES} pages`);
+        break;
+      }
+      // The token goes to Microsoft Graph only, whatever a page links to.
+      if (!isGraph(next)) throw new Error("Directory sync failed: bad nextLink");
       const page = (await ok(await fetchFn(next, { headers: { authorization: `Bearer ${access_token}` } })).json()) as { value?: DirectoryUser[]; "@odata.nextLink"?: string };
       users.push(...(page.value ?? []));
       next = page["@odata.nextLink"];
@@ -37,29 +51,44 @@ export function graphFetchUsers(config: Pick<Config, "teams">, fetchFn: typeof f
   };
 }
 
-/** Adds and renames tenant members from the directory; roles, personal bots and memberships stay, and nobody is deleted. */
-export async function syncPeople(db: Db, tenantId: string, fetchUsers: FetchUsers): Promise<{ added: number; updated: number; skipped: number }> {
+type SyncCounts = { added: number; updated: number; skipped: number };
+const running = new Map<string, Promise<SyncCounts>>();
+
+/** Adds and renames tenant members from the directory; roles, personal bots and memberships stay, and nobody is deleted. A call while one runs for the tenant shares its result. */
+export function syncPeople(db: Db, tenantId: string, fetchUsers: FetchUsers): Promise<SyncCounts> {
+  let run = running.get(tenantId);
+  if (!run) {
+    run = doSync(db, tenantId, fetchUsers).finally(() => running.delete(tenantId));
+    running.set(tenantId, run);
+  }
+  return run;
+}
+
+async function doSync(db: Db, tenantId: string, fetchUsers: FetchUsers): Promise<SyncCounts> {
   const all = await fetchUsers();
-  const members = all.filter((u) => u.accountEnabled && u.userType === "Member");
+  const members = all.flatMap((u) => {
+    const id = clean(u.id);
+    const name = clean(u.displayName) || clean(u.userPrincipalName);
+    const email = (clean(u.mail) || clean(u.userPrincipalName)).toLowerCase();
+    return u.accountEnabled && u.userType === "Member" && id && name && email ? [{ id, name, email }] : [];
+  });
   let added = 0, updated = 0;
   await db.transaction(async (tx) => {
     await tx.insert(tenants).values({ id: tenantId, name: "" }).onConflictDoNothing();
     const existing = new Map(
-      (await tx.select({ id: people.id, aadObjectId: people.aadObjectId, name: people.name, email: people.email }).from(people).where(eq(people.tenantId, tenantId))).map((p) => [p.aadObjectId, p]),
+      (await tx.select({ aadObjectId: people.aadObjectId, name: people.name, email: people.email }).from(people).where(eq(people.tenantId, tenantId))).map((p) => [p.aadObjectId, p]),
     );
-    for (const u of members) {
-      const name = u.displayName || u.userPrincipalName;
-      const email = (u.mail ?? u.userPrincipalName).toLowerCase();
-      const row = existing.get(u.id);
-      if (!row) {
-        await tx.insert(people).values({ id: crypto.randomUUID(), tenantId, aadObjectId: u.id, name, email });
-        existing.set(u.id, { id: "", aadObjectId: u.id, name, email });
-        added++;
-      } else if (row.name !== name || row.email !== email) {
-        await tx.update(people).set({ name, email }).where(eq(people.id, row.id));
-        Object.assign(row, { name, email });
-        updated++;
-      }
+    for (const { id, name, email } of members) {
+      const row = existing.get(id);
+      if (row && row.name === name && row.email === email) continue;
+      // An upsert, so a row another process inserted meanwhile is updated rather than failing the sync.
+      await tx
+        .insert(people)
+        .values({ id: crypto.randomUUID(), tenantId, aadObjectId: id, name, email })
+        .onConflictDoUpdate({ target: [people.tenantId, people.aadObjectId], set: { name, email } });
+      if (row) updated++;
+      else added++;
+      existing.set(id, { aadObjectId: id, name, email });
     }
   });
   return { added, updated, skipped: all.length - members.length };
@@ -72,7 +101,7 @@ export function startPeopleSync(db: Db, tenantId: string, fetchUsers: FetchUsers
       const { added, updated, skipped } = await syncPeople(db, tenantId, fetchUsers);
       log(`people sync: added=${added} updated=${updated} skipped=${skipped}`);
     } catch (err) {
-      console.error("people sync failed", err);
+      console.error(`people sync failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
   void run();

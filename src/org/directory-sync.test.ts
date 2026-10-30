@@ -42,6 +42,39 @@ describe("syncPeople", () => {
     expect(await syncPeople(db, T, async () => users)).toEqual({ added: 0, updated: 0, skipped: 2 });
   });
 
+  it("falls back on empty values, skips users without a name, email or id, and never blanks a stored email", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: T });
+    const kept = await upsertPerson(db, { tenantId: T, aadObjectId: "kept", name: "Kept" });
+    await syncPeople(db, T, async () => [user("kept", { mail: "kept@example.test" })]);
+    const users = [
+      user("ann", { mail: "", displayName: "  " }),
+      user("kept", { mail: null, userPrincipalName: "" }),
+      user("none", { mail: null, userPrincipalName: "", displayName: "" }),
+      user("", { displayName: "No id" }),
+      { ...user("x"), id: undefined } as unknown as DirectoryUser,
+    ];
+    expect(await syncPeople(db, T, async () => users)).toEqual({ added: 1, updated: 0, skipped: 4 });
+    const people = await listPeople(db, T);
+    expect(people.find((p) => p.name === "ann@example.test")?.email).toBe("ann@example.test");
+    expect(people.find((p) => p.id === kept.id)?.email).toBe("kept@example.test");
+    expect(people).toHaveLength(2);
+  });
+
+  it("a second sync while one runs shares its result and writes nothing twice", async () => {
+    const db = await testDb();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const slow = async () => { calls++; await gate; return [user("ann")]; };
+    const a = syncPeople(db, T, slow), b = syncPeople(db, T, slow);
+    release();
+    expect(await a).toEqual({ added: 1, updated: 0, skipped: 0 });
+    expect(await b).toEqual(await a);
+    expect(calls).toBe(1);
+    expect(await syncPeople(db, T, slow)).toEqual({ added: 0, updated: 0, skipped: 0 });
+  });
+
   it("creates the tenant row when it is missing", async () => {
     const db = await testDb();
     expect(await syncPeople(db, T, async () => [user("ann")])).toEqual({ added: 1, updated: 0, skipped: 0 });
@@ -69,6 +102,20 @@ describe("graphFetchUsers", () => {
     expect(calls[1].url).toBe("https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType&$top=999");
     expect(new Headers(calls[1].init?.headers).get("authorization")).toBe("Bearer tok");
     expect(calls[2].url).toBe("https://graph.microsoft.com/v1.0/users?page2");
+  });
+
+  it("refuses a nextLink outside Microsoft Graph without sending the token there", async () => {
+    const urls: string[] = [];
+    const fetchFn = (async (url: string) => {
+      urls.push(url);
+      if (url.includes("/oauth2/")) return json({ access_token: "tok" });
+      return json({ value: [user("a")], "@odata.nextLink": "https://evil.example/v1.0/users?x" });
+    }) as typeof fetch;
+    await expect(graphFetchUsers(config, fetchFn)()).rejects.toThrow(/^Directory sync failed: bad nextLink$/);
+    expect(urls.every((u) => u.startsWith("https://login.microsoftonline.com/") || u.startsWith("https://graph.microsoft.com/"))).toBe(true);
+    expect(urls).toHaveLength(2);
+    const garbage = (async (url: string) => (url.includes("/oauth2/") ? json({ access_token: "tok" }) : json({ value: [], "@odata.nextLink": "not a url" }))) as typeof fetch;
+    await expect(graphFetchUsers(config, garbage)()).rejects.toThrow(/^Directory sync failed: bad nextLink$/);
   });
 
   it("throws the fixed message on a non-2xx answer", async () => {
