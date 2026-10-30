@@ -7,5 +7,6 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY examples ./examples
 RUN pnpm build
+RUN npm install -g @modelcontextprotocol/server-filesystem@2.1.0 && mkdir -p /srv/files
 EXPOSE 3978
 CMD ["node", "dist/main.js"]

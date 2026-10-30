@@ -9,4 +9,4 @@ A Microsoft Teams bot service on the Claude Agent SDK: bot definitions per tenan
 5. Message the bot in the chat; the service logs `chat <id> (<type>)` for every message (`docker compose logs app`).
 6. `docker compose exec app pnpm bot-def assign --tenant <tenantId> --chat <id> --name it-support`
 
-stdio MCP servers run inside the service container.
+stdio MCP servers run inside the service container, so install them in the image (the IT Support example's filesystem server is in the Dockerfile).

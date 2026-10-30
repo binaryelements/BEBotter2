@@ -8,8 +8,8 @@
     {
       "name": "files",
       "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem@2.1.0", "/tmp/bebotter2-files"],
+      "command": "mcp-server-filesystem",
+      "args": ["/srv/files"],
       "readOnlyTools": ["read_file", "read_text_file", "list_directory", "search_files", "get_file_info"]
     }
   ]
