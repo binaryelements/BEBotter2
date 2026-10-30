@@ -44,14 +44,15 @@ export async function recordAuthority(db: Db, id: string, authority: { type: "co
 
 export async function listActions(
   db: Db,
-  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; status?: string; before?: string; /* id of the last row of the previous page */ limit?: number },
+  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; definitionIds?: string[]; status?: string; before?: string; /* id of the last row of the previous page */ limit?: number },
 ): Promise<AuditEvent[]> {
-  if (filter.personIds?.length === 0) return [];
+  if (filter.personIds?.length === 0 || filter.definitionIds?.length === 0) return [];
   const conditions = [eq(auditEvents.tenantId, filter.tenantId)];
   if (filter.chatId) conditions.push(eq(auditEvents.chatId, filter.chatId));
   if (filter.definitionId) conditions.push(eq(auditEvents.definitionId, filter.definitionId));
   if (filter.personId) conditions.push(eq(auditEvents.personId, filter.personId));
   if (filter.personIds) conditions.push(inArray(auditEvents.personId, filter.personIds));
+  if (filter.definitionIds) conditions.push(inArray(auditEvents.definitionId, filter.definitionIds));
   if (filter.status) conditions.push(eq(auditEvents.status, filter.status));
   if (filter.before) {
     // Keyset cursor on (started_at, id), compared in SQL so microseconds are never truncated; an unknown id is ignored.

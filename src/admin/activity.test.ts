@@ -2,7 +2,7 @@ import express from "express";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { beginAction, completeAction } from "../audit/audit.js";
-import { upsertDefinition } from "../bots/definitions.js";
+import { setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { auditEvents } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
@@ -21,9 +21,11 @@ describe("activity screen", () => {
   let close: () => Promise<void>;
   const id: Record<string, string> = {};
   let bot: string;
+  let beta: string;
+  let salesId: string;
 
-  const add = async (who: string, summary: string, opts: { status?: "done" | "failed"; tool?: string; confirmedBy?: string; at?: Date; chat?: string } = {}) => {
-    const a = await beginAction(db, { tenantId: T, chatId: opts.chat ?? "chat-1", definitionId: bot, personId: id[who], kind: opts.tool ? "tool" : "message", toolName: opts.tool, summary });
+  const add = async (who: string, summary: string, opts: { status?: "done" | "failed"; tool?: string; confirmedBy?: string; at?: Date; chat?: string; def?: string } = {}) => {
+    const a = await beginAction(db, { tenantId: T, chatId: opts.chat ?? "chat-1", definitionId: opts.def ?? bot, personId: id[who], kind: opts.tool ? "tool" : "message", toolName: opts.tool, summary });
     await completeAction(db, a, { status: opts.status ?? "done", authority: opts.confirmedBy ? { type: "confirmation", personId: id[opts.confirmedBy] } : undefined });
     if (opts.at) await db.update(auditEvents).set({ startedAt: opts.at }).where(eq(auditEvents.id, a));
   };
@@ -31,18 +33,24 @@ describe("activity screen", () => {
   beforeAll(async () => {
     db = await testDb();
     await upsertTenant(db, { id: T });
-    for (const name of ["Ann", "Hal", "Sam", "Eve"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
+    for (const name of ["Ann", "Hal", "Sam", "Eve", "Oz"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
     await setRole(db, T, id.Ann, "admin");
     const sales = await createDepartment(db, T, "Sales");
     const ops = await createDepartment(db, T, "Ops");
     await setMembership(db, T, sales.id, id.Hal, "head");
     await setMembership(db, T, sales.id, id.Sam, "member");
     await setMembership(db, T, ops.id, id.Eve, "member");
+    await setMembership(db, T, ops.id, id.Oz, "member");
+    salesId = sales.id;
     bot = (await upsertDefinition(db, secretsKey, T, { name: "a", label: "Alpha", persona: "" })).id;
+    beta = (await upsertDefinition(db, secretsKey, T, { name: "b", label: "Beta", persona: "" })).id;
+    await setAllowedDepartments(db, T, bot, [sales.id]);
     await upsertChat(db, { id: "chat-1", tenantId: T, conversationType: "personal" });
     await upsertChat(db, { id: "chat-2", tenantId: T, conversationType: "personal" });
     await add("Sam", "=SUM(1,2)", { tool: "mcp__x__y", confirmedBy: "Hal" });
     await add("Sam", 'said "hi", there\nline two');
+    await add("Oz", "oz-alpha");
+    await add("Oz", "oz-beta", { def: beta });
     for (const [s, w] of [["-1", "Eve"], ["+1", "Eve"], ["@x", "Eve"], ["\tx", "Eve"]]) await add(w, s, { status: "failed", chat: "chat-2" });
     const app = express();
     app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m" }));
@@ -82,6 +90,22 @@ describe("activity screen", () => {
     expect((await get(`/admin/activity?person=${id.Eve}`, "Hal")).status).toBe(403);
     expect((await get(`/admin/activity.csv?person=${id.Eve}`, "Hal")).status).toBe(403);
     expect((await get(`/admin/activity?person=${id.Sam}`, "Hal")).status).toBe(200);
+  });
+
+  it("a head who adds an outsider sees their rows only for bots linked to the head's departments", async () => {
+    const res = await fetch(`${url}/admin/departments/${salesId}/members`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, id.Hal) },
+      body: new URLSearchParams({ personId: id.Oz, state: "member", csrf: "csrf-1" }).toString(),
+    });
+    expect(res.status).toBe(303);
+    for (const path of ["/admin/activity", "/admin/activity.csv", `/admin/activity?person=${id.Oz}`, `/admin/activity.csv?person=${id.Oz}&bot=${beta}`]) {
+      const t = await (await get(path, "Hal")).text();
+      expect(t).not.toContain("oz-beta");
+      if (!path.includes(beta)) expect(t).toContain("oz-alpha");
+    }
+    expect(await (await get("/admin/activity", "Ann")).text()).toContain("oz-beta");
   });
 
   it("csv has headers, RFC 4180 quoting and neutralises formula starters", async () => {

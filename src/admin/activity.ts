@@ -3,7 +3,7 @@ import express from "express";
 import type { Request, Router } from "express";
 import { listActions } from "../audit/audit.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, departmentMembers, people } from "../db/schema.js";
+import { botDefinitions, definitionDepartments, departmentMembers, people } from "../db/schema.js";
 import type { AuditEvent } from "../db/schema.js";
 import { isAdmin } from "./access.js";
 import { html, layout } from "./html.js";
@@ -47,13 +47,17 @@ export function activityRoutes(db: Db): Router {
   async function fetchRows(req: Request, res: express.Response, limit: number) {
     const { actor } = adminOf(res);
     let personIds: string[] | undefined;
+    let definitionIds: string[] | undefined;
     let personId = q(req, "person");
     if (!isAdmin(actor)) {
-      const rows = await db
-        .select({ id: departmentMembers.personId })
-        .from(departmentMembers)
-        .where(inArray(departmentMembers.departmentId, actor.headOf.length ? actor.headOf : [""]));
-      personIds = [...new Set(rows.map((r) => r.id))];
+      const headOf = actor.headOf.length ? actor.headOf : [""];
+      const [members, defs] = await Promise.all([
+        db.select({ id: departmentMembers.personId }).from(departmentMembers).where(inArray(departmentMembers.departmentId, headOf)),
+        db.select({ id: definitionDepartments.definitionId }).from(definitionDepartments).where(inArray(definitionDepartments.departmentId, headOf)),
+      ]);
+      personIds = [...new Set(members.map((r) => r.id))];
+      // A head sees only their people's rows for bots linked to their departments: adding someone does not reveal their other bots.
+      definitionIds = [...new Set(defs.map((r) => r.id))];
       if (personId && !personIds.includes(personId)) return page(res, 403, "Not allowed.");
       // A permitted person filter narrows the head's scope, so the department list is no longer needed.
       if (personId) personIds = undefined;
@@ -65,6 +69,7 @@ export function activityRoutes(db: Db): Router {
       status: q(req, "status"),
       personId,
       personIds,
+      definitionIds,
       before: q(req, "before"),
       limit,
     });
