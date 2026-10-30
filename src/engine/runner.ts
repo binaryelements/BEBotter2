@@ -7,6 +7,7 @@ import { mcpServerConfigs } from "../bots/definitions.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
+import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
 import type { BotDefinition, Person } from "../db/schema.js";
@@ -154,7 +155,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     maxTurns: 25,
     // the model's process gets no service secrets, only what it needs to run
     env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-    mcpServers: { ...(computer ? { computer } : {}), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey) },
+    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey) },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };
