@@ -5,7 +5,7 @@ import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { routineMcpServer } from "./mcp.js";
-import { listRoutines } from "./store.js";
+import { createRoutine, listRoutines } from "./store.js";
 
 type Handler = (args: Record<string, string>) => Promise<{ isError?: boolean; content: { text: string }[] }>;
 const toolsOf = (s: ReturnType<typeof routineMcpServer>) => (s.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
@@ -41,5 +41,14 @@ describe("routine mcp", () => {
     const t = toolsOf(routineMcpServer({ db }, { ...ctx, post: async (x) => void posted.push(x) }));
     await t.post.handler({ text: "hi" });
     expect(posted).toEqual(["hi"]);
+  });
+
+  it("remind refuses past 50 pending reminders in the chat", async () => {
+    const t = toolsOf(routineMcpServer({ db }, ctx));
+    const runAt = new Date(Date.now() + 3600_000);
+    while ((await listRoutines(db, "t1")).length < 50) await createRoutine(db, "t1", { definitionId: ctx.definitionId, chatId: "c1", prompt: "x", runAt, createdByPersonId: ctx.personId });
+    const r = await t.remind.handler({ at: runAt.toISOString(), prompt: "one more" });
+    expect(r.isError).toBe(true);
+    expect(await listRoutines(db, "t1")).toHaveLength(50);
   });
 });

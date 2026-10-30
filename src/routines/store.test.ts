@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
-import { setRole } from "../org/directory.js";
+import { DirectoryError, setRole } from "../org/directory.js";
 import { getTenantSettings, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { claimDue, createRoutine, deleteRoutine, listRoutines, updateRoutine } from "./store.js";
 
@@ -80,5 +80,30 @@ describe("routines store", () => {
     await expect(deleteRoutine(db, "t2", r.id)).rejects.toThrow("No such");
     await deleteRoutine(db, "t1", r.id);
     expect(await listRoutines(db, "t1")).toEqual([]);
+  });
+
+  it("updateRoutine refuses an empty or bad schedule and leaves the routine unchanged", async () => {
+    const r = await createRoutine(db, "t1", { ...base(), schedule: "0 7 * * *" });
+    for (const bad of ["", "nope"]) await expect(updateRoutine(db, "t1", r.id, { schedule: bad })).rejects.toThrow(DirectoryError);
+    expect((await listRoutines(db, "t1"))[0].schedule).toBe("0 7 * * *");
+  });
+
+  describe("daylight saving (schedules are local wall-clock time)", () => {
+    beforeEach(async () => {
+      await setTenantSettings(db, "t1", { ...(await getTenantSettings(db, "t1")), timezone: "America/New_York" });
+    });
+    it("a time that does not exist is skipped on spring-forward day", async () => {
+      await createRoutine(db, "t1", { ...base(), schedule: "30 2 * * *" });
+      // 2026-03-08: 02:00 EST -> 03:00 EDT, so 02:30 never happens
+      for (const iso of ["2026-03-08T06:30:00Z", "2026-03-08T07:30:00Z", "2026-03-08T08:30:00Z"]) expect(await claimDue(db, new Date(iso))).toEqual([]);
+      expect(await claimDue(db, new Date("2026-03-09T06:30:00Z"))).toHaveLength(1); // 02:30 EDT next day
+    });
+    it("a repeated time runs once on fall-back day", async () => {
+      await createRoutine(db, "t1", { ...base(), schedule: "30 1 * * *" });
+      // 2026-11-01: 01:30 EDT (05:30Z) then 01:30 EST (06:30Z)
+      expect(await claimDue(db, new Date("2026-11-01T05:30:00Z"))).toHaveLength(1);
+      expect(await claimDue(db, new Date("2026-11-01T06:30:00Z"))).toEqual([]);
+      expect(await claimDue(db, new Date("2026-11-02T06:30:00Z"))).toHaveLength(1); // 01:30 EST next day
+    });
   });
 });

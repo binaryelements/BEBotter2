@@ -69,7 +69,7 @@ export async function updateRoutine(
   patch: Partial<Pick<Routine, "prompt" | "schedule" | "quiet" | "enabled" | "grantPersonId">>,
 ): Promise<Routine> {
   if (patch.prompt !== undefined) checkPrompt(patch.prompt);
-  if (patch.schedule) checkSchedule(patch.schedule);
+  if (patch.schedule !== undefined) checkSchedule(patch.schedule ?? "");
   if (patch.grantPersonId) await checkGrant(db, tenantId, patch.grantPersonId);
   const [row] = await db.update(routines).set(patch).where(and(eq(routines.id, id), eq(routines.tenantId, tenantId))).returning();
   if (!row) throw new DirectoryError("No such routine");
@@ -80,6 +80,10 @@ export async function deleteRoutine(db: Db, tenantId: string, id: string): Promi
   const gone = await db.delete(routines).where(and(eq(routines.id, id), eq(routines.tenantId, tenantId))).returning({ id: routines.id });
   if (!gone.length) throw new DirectoryError("No such routine");
 }
+
+// Local date and hh:mm in the tenant zone: a repeated wall-clock time after a fall-back runs once.
+const localMinute = (d: Date, timeZone: string) => new Intl.DateTimeFormat("en-CA", { timeZone, hourCycle: "h23", dateStyle: "short", timeStyle: "short" }).format(d);
+const sameLocalMinute = (a: Date, b: Date, timeZone: string) => localMinute(a, timeZone) === localMinute(b, timeZone);
 
 /** Routines due at `now`, each claimed by one conditional UPDATE so concurrent ticks or instances run it once. */
 export async function claimDue(db: Db, now: Date): Promise<Routine[]> {
@@ -100,9 +104,9 @@ export async function claimDue(db: Db, now: Date): Promise<Routine[]> {
   const claimed: Routine[] = [];
   for (const { r, timezone } of candidates) {
     let due = false;
-    if (r.schedule) {
+    if (r.schedule !== null) {
       try {
-        due = cronMatches(parseCron(r.schedule), now, timezone);
+        due = cronMatches(parseCron(r.schedule), now, timezone) && !(r.lastRunAt && sameLocalMinute(r.lastRunAt, now, timezone));
       } catch {
         due = false; // a stored schedule that no longer parses never runs
       }
@@ -110,7 +114,7 @@ export async function claimDue(db: Db, now: Date): Promise<Routine[]> {
     if (!due) continue;
     const [row] = await db
       .update(routines)
-      .set({ lastRunAt: minuteStart, ...(r.schedule ? {} : { enabled: false }) })
+      .set({ lastRunAt: minuteStart, ...(r.schedule !== null ? {} : { enabled: false }) })
       .where(and(eq(routines.id, r.id), eq(routines.enabled, true), or(isNull(routines.lastRunAt), sql`${routines.lastRunAt} < ${minuteStart}`)))
       .returning();
     if (row) claimed.push(row);
