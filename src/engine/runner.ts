@@ -16,6 +16,7 @@ export type RunnerDeps = { db: Db; queryFn: typeof query; confirmations: Confirm
 export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
 export type RunResult = { text: string; costUsd: number; sessionId: string };
 
+const TRANSIENT = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "UND_ERR_SOCKET"]);
 const MAX_AUDIT_INPUT = 2000;
 const MAX_CARD_ARGS = 4000;
 const FAILED_TEXT = "I couldn't finish that.";
@@ -121,11 +122,25 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     await completeAction(db, auditId, { status, ...(costUsd !== undefined ? { costUsd } : {}) });
   };
 
-  const attempt = async (resume?: string): Promise<SDKResultMessage | undefined> => {
+  const once = async (resume?: string): Promise<SDKResultMessage | undefined> => {
     for await (const msg of deps.queryFn({ prompt: turn.text, options: { ...options, ...(resume ? { resume } : {}) } })) {
       if (msg.type === "result") return msg;
     }
     return undefined;
+  };
+  // one transient-network retry per turn, so with the resume retry a turn runs at most three attempts
+  let networkRetried = false;
+  const attempt = async (resume?: string): Promise<SDKResultMessage | undefined> => {
+    try {
+      return await once(resume);
+    } catch (err) {
+      const e = err as { code?: string; message?: string; cause?: { code?: string } };
+      const code = e.cause?.code ?? e.code;
+      if (networkRetried || !((code && TRANSIENT.has(code)) || e.message === "fetch failed")) throw err;
+      networkRetried = true;
+      console.warn("engine call failed, retrying once", code);
+      return once(resume);
+    }
   };
   // a "success" with is_error carries API error text in result, which must not reach the chat
   const succeeded = (msg?: SDKResultMessage) => msg?.subtype === "success" && !msg.is_error;

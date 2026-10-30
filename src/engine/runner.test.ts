@@ -193,6 +193,27 @@ describe("runTurn", () => {
     errors.mockRestore();
   });
 
+  it("retries once with the same resume when the network drops", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(sessions).values({ chatId: "c1", definitionId: definition.id, sdkSessionId: "s-old", updatedAt: new Date() });
+    const seen: Options[] = [];
+    const queryFn = (({ options }: { prompt: string; options: Options }) => {
+      seen.push(options);
+      return (async function* () {
+        if (seen.length === 1) throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+        yield { type: "result", subtype: "success", result: "Back.", session_id: "s-old", total_cost_usd: 0.002, num_turns: 1, duration_ms: 10, is_error: false };
+      })();
+    }) as unknown as typeof query;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await runTurn(deps(db, queryFn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
+    });
+    expect(result.text).toBe("Back.");
+    expect(seen.map((o) => o.resume)).toEqual(["s-old", "s-old"]);
+    warn.mockRestore();
+  });
+
   it("passes the model's process only the environment it needs", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-test");
     vi.stubEnv("CLAUDE_CONFIG_DIR", "/tmp/claude-config");
