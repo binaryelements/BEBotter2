@@ -27,6 +27,7 @@ const runnerDeps: RunnerDeps = {
   computerImage: config.computerImage,
   filesDir: config.filesDir,
   ssh: systemSsh(),
+  publicUrl: config.publicUrl,
 };
 const fetchUsers = graphFetchUsers(config);
 const app = createTeamsApp({ db, runTurn: (turn) => runTurn(runnerDeps, turn), confirmations, botName: config.botName });

@@ -10,6 +10,7 @@ import { adminOf, wrap } from "./http.js";
 import { oidcRoutes, page } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
 import { peopleRoutes } from "./people.js";
+import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 
@@ -21,11 +22,13 @@ export function adminRouter(deps: AdminDeps): Router {
   const router = express.Router();
 
   router.use((_req, res, next) => {
-    res.set({ "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'" });
+    res.set({ "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });
     next();
   });
   router.use(oidcRoutes(deps));
   router.use(express.urlencoded({ extended: false }));
+  // before the admin guard: any signed-in person of the tenant may open their own secret link
+  router.use(secretRoutes(db, deps.config.secretsKey));
 
   // Everything mounted after this guard requires a signed-in admin or head.
   router.use(

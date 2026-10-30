@@ -24,7 +24,7 @@ describe("connections mcp", () => {
     await upsertTenant(db, { id: "t1" });
     const definitionId = (await upsertDefinition(db, key, "t1", { name: "ops", label: "Ops", persona: "p" })).id;
     personId = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" })).id;
-    const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "up 3 days" }), secretsKey: key }, { tenantId: "t1", definitionId, personId, confirmedBy: () => confirmer });
+    const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "up 3 days" }), secretsKey: key, publicUrl: "https://bot.example.test" }, { tenantId: "t1", definitionId, personId, confirmedBy: () => confirmer });
     const tools = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
     call = (name, args = {}) => tools[name].handler(args);
   });
@@ -80,5 +80,18 @@ describe("connections mcp", () => {
     expect((await getConnection(db, "t1", "tickets"))!.status).toBe("awaiting-approval");
     expect((await call("approve", { ...details, readOnlyTools: ["get", "list"] })).isError).toBeUndefined();
     expect((await getConnection(db, "t1", "tickets"))!.status).toBe("active");
+  });
+
+  it("an http or mcp request that needs a secret returns a one-time link; verify waits for it", async () => {
+    const r = await call("request", { kind: "mcp", name: "desk", target: "https://mcp.example.test/desk", mode: "read-only", headerName: "X-Api-Key", needsSecret: true });
+    const link = r.content[0].text.match(/Secret link: (\S+)/)?.[1];
+    expect(link).toMatch(/^https:\/\/bot\.example\.test\/admin\/secret\/[A-Za-z0-9_-]{43}$/);
+    expect((await call("verify", { name: "desk" })).content[0].text).toBe("desk: pending\nWaiting for the secret");
+    // asking again (say the link expired) gives a fresh one
+    const again = (await call("request", { kind: "mcp", name: "desk", target: "https://mcp.example.test/desk", mode: "read-only", headerName: "X-Api-Key" })).content[0].text;
+    expect(again).toContain("Secret link: ");
+    expect(again).not.toContain(link);
+    const plain = await call("request", { kind: "mcp", name: "open", target: "https://mcp.example.test/open", mode: "read-only" });
+    expect(plain.content[0].text).not.toContain("Secret link");
   });
 });

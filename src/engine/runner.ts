@@ -25,6 +25,8 @@ export type RunnerDeps = {
   computerImage: string;
   filesDir: string;
   ssh: SshRunner;
+  /** Base URL of this service, for the one-time secret links. */
+  publicUrl: string;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
 };

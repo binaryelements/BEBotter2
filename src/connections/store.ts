@@ -18,7 +18,7 @@ export type ConnectionRequest = {
   target: string;
   mode: ConnectionMode;
   config: ConnectionConfig;
-  /** http/mcp: the person must supply a secret through a one-time link (Task 6). */
+  /** http/mcp: the person supplies a secret through a one-time link; it needs `auth` (http) or `headerName` (mcp) to say where it goes. */
   needsSecret?: boolean;
   definitionId: string;
   personId: string;
@@ -77,6 +77,10 @@ function checkRequest(input: ConnectionRequest): ConnectionConfig {
   return fail("Kind must be ssh, http or mcp");
 }
 
+/** Stored as its place: an http `auth` or an mcp `headerName` is where the secret goes, so having one means a secret is needed. */
+export const needsSecret = (c: Pick<Connection, "kind" | "config">) =>
+  (c.kind === "http" && "auth" in c.config && !!c.config.auth) || (c.kind === "mcp" && "headerName" in c.config && !!c.config.headerName);
+
 const byName = (tenantId: string, name: string) => and(eq(connections.tenantId, tenantId), eq(connections.name, name));
 const byId = (tenantId: string, id: string) => and(eq(connections.tenantId, tenantId), eq(connections.id, id));
 
@@ -119,6 +123,7 @@ export async function setLinked(db: Db, tenantId: string, definitionId: string, 
 export async function requestConnection(deps: ConnectionDeps, tenantId: string, input: ConnectionRequest): Promise<{ connection: Connection; publicKey?: string }> {
   const { db } = deps;
   const config = checkRequest(input);
+  if (input.needsSecret && !needsSecret({ kind: input.kind, config })) fail("Say where the secret goes: auth for http, headerName for mcp");
   const definition = await getDefinition(db, tenantId, input.definitionId);
   if (!definition) fail("Bot not found");
   const existing = await getConnection(db, tenantId, input.name);
@@ -179,6 +184,7 @@ export async function verifyConnection(
   const c = await linkedConnection(deps.db, tenantId, definitionId, name);
   if (c.status === "revoked") fail("The connection was revoked");
   if (c.status === "blocked") fail(BLOCKED);
+  if (needsSecret(c) && !c.secretCipher) return { status: c.status, output: "Waiting for the secret" };
   if (c.kind !== "ssh") fail(`Verify is not available yet for ${c.kind} connections`);
   const r = await exec(deps, c, "exit 0");
   if (r.hostKeyMismatch) {

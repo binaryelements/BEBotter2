@@ -22,6 +22,8 @@ const SESSION_SECONDS = 8 * 3600;
 const LOGIN_SECONDS = 10 * 60;
 const authority = (tid: string) => `https://login.microsoftonline.com/${encodeURIComponent(tid)}`;
 const random = () => randomBytes(32).toString("base64url");
+/** Only plain paths under /admin/ may be returned to after sign-in, so the redirect cannot leave the site. */
+const safeReturn = (v: unknown): v is string => typeof v === "string" && /^\/admin(\/[A-Za-z0-9_-]+)+$/.test(v);
 
 export function page(res: Response, status: number, message: string) {
   res.status(status).type("html").send(layout({ title: "BE Botter admin", body: html`<p>${message}</p>` }));
@@ -34,9 +36,10 @@ export function oidcRoutes(deps: OidcDeps): Router {
   const redirectUri = `${config.publicUrl}/admin/auth/callback`;
   const router = express.Router();
 
-  router.get("/auth/login", (_req, res) => {
+  router.get("/auth/login", (req, res) => {
     const state = random(), nonce = random(), verifier = random();
-    res.append("Set-Cookie", cookie(LOGIN_COOKIE, signToken(lKey, { state, nonce, verifier, exp: Date.now() + LOGIN_SECONDS * 1000 }), LOGIN_SECONDS));
+    const returnTo = safeReturn(req.query.returnTo) ? { returnTo: req.query.returnTo } : {};
+    res.append("Set-Cookie", cookie(LOGIN_COOKIE, signToken(lKey, { state, nonce, verifier, ...returnTo, exp: Date.now() + LOGIN_SECONDS * 1000 }), LOGIN_SECONDS));
     const query = new URLSearchParams({
       client_id: config.teams.clientId,
       response_type: "code",
@@ -78,11 +81,13 @@ export function oidcRoutes(deps: OidcDeps): Router {
       const person = await upsertPerson(db, { tenantId: claims.tid, aadObjectId: claims.oid, name: claims.name });
       await setAdminFromEmail(db, claims.tid, person.id, claims.email, config.adminEmails);
       const actor = await loadActor(db, claims.tid, person.id);
-      if (!actor || !mayEnter(actor)) return page(res, 403, "You do not have access to the admin page.");
+      const back = safeReturn(login.returnTo) ? login.returnTo : "/admin";
+      // anyone in the tenant may sign in to open their own secret link; the admin guard still refuses them everywhere else
+      if (!actor || (!mayEnter(actor) && !back.startsWith("/admin/secret/"))) return page(res, 403, "You do not have access to the admin page.");
 
       const session = { personId: person.id, tenantId: claims.tid, csrf: random(), exp: Date.now() + SESSION_SECONDS * 1000 };
       res.append("Set-Cookie", cookie(SESSION_COOKIE, signSession(sKey, session), SESSION_SECONDS));
-      res.redirect(303, "/admin");
+      res.redirect(303, back);
     } catch (e) {
       // Answered here so no stack trace ever reaches the browser.
       console.error("admin sign-in failed", e);

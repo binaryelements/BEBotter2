@@ -2,7 +2,8 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Connection } from "../db/schema.js";
-import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, requestConnection, runSsh, verifyConnection } from "./store.js";
+import { createSecretLink } from "./secret-links.js";
+import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, needsSecret, requestConnection, runSsh, verifyConnection } from "./store.js";
 import type { ConnectionDeps } from "./store.js";
 
 type Ctx = { tenantId: string; definitionId: string; personId: string; confirmedBy: () => string | undefined };
@@ -18,7 +19,7 @@ const facts = (c: Connection) => `${c.name}: ${c.kind} ${c.target}, ${c.mode}, $
 
 const READ_ONLY_RULE = "Read-only use must not change anything on the target.";
 
-export function connectionsMcpServer(deps: ConnectionDeps, ctx: Ctx): McpSdkServerConfigWithInstance {
+export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string }, ctx: Ctx): McpSdkServerConfigWithInstance {
   const { db } = deps;
   const { tenantId, definitionId } = ctx;
   const run = async (f: () => Promise<string>) => {
@@ -39,7 +40,8 @@ export function connectionsMcpServer(deps: ConnectionDeps, ctx: Ctx): McpSdkServ
         "request",
         "Request access to a system. ssh: target is the host, give username (and port if not 22); you get the public key to have installed. " +
           "http: target is the base URL; auth says where the service adds the secret. mcp: target is the server URL; readOnlyTools names the tools that only read. " +
-          "read-only connections must use an account or token that can only read. Never ask anyone to paste a password, key or token into the chat.",
+          "read-only connections must use an account or token that can only read. " +
+          "Secrets are never typed into the chat: when an http or mcp connection needs one, the result holds a one-time link (30 minutes, only for the person asking); send them that link instead.",
         {
           kind: z.enum(["ssh", "http", "mcp"]),
           name: z.string(),
@@ -61,7 +63,10 @@ export function connectionsMcpServer(deps: ConnectionDeps, ctx: Ctx): McpSdkServ
             const { connection, publicKey } = await requestConnection(deps, tenantId, {
               kind: a.kind, name: a.name, target: a.target, mode: a.mode, config, needsSecret: a.needsSecret, definitionId, personId: ctx.personId,
             });
-            return [facts(connection), ...(publicKey ? [`Public key: ${publicKey}`] : [])].join("\n");
+            const link = needsSecret(connection) && !connection.secretCipher && connection.status !== "revoked"
+              ? await createSecretLink(db, tenantId, connection.id, ctx.personId, deps.publicUrl)
+              : undefined;
+            return [facts(connection), ...(publicKey ? [`Public key: ${publicKey}`] : []), ...(link ? [`Secret link: ${link}`] : [])].join("\n");
           }),
       ),
       tool(

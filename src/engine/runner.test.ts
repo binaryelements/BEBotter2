@@ -71,7 +71,7 @@ const filesDir = fs.mkdtempSync(path.join(os.tmpdir(), "bebotter2-files-"));
 
 function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()) {
   const docker = fakeDockerClient();
-  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir, ssh: fakeSsh() };
+  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir, ssh: fakeSsh(), publicUrl: "https://bot.example.test" };
 }
 
 afterEach(() => vi.useRealTimers());

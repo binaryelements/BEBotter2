@@ -191,11 +191,12 @@ describe("connections store", () => {
     expect(await db.select().from(connections)).toEqual([]);
   });
 
-  it("http and mcp requests are stored pending without a key; verify is not available yet", async () => {
+  it("http and mcp requests are stored pending without a key; verify waits for a needed secret, otherwise is not available yet", async () => {
     const { connection, publicKey } = await request({ kind: "http", name: "helpdesk", target: "https://api.example.test/v1", config: { auth: { in: "header", name: "Authorization", prefix: "Bearer " } } });
     expect(publicKey).toBeUndefined();
     expect(connection).toMatchObject({ kind: "http", status: "pending", secretCipher: null, publicKey: null });
-    await expect(verifyConnection(deps, "t1", defId, "helpdesk")).rejects.toThrow(/not available yet for http connections/);
+    expect(await verifyConnection(deps, "t1", defId, "helpdesk")).toEqual({ status: "pending", output: "Waiting for the secret" });
+    await expect(request({ kind: "http", name: "open", target: "https://api.example.test/v1", config: {}, needsSecret: true })).rejects.toThrow(/where the secret goes/);
     await request({ kind: "mcp", name: "tickets", target: "https://mcp.example.test/mcp", config: { readOnlyTools: ["list_tickets"] } });
     await expect(verifyConnection(deps, "t1", defId, "tickets")).rejects.toThrow(/not available yet for mcp connections/);
   });
