@@ -15,7 +15,8 @@ export type TeamsAppDeps = {
 };
 
 export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> {
-  const app = new AgentApplication<TurnState>({ startTypingTimer: true, removeRecipientMention: true });
+  // longRunningMessages answers the HTTP request at once; a turn can wait minutes on a confirmation card
+  const app = new AgentApplication<TurnState>({ startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true });
 
   app.onConversationUpdate("membersAdded", async (ctx) => {
     await ctx.sendActivity(membersAddedGreeting(deps.botName));
