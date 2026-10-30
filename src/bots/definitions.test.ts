@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertTenant } from "../org/org.js";
 import { assignToChat, botDefinitionInput, definitionsForChat, mcpServerConfigs, upsertDefinition } from "./definitions.js";
@@ -20,6 +21,12 @@ describe("bot definitions", () => {
     expect(mcpServerConfigs(def, key)).toEqual({
       tickets: { type: "http", url: "https://mcp.example.test/", headers: { Authorization: "Bearer s3cret" } },
     });
+  });
+
+  it("creates the tenant row when the tenant is not known yet", async () => {
+    const db = await testDb();
+    await upsertDefinition(db, Buffer.alloc(32, 3), "fresh", { name: "a", label: "A", persona: "one" });
+    expect((await db.select().from(tenants)).map((t) => t.id)).toEqual(["fresh"]);
   });
 
   it("assigns a definition to a chat and lists it", async () => {

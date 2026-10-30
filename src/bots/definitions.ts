@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { botDefinitions, chatAssignments } from "../db/schema.js";
 import type { BotDefinition, McpServerRecord } from "../db/schema.js";
+import { upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
 export const botDefinitionInput = z.object({
@@ -42,6 +43,7 @@ export async function upsertDefinition(db: Db, secretsKey: Buffer, tenantId: str
     ...(headers && Object.keys(headers).length > 0 ? { headersCipher: encrypt(secretsKey, JSON.stringify(headers)) } : {}),
   }));
   const fields = { label: p.label, persona: p.persona, model: p.model, webSearch: p.webSearch, computer: p.computer, mcpServers };
+  await upsertTenant(db, { id: tenantId }); // the definition row references tenants
   const [row] = await db
     .insert(botDefinitions)
     .values({ id: crypto.randomUUID(), tenantId, name: p.name, ...fields })
