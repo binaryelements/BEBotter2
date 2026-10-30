@@ -1,6 +1,6 @@
-import { and, asc, count, eq, ne } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { departmentMembers, departments, people } from "../db/schema.js";
+import { definitionDepartments, departmentMembers, departments, people } from "../db/schema.js";
 import type { Department } from "../db/schema.js";
 
 export class DirectoryError extends Error {}
@@ -40,7 +40,7 @@ export async function listPeople(db: Db, tenantId: string): Promise<PersonRow[]>
     .leftJoin(departmentMembers, eq(departmentMembers.personId, people.id))
     .leftJoin(departments, eq(departments.id, departmentMembers.departmentId))
     .where(eq(people.tenantId, tenantId))
-    .orderBy(asc(people.name), asc(departments.name));
+    .orderBy(asc(people.name), asc(people.id), asc(departments.name));
   const byId = new Map<string, PersonRow>();
   for (const { person, departmentId, departmentName, isHead } of rows) {
     let row = byId.get(person.id);
@@ -58,11 +58,13 @@ export async function setRole(db: Db, tenantId: string, personId: string, role: 
     const [target] = await tx.select({ role: people.role }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
     if (!target) throw notFound();
     if (target.role === "admin" && role === "user") {
-      const [{ n }] = await tx
-        .select({ n: count() })
+      // Lock every admin row so two concurrent demotions serialize; a concurrency test is impractical on the single-connection test database.
+      const admins = await tx
+        .select({ id: people.id })
         .from(people)
-        .where(and(eq(people.tenantId, tenantId), eq(people.role, "admin"), ne(people.id, personId)));
-      if (n === 0) throw new DirectoryError("Keep at least one admin");
+        .where(and(eq(people.tenantId, tenantId), eq(people.role, "admin")))
+        .for("update");
+      if (!admins.some((a) => a.id !== personId)) throw new DirectoryError("Keep at least one admin");
     }
     await tx.update(people).set({ role }).where(eq(people.id, personId));
   });
@@ -80,7 +82,7 @@ export async function listDepartments(db: Db, tenantId: string): Promise<Departm
     .leftJoin(departmentMembers, eq(departmentMembers.departmentId, departments.id))
     .leftJoin(people, eq(people.id, departmentMembers.personId))
     .where(eq(departments.tenantId, tenantId))
-    .orderBy(asc(departments.name), asc(people.name));
+    .orderBy(asc(departments.name), asc(departments.id), asc(people.name), asc(people.id));
   const byId = new Map<string, DepartmentRow>();
   for (const r of rows) {
     let row = byId.get(r.id);
@@ -104,6 +106,10 @@ export async function renameDepartment(db: Db, tenantId: string, id: string, nam
 }
 
 export async function deleteDepartment(db: Db, tenantId: string, id: string): Promise<void> {
+  await requireDepartment(db, tenantId, id);
+  // Deleting the last link would silently make a restricted bot unrestricted.
+  const [link] = await db.select({ id: definitionDepartments.definitionId }).from(definitionDepartments).where(eq(definitionDepartments.departmentId, id)).limit(1);
+  if (link) throw new DirectoryError("Remove it from bots first");
   const rows = await db.delete(departments).where(and(eq(departments.id, id), eq(departments.tenantId, tenantId))).returning({ id: departments.id });
   if (rows.length === 0) throw notFound();
 }
@@ -129,7 +135,8 @@ export async function setMembership(
 }
 
 export async function setAdminFromEmail(db: Db, tenantId: string, personId: string, email: string, adminEmails: string[]): Promise<void> {
-  const lower = email.toLowerCase();
+  const lower = email.trim().toLowerCase();
+  if (!lower) return;
   const promote = adminEmails.some((e) => e.toLowerCase() === lower);
   const rows = await db
     .update(people)

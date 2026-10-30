@@ -1,9 +1,10 @@
+import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { definitionDepartments } from "../db/schema.js";
 import { upsertDefinition } from "../bots/definitions.js";
-import { createDepartment, setMembership, setRole } from "../org/directory.js";
+import { DirectoryError, createDepartment, deleteDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { isAdmin, loadActor, mayEditPersona, mayEnter, mayManageDepartment, mayManagePerson, mayUseDefinition } from "./access.js";
 import type { Actor } from "./access.js";
@@ -49,6 +50,29 @@ describe("access", () => {
   it("gates people and personas", async () => {
     expect([await mayManagePerson(db, admin, inB), await mayManagePerson(db, head, inA), await mayManagePerson(db, head, inB), await mayManagePerson(db, user, inA)]).toEqual([true, true, false, false]);
     expect([await mayEditPersona(db, admin, open), await mayEditPersona(db, head, restricted), await mayEditPersona(db, head, open), await mayEditPersona(db, user, restricted)]).toEqual([true, true, false, false]);
+  });
+
+  it("keeps restricted definitions restricted when their department is deleted", async () => {
+    await expect(deleteDepartment(db, "t1", depA)).rejects.toThrow(new DirectoryError("Remove it from bots first"));
+    expect(await mayUseDefinition(db, "t1", inB, restricted)).toBe(false);
+    const d = await createDepartment(db, "t1", "Tmp");
+    const key = Buffer.alloc(32);
+    const def = (await upsertDefinition(db, key, "t1", { name: "tmp", label: "Tmp", persona: "" })).id;
+    await db.insert(definitionDepartments).values({ definitionId: def, departmentId: d.id });
+    await expect(deleteDepartment(db, "t1", d.id)).rejects.toThrow("Remove it from bots first");
+    await db.delete(definitionDepartments).where(eq(definitionDepartments.definitionId, def));
+    await deleteDepartment(db, "t1", d.id);
+  });
+
+  it("rejects ids from another tenant for admin and head actors", async () => {
+    await upsertTenant(db, { id: "t2" });
+    const foreign = (await upsertPerson(db, { tenantId: "t2", aadObjectId: "f", name: "F" })).id;
+    const foreignDef = (await upsertDefinition(db, Buffer.alloc(32), "t2", { name: "fd", label: "FD", persona: "" })).id;
+    for (const a of [admin, head]) {
+      expect(await mayManagePerson(db, a, foreign)).toBe(false);
+      expect(await mayEditPersona(db, a, foreignDef)).toBe(false);
+    }
+    expect(await mayUseDefinition(db, "t1", admin.personId, foreignDef)).toBe(false);
   });
 
   it("gates definition use", async () => {

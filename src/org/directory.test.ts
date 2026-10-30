@@ -40,6 +40,9 @@ describe("directory", () => {
     await rejects(setMembership(db, "t1", dept.id, other.id, "member"));
     const mine = await person(db, "t1", "Mine");
     await rejects(setMembership(db, "t1", dept.id, mine.id, "member"));
+    const own = await createDepartment(db, "t1", "Own");
+    await rejects(setMembership(db, "t1", own.id, other.id, "member"));
+    await deleteDepartment(db, "t1", own.id);
     expect(await listDepartments(db, "t1")).toEqual([]);
   });
 
@@ -57,6 +60,13 @@ describe("directory", () => {
     expect((await listDepartments(db, "t1"))[0].name).toBe("Revenue");
     await deleteDepartment(db, "t1", d.id);
     expect(await listDepartments(db, "t1")).toEqual([]);
+  });
+
+  it("ignores an empty email", async () => {
+    const e = await person(db, "t1", "Eve");
+    await setAdminFromEmail(db, "t1", e.id, " ", [""]);
+    const r = (await listPeople(db, "t1")).find((x) => x.id === e.id)!;
+    expect([r.role, r.email]).toEqual(["user", null]);
   });
 
   it("promotes listed emails case-insensitively and never demotes", async () => {
