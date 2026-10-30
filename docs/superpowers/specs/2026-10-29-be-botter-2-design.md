@@ -99,6 +99,8 @@ A bot definition is the unit an admin creates and edits. **[M]** Fields:
   `change` connection's credential is never placed in the computer; it is used only by a
   connection tool in the service process, and every call to that tool is gated by confirmation.
   So the shell can look anywhere it has been given read access and can change nothing on its own.
+- Connections are set up from the chat, led by the bot (section 4.9). Nobody pastes a private key
+  anywhere. **[M, 2026-10-30]**
 - Computer: on or off. A computer is a Linux container with the bot's read-only connection
   credentials placed as files or environment and no host mounts. **[M]** One container per bot
   definition for service-account bots, and one per person for bots whose identity is `person`, so
@@ -190,9 +192,56 @@ else: **[C]**
   departments' members. **[M]**
 - **Assignments**: which definitions live in which chats; chats appear once the app is in them.
 - **Activity**: the audit trail.
+- **Knowledge**: the tenant's notes, their history and rollback (4.10). Added 2026-10-30.
 - **Settings**: brand name, retention, default model, Anthropic spend cap.
 
 Minimal copy. No explainer text.
+
+### 4.9 Connection setup led by the bot
+
+Added 2026-10-30. **[M]** Staff give a bot access to a system by following the bot's instructions in
+the chat. Flow **[C]**:
+
+1. Someone asks a bot for access ("get access to pve1, read-only").
+2. The service generates a key pair for that connection (ed25519). The private key is stored
+   encrypted and never leaves the service in readable form, except into the bot's container for a
+   `read-only` connection (4.2). The model never sees it.
+3. The bot posts copy-paste instructions: create a dedicated account on the target, add the public
+   key to it, and, for `change`, the exact sudo rights it is asking for. Windows (OpenSSH) and
+   Proxmox (API token with a named role) get their own instructions.
+4. The person replies that it is done. The bot tests the connection and records the host's key
+   fingerprint (trust on first use, confirmed by the person who set it up). A later fingerprint
+   change blocks the connection until an admin accepts it.
+5. A connection asked for as `change` needs an admin or a head of a department allowed to use the
+   bot to confirm it on a card before it becomes active; `read-only` is active on the person's done.
+6. Admins see, rename and revoke connections on the admin page (Bots, Connections tab). Revoke
+   deletes our key and tells the admin which line to remove on the target.
+
+Network reach: the bot's container reaches targets over the tailnet. A target outside the tailnet
+is out of scope for version one. **[C]**
+
+### 4.10 Shared knowledge
+
+Added 2026-10-30. **[M]** Bots build up knowledge about the company's systems and share it: one
+knowledge base per tenant, read and written by all its bots. Knowledge must be kept safely. **[M]**
+
+- Notes: short Markdown documents with a path-like name (`hosts/pve1`, `runbooks/backup-failed`,
+  `known-issues`). **[C]**
+- Bots read, search and write notes only through knowledge tools in the service process; notes are
+  never loose files in a bot's container. Before working on a system the bot reads its notes;
+  after learning something it updates them. **[C]**
+- Stored in Postgres, encrypted at rest with the secrets key, keyed by tenant. **[C]**
+- Every write is a new version: who or which bot wrote it, in which chat, when. Admins can view the
+  history and roll back. Every write is an audit record. **[C]**
+- Writes that look like a secret (private keys, tokens, passwords) are refused. **[C]**
+- Admins read, edit and delete notes on the admin page (a Knowledge screen); heads read. **[C]**
+- Notes are data, not instructions: text a bot copied from a server or a document cannot change
+  its persona or its rules. The confirm-before-write gate still applies to anything a note says
+  to do. **[C]**
+- Bootstrap: when a connection becomes active, the bot runs a read-only inventory (OS, services,
+  disks, notable configuration) and writes the host's first note. A weekly routine refreshes notes
+  and posts what changed. **[C]**
+- Backed up with the database. **[C]**
 
 ## 5. Architecture
 
@@ -219,7 +268,9 @@ Teams ──▶ Azure Bot ──▶ https://<host>/api/messages
 Modules, each its own folder, no shared "utils" bag: `teams` (gateway, proactive send, SSO),
 `engine` (SDK calls, hooks, session map), `graph` (Graph MCP server), `computer` (container per
 definition, exec, secret placement), `org` (tenants, people, departments, assignments), `routines`
-(scheduler), `audit`, `admin` (web), `db` (schema, migrations). **[C]**
+(scheduler), `audit`, `admin` (web), `db` (schema, migrations), `connections` (key generation,
+setup flow, host-key pinning, the `change` tool), `knowledge` (notes, versions, knowledge tools).
+**[C]**
 
 Deployment: `docker compose up` with the service, Postgres and a Docker socket for bot containers.
 Migrations run at start. One `.env` with the Anthropic key, Microsoft app credentials and the
@@ -251,6 +302,11 @@ secrets key. **[C]**
   grants an admin gave them.
 - Prompt injection from mail, files and web pages is expected: the confirm-before-write gate and
   read-only defaults are the defence, not prompt wording.
+- Connection private keys are generated by the service and never shown to anyone; only public keys
+  appear in chat. Host-key fingerprints are pinned; a change blocks the connection. **[C]**
+- Knowledge notes are encrypted at rest, versioned, tenant-scoped, written only through audited
+  tools, and refuse secret-looking content. A poisoned note can mislead a bot but cannot bypass
+  the confirmation gate. **[C]**
 
 ## 8. Left to the builder
 
@@ -270,5 +326,7 @@ secrets key. **[C]**
 3. Brand name of the bot as it appears in Teams ("BE Bot" is the placeholder).
 4. Which Claude model for roles with infrastructure connections (cost versus care).
 
-Answered: routines with a `change` grant act unattended (Martin, 2026-10-29). Tracker project:
+Answered: routines with a `change` grant act unattended (Martin, 2026-10-29). Knowledge is shared
+across a tenant's bots and kept safely; staff grant access by following the bot's instructions
+(Martin, 2026-10-30). Tracker project:
 "BEBotter2" under Binary Elements.
