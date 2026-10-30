@@ -2,6 +2,7 @@ import express from "express";
 import type { NextFunction, Request, Response, Router } from "express";
 import { DirectoryError } from "../org/directory.js";
 import { isAdmin, loadActor, mayEnter } from "./access.js";
+import { botRoutes } from "./bots.js";
 import { adminOf, wrap } from "./http.js";
 import { oidcRoutes, page } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
@@ -34,6 +35,7 @@ export function adminRouter(deps: AdminDeps): Router {
 
   router.get("/", (_req, res) => res.redirect(303, isAdmin(adminOf(res).actor) ? "/admin/people" : "/admin/departments"));
   router.use(peopleRoutes(db));
+  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel }));
 
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof DirectoryError) return page(res, 400, err.message);

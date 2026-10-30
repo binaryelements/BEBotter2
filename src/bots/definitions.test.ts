@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertTenant } from "../org/org.js";
-import { assignToChat, botDefinitionInput, definitionsForChat, mcpServerConfigs, upsertDefinition } from "./definitions.js";
+import { createDepartment } from "../org/directory.js";
+import { addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, updateDefinitionFields, upsertDefinition } from "./definitions.js";
 
 describe("bot definitions", () => {
   it("stores MCP headers encrypted and gives them back decrypted", async () => {
@@ -81,5 +82,47 @@ describe("bot definitions", () => {
     expect(configs).toEqual({ local: { type: "stdio", command: "run-mcp", args: ["--x"], env: { PATH: "/usr/bin", HOME: "/root" } } });
     const broken = { ...def, mcpServers: [{ name: "local", transport: "stdio" as const, readOnlyTools: [] }] };
     expect(() => mcpServerConfigs(broken, key)).toThrow("MCP server local has no command");
+  });
+});
+
+describe("bot definition admin helpers", () => {
+  it("setAllowedDepartments replaces the links and ignores other tenants' departments", async () => {
+    const db = await testDb();
+    const key = Buffer.alloc(32, 3);
+    await upsertTenant(db, { id: "t1" });
+    await upsertTenant(db, { id: "t2" });
+    const a = (await createDepartment(db, "t1", "A")).id;
+    const b = (await createDepartment(db, "t1", "B")).id;
+    const other = (await createDepartment(db, "t2", "Other")).id;
+    const def = await upsertDefinition(db, key, "t1", { name: "x", label: "X", persona: "p" });
+    await setAllowedDepartments(db, "t1", def.id, [a, other]);
+    expect(await allowedDepartments(db, def.id)).toEqual([a]);
+    await setAllowedDepartments(db, "t1", def.id, [b]);
+    expect(await allowedDepartments(db, def.id)).toEqual([b]);
+  });
+
+  it("adding and removing a server leaves the other servers' ciphertext alone and rejects duplicates", async () => {
+    const db = await testDb();
+    const key = Buffer.alloc(32, 3);
+    await upsertTenant(db, { id: "t1" });
+    const def = await upsertDefinition(db, key, "t1", {
+      name: "x", label: "X", persona: "p",
+      mcpServers: [{ name: "one", transport: "http", url: "https://a.test/", headers: { A: "b" } }],
+    });
+    const before = def.mcpServers[0].headersCipher;
+    await addMcpServer(db, key, "t1", def.id, { name: "two", transport: "stdio", command: "run", readOnlyTools: [] });
+    await expect(addMcpServer(db, key, "t1", def.id, { name: "two", transport: "stdio", command: "run", readOnlyTools: [] })).rejects.toThrow(/already/);
+    await expect(addMcpServer(db, key, "t1", def.id, { name: "computer", transport: "stdio", command: "run", readOnlyTools: [] })).rejects.toThrow(/reserved/);
+    let cur = (await getDefinition(db, "t1", def.id))!;
+    expect(cur.mcpServers.map((s) => s.name)).toEqual(["one", "two"]);
+    expect(cur.mcpServers[0].headersCipher).toBe(before);
+    await removeMcpServer(db, "t1", def.id, "two");
+    cur = (await getDefinition(db, "t1", def.id))!;
+    expect(cur.mcpServers.map((s) => s.name)).toEqual(["one"]);
+    expect(cur.mcpServers[0].headersCipher).toBe(before);
+    await updateDefinitionFields(db, "t1", def.id, { label: "Y", persona: "q", model: "m", webSearch: true, computer: true });
+    cur = (await getDefinition(db, "t1", def.id))!;
+    expect([cur.label, cur.persona, cur.model, cur.webSearch, cur.computer, cur.mcpServers[0].headersCipher]).toEqual(["Y", "q", "m", true, true, before]);
+    expect(await getDefinition(db, "t2", def.id)).toBeUndefined();
   });
 });
