@@ -8,6 +8,11 @@ import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
+export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine"] as const;
+
+/** MCP connections attach as `conn-<name>`, so that prefix is reserved too. */
+export const isReservedMcpName = (name: string): boolean => (RESERVED_MCP_NAMES as readonly string[]).includes(name) || name.startsWith("conn-");
+
 export const mcpServerInput = z.object({
   name: z.string().min(1),
   transport: z.enum(["http", "stdio"]),
@@ -18,7 +23,7 @@ export const mcpServerInput = z.object({
   readOnlyTools: z.array(z.string()).default([]),
 }).superRefine((s, ctx) => {
   const need = s.transport === "http" ? "url" : "command";
-  if (s.name === "computer") ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "computer" is a reserved name` });
+  if (isReservedMcpName(s.name)) ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "${s.name}" is a reserved name` });
   if (s.name.includes("__")) ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "${s.name}" must not contain "__"` });
   if (!s[need]) ctx.addIssue({ code: "custom", path: [need], message: `${s.transport} MCP server "${s.name}" requires ${need}` });
 });

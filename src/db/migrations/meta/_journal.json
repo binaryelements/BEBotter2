@@ -15,6 +15,13 @@
       "when": 1793333851466,
       "tag": "0001_material_slipstream",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793364380010,
+      "tag": "0002_striped_proteus",
+      "breakpoints": true
     }
   ]
 }

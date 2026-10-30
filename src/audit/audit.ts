@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { auditEvents, tenants } from "../db/schema.js";
-import type { AuditEvent } from "../db/schema.js";
+import type { Authority, AuditEvent } from "../db/schema.js";
 
 export async function beginAction(
   db: Db,
@@ -25,7 +25,7 @@ export async function beginAction(
 export async function completeAction(
   db: Db,
   id: string,
-  input: { status: "done" | "denied" | "expired" | "failed"; authority?: { type: "confirmation"; personId: string }; costUsd?: number },
+  input: { status: "done" | "denied" | "expired" | "failed"; authority?: Authority; costUsd?: number },
 ): Promise<void> {
   await db
     .update(auditEvents)
@@ -38,7 +38,7 @@ export async function completeAction(
     .where(eq(auditEvents.id, id));
 }
 
-export async function recordAuthority(db: Db, id: string, authority: { type: "confirmation"; personId: string }): Promise<void> {
+export async function recordAuthority(db: Db, id: string, authority: Authority): Promise<void> {
   await db.update(auditEvents).set({ authority }).where(eq(auditEvents.id, id));
 }
 

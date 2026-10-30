@@ -3,7 +3,7 @@ import { tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertTenant } from "../org/org.js";
 import { createDepartment } from "../org/directory.js";
-import { addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, updateDefinitionFields, upsertDefinition } from "./definitions.js";
+import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, updateDefinitionFields, upsertDefinition } from "./definitions.js";
 
 describe("bot definitions", () => {
   it("stores MCP headers encrypted and gives them back decrypted", async () => {
@@ -124,5 +124,16 @@ describe("bot definition admin helpers", () => {
     cur = (await getDefinition(db, "t1", def.id))!;
     expect([cur.label, cur.persona, cur.model, cur.webSearch, cur.computer, cur.mcpServers[0].headersCipher]).toEqual(["Y", "q", "m", true, true, before]);
     expect(await getDefinition(db, "t2", def.id)).toBeUndefined();
+  });
+});
+
+describe("reserved MCP names", () => {
+  it("are refused", () => {
+    for (const name of ["knowledge", "connections", "routine", "computer", "conn-x"]) {
+      const r = mcpServerInput.safeParse({ name, transport: "http", url: "https://example.com/mcp" });
+      expect(r.success, name).toBe(false);
+      expect(JSON.stringify(r.error?.issues)).toContain("reserved");
+    }
+    expect(mcpServerInput.safeParse({ name: "docs", transport: "http", url: "https://example.com/mcp" }).success).toBe(true);
   });
 });
