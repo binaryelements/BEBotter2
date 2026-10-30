@@ -55,9 +55,9 @@ export function activityRoutes(db: Db): Router {
         .where(inArray(departmentMembers.departmentId, actor.headOf.length ? actor.headOf : [""]));
       personIds = [...new Set(rows.map((r) => r.id))];
       if (personId && !personIds.includes(personId)) return page(res, 403, "Not allowed.");
+      // A permitted person filter narrows the head's scope, so the department list is no longer needed.
       if (personId) personIds = undefined;
     }
-    const before = new Date(q(req, "before") ?? NaN);
     const rows = await listActions(db, {
       tenantId: actor.tenantId,
       definitionId: q(req, "bot"),
@@ -65,7 +65,7 @@ export function activityRoutes(db: Db): Router {
       status: q(req, "status"),
       personId,
       personIds,
-      before: Number.isNaN(before.getTime()) ? undefined : before,
+      before: q(req, "before"),
       limit,
     });
     return rows;
@@ -79,7 +79,7 @@ export function activityRoutes(db: Db): Router {
       if (!rows) return;
       const n = await names(db, actor.tenantId);
       const keep = new URLSearchParams(FILTERS.flatMap((f) => (q(req, f) ? [[f, q(req, f)!]] : [])));
-      const older = rows.length === PAGE ? new URLSearchParams([...keep, ["before", rows[rows.length - 1].startedAt.toISOString()]]).toString() : "";
+      const older = rows.length === PAGE ? new URLSearchParams([...keep, ["before", rows[rows.length - 1].id]]).toString() : "";
       const csv = keep.toString();
       const tr = rows.map((e) => {
         const c = cells(e, n);

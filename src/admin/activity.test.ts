@@ -107,4 +107,17 @@ describe("activity screen", () => {
     expect(first).not.toContain("2020-01-01T00:00");
     expect((await get("/admin/activity?before=nonsense", "Ann")).status).toBe(200);
   });
+
+  it("paging never skips rows that share a timestamp", async () => {
+    const tie = new Date(Date.UTC(2021, 0, 1));
+    for (let i = 0; i < 105; i++) await add("Eve", `tie-${i}`, { at: i >= 94 ? tie : new Date(Date.UTC(2021, 0, 2, 0, i)), chat: "chat-2" });
+    const seen: string[] = [];
+    let path: string | undefined = `/admin/activity?chat=chat-2&bot=${bot}&person=${id.Eve}&status=done`;
+    while (path) {
+      const t = await (await get(path, "Ann")).text();
+      seen.push(...[...t.matchAll(/tie-\d+/g)].map((m) => m[0]));
+      path = t.match(/href="([^"]+)">Older/)?.[1].replaceAll("&amp;", "&");
+    }
+    expect(seen.sort()).toEqual([...Array(105).keys()].map((i) => `tie-${i}`).sort());
+  });
 });

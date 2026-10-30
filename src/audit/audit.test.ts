@@ -87,7 +87,9 @@ describe("audit filters and prune", () => {
     await mk("t2", "c9", other.id, "done", old);
     expect(await listActions(db, { tenantId: "t1", personIds: [] })).toEqual([]);
     expect(await listActions(db, { tenantId: "t1", personIds: [ids.personId], status: "failed" })).toHaveLength(1);
-    expect(await listActions(db, { tenantId: "t1", before: new Date(Date.now() - 86_400_000) })).toHaveLength(2);
+    const newest = (await listActions(db, { tenantId: "t1" }))[0];
+    expect(await listActions(db, { tenantId: "t1", before: newest.id })).toHaveLength(2);
+    expect(await listActions(db, { tenantId: "t1", before: "nope" })).toHaveLength(3);
     expect(await pruneAudit(db, "t1", 30)).toBe(1);
     expect(await listActions(db, { tenantId: "t1" })).toHaveLength(2);
     expect(await listActions(db, { tenantId: "t2" })).toHaveLength(1);

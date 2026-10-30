@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { auditEvents } from "../db/schema.js";
 import type { AuditEvent } from "../db/schema.js";
@@ -44,7 +44,7 @@ export async function recordAuthority(db: Db, id: string, authority: { type: "co
 
 export async function listActions(
   db: Db,
-  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; status?: string; before?: Date; limit?: number },
+  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; status?: string; before?: string; /* id of the last row of the previous page */ limit?: number },
 ): Promise<AuditEvent[]> {
   if (filter.personIds?.length === 0) return [];
   const conditions = [eq(auditEvents.tenantId, filter.tenantId)];
@@ -53,7 +53,11 @@ export async function listActions(
   if (filter.personId) conditions.push(eq(auditEvents.personId, filter.personId));
   if (filter.personIds) conditions.push(inArray(auditEvents.personId, filter.personIds));
   if (filter.status) conditions.push(eq(auditEvents.status, filter.status));
-  if (filter.before) conditions.push(lt(auditEvents.startedAt, filter.before));
+  if (filter.before) {
+    // Keyset cursor on (started_at, id), compared in SQL so microseconds are never truncated; an unknown id is ignored.
+    const [c] = await db.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.id, filter.before), eq(auditEvents.tenantId, filter.tenantId)));
+    if (c) conditions.push(sql`(${auditEvents.startedAt}, ${auditEvents.id}) < (select started_at, id from audit_events where id = ${filter.before})`);
+  }
   return db
     .select()
     .from(auditEvents)
