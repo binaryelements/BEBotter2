@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { connections, secretLinks } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { decrypt } from "../secrets/cipher.js";
+import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
 import {
-  approveConnection, getConnection, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
+  approveConnection, connectionMcpConfigs, getConnection, runHttp, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
 } from "./store.js";
 
 const key = randomBytes(32);
@@ -17,14 +18,22 @@ const ssh = { kind: "ssh" as const, name: "pve1", target: "pve1.example.test", m
 describe("connections store", () => {
   let db: Db;
   let fake: ReturnType<typeof fakeSsh>;
-  let deps: { db: Db; ssh: ReturnType<typeof fakeSsh>; secretsKey: Buffer };
+  let deps: { db: Db; ssh: ReturnType<typeof fakeSsh>; secretsKey: Buffer; fetchFn: typeof fetch };
+  let fetched: { url: string; init: RequestInit }[];
+  let respond: (url: string, init: RequestInit) => Response;
   let defId: string;
   let otherDefId: string;
   let personId: string;
   beforeEach(async () => {
     db = await testDb();
     fake = fakeSsh({ hostKey: "ssh-ed25519 AAAAhost" });
-    deps = { db, ssh: fake, secretsKey: key };
+    fetched = [];
+    respond = () => new Response("ok");
+    const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+      fetched.push({ url: String(input), init: init ?? {} });
+      return respond(String(input), init ?? {});
+    }) as typeof fetch;
+    deps = { db, ssh: fake, secretsKey: key, fetchFn };
     for (const t of ["t1", "t2"]) await upsertTenant(db, { id: t });
     defId = (await upsertDefinition(db, key, "t1", { name: "ops", label: "Ops", persona: "p" })).id;
     otherDefId = (await upsertDefinition(db, key, "t1", { name: "help", label: "Help", persona: "p" })).id;
@@ -191,13 +200,79 @@ describe("connections store", () => {
     expect(await db.select().from(connections)).toEqual([]);
   });
 
-  it("http and mcp requests are stored pending without a key; verify waits for a needed secret, otherwise is not available yet", async () => {
-    const { connection, publicKey } = await request({ kind: "http", name: "helpdesk", target: "https://api.example.test/v1", config: { auth: { in: "header", name: "Authorization", prefix: "Bearer " } } });
+  const setSecret = (name: string, secret: string) => db.update(connections).set({ secretCipher: encrypt(key, secret) }).where(eq(connections.name, name));
+  const http = { kind: "http" as const, name: "helpdesk", target: "https://api.example.test/v1", config: { auth: { in: "header" as const, name: "Authorization", prefix: "Bearer " } } };
+  const mcp = { kind: "mcp" as const, name: "tickets", target: "https://mcp.example.test/mcp", config: { headerName: "X-Api-Key", readOnlyTools: ["list_tickets"] } };
+  const mcpServer = (url: string, init: RequestInit) => {
+    const msg = JSON.parse(String(init.body)) as { id?: number; method: string };
+    if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const result = msg.method === "initialize" ? { protocolVersion: "2025-06-18" } : { tools: [{ name: "list_tickets" }, { name: "close_ticket" }] };
+    return Response.json({ jsonrpc: "2.0", id: msg.id, result });
+  };
+
+  it("http and mcp requests are stored pending without a key and verify waits for a needed secret", async () => {
+    const { connection, publicKey } = await request(http);
     expect(publicKey).toBeUndefined();
     expect(connection).toMatchObject({ kind: "http", status: "pending", secretCipher: null, publicKey: null });
-    expect(await verifyConnection(deps, "t1", defId, "helpdesk")).toEqual({ status: "pending", output: "Waiting for the secret" });
+    expect(await verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" })).toEqual({ status: "pending", output: "Waiting for the secret" });
     await expect(request({ kind: "http", name: "open", target: "https://api.example.test/v1", config: {}, needsSecret: true })).rejects.toThrow(/where the secret goes/);
-    await request({ kind: "mcp", name: "tickets", target: "https://mcp.example.test/mcp", config: { readOnlyTools: ["list_tickets"] } });
-    await expect(verifyConnection(deps, "t1", defId, "tickets")).rejects.toThrow(/not available yet for mcp connections/);
+    expect(fetched).toEqual([]);
+  });
+
+  it("http verify with a probe path moves to awaiting-approval", async () => {
+    await request(http);
+    await setSecret("helpdesk", "tok-123");
+    await expect(verifyConnection(deps, "t1", defId, "helpdesk")).rejects.toThrow(/probe path/);
+    respond = () => new Response("nope tok-123", { status: 401, statusText: "Unauthorized" });
+    const failed = await verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" });
+    expect(failed.status).toBe("pending");
+    expect(failed.output).toContain("401");
+    expect(failed.output).not.toContain("tok-123");
+    respond = () => new Response("{\"id\":1}");
+    const r = await verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" });
+    expect(r.status).toBe("awaiting-approval");
+    expect(fetched.at(-1)!.url).toBe("https://api.example.test/v1/me");
+    expect(fetched.at(-1)!.init.method).toBe("GET");
+    expect(new Headers(fetched.at(-1)!.init.headers).get("authorization")).toBe("Bearer tok-123");
+    expect((await getConnection(db, "t1", "helpdesk"))!.status).toBe("awaiting-approval");
+    await expect(runHttp(deps, "t1", defId, "helpdesk", { method: "GET", path: "me" }, "read-only")).rejects.toThrow(/not active/);
+  });
+
+  it("mcp verify lists tools", async () => {
+    await request(mcp);
+    await setSecret("tickets", "mcp-tok");
+    respond = mcpServer;
+    const r = await verifyConnection(deps, "t1", defId, "tickets");
+    expect(r.status).toBe("awaiting-approval");
+    expect(r.output).toContain("list_tickets, close_ticket");
+    expect(new Headers(fetched[0]!.init.headers).get("x-api-key")).toBe("mcp-tok");
+    expect((await connectionMcpConfigs(db, key, "t1", defId)).servers).toEqual({});
+    await approveConnection(db, "t1", "tickets", personId);
+    expect(await connectionMcpConfigs(db, key, "t1", defId)).toEqual({
+      servers: { "conn-tickets": { type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Api-Key": "mcp-tok" } } },
+      readOnly: [{ name: "conn-tickets", readOnlyTools: ["list_tickets"] }],
+    });
+    expect((await connectionMcpConfigs(db, key, "t1", otherDefId)).servers).toEqual({});
+    expect((await connectionMcpConfigs(db, key, "t2", defId)).servers).toEqual({});
+  });
+
+  it("http_read refuses POST; http_change refuses a read-only connection", async () => {
+    await request(http);
+    await request({ ...http, name: "desk-rw", mode: "change" });
+    for (const name of ["helpdesk", "desk-rw"]) {
+      await setSecret(name, "tok-123");
+      await verifyConnection(deps, "t1", defId, name, { path: "me" });
+      await approveConnection(db, "t1", name, personId);
+    }
+    fetched.length = 0;
+    await expect(runHttp(deps, "t1", defId, "helpdesk", { method: "POST", path: "tickets", body: "{}" }, "read-only")).rejects.toThrow(/GET or HEAD/);
+    await expect(runHttp(deps, "t1", defId, "helpdesk", { method: "POST", path: "tickets", body: "{}" }, "change")).rejects.toThrow(/read-only/);
+    await expect(runHttp(deps, "t1", otherDefId, "desk-rw", { method: "GET", path: "me" }, "read-only")).rejects.toThrow(/No connection/);
+    await expect(runHttp(deps, "t1", defId, "pve1", { method: "GET", path: "me" }, "read-only")).rejects.toThrow();
+    expect(fetched).toEqual([]);
+    expect(await runHttp(deps, "t1", defId, "helpdesk", { method: "GET", path: "me" }, "read-only")).toBe("HTTP 200 \nok");
+    await runHttp(deps, "t1", defId, "desk-rw", { method: "GET", path: "me" }, "read-only");
+    await runHttp(deps, "t1", defId, "desk-rw", { method: "POST", path: "tickets", body: "{}" }, "change");
+    expect(fetched.map((f) => f.init.method)).toEqual(["GET", "GET", "POST"]);
   });
 });

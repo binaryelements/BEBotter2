@@ -9,6 +9,7 @@ import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
 import { connectionsMcpServer } from "../connections/mcp.js";
 import type { SshRunner } from "../connections/ssh.js";
+import { connectionMcpConfigs } from "../connections/store.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
@@ -27,6 +28,8 @@ export type RunnerDeps = {
   ssh: SshRunner;
   /** Base URL of this service, for the one-time secret links. */
   publicUrl: string;
+  /** For http connections and verifying mcp connections. */
+  fetchFn: typeof fetch;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
 };
@@ -66,6 +69,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const computer = definition.computer
     ? computerMcpServer(deps.docker, await ensureComputer(db, deps.docker, deps.computerImage, definition.id))
     : undefined;
+  const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id);
 
   // tool use id → audit row of a call that was allowed and has not finished yet
   const inFlight = new Map<string, string>();
@@ -92,7 +96,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       toolInput: json.length <= MAX_AUDIT_INPUT ? input : { truncated: true, preview: json.slice(0, MAX_AUDIT_INPUT) },
       summary: summarise(toolName, input),
     });
-    const kind = classify(toolName, definition);
+    const kind = classify(toolName, definition, conn.readOnly);
     if (kind === "read") {
       inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
@@ -160,7 +164,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     maxTurns: 25,
     // the model's process gets no service secrets, only what it needs to run
     env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), connections: connectionsMcpServer(deps, { ...base, confirmedBy }), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey) },
+    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), connections: connectionsMcpServer(deps, { ...base, confirmedBy }), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey), ...conn.servers },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };

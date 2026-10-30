@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import type { HookCallback, Options, PostToolUseFailureHookInput, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
 import { listActions } from "../audit/audit.js";
 import { upsertDefinition } from "../bots/definitions.js";
@@ -9,7 +10,9 @@ import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
-import { sessions } from "../db/schema.js";
+import { connections, sessions } from "../db/schema.js";
+import { requestConnection } from "../connections/store.js";
+import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
@@ -71,7 +74,7 @@ const filesDir = fs.mkdtempSync(path.join(os.tmpdir(), "bebotter2-files-"));
 
 function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()) {
   const docker = fakeDockerClient();
-  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir, ssh: fakeSsh(), publicUrl: "https://bot.example.test" };
+  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir, ssh: fakeSsh(), publicUrl: "https://bot.example.test", fetchFn: (async () => new Response("ok")) as typeof fetch };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -403,5 +406,41 @@ describe("runTurn", () => {
     expect(result.text).toBe("I couldn't finish that.");
     const message = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "message")!;
     expect(message).toMatchObject({ status: "failed", summary: "I couldn't finish that." });
+  });
+
+  it("an approved mcp connection is attached as conn-<name> and its listed tools run without a card", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const { connection } = await requestConnection({ db, ssh: fakeSsh(), secretsKey: key }, "t1", {
+      kind: "mcp", name: "desk", target: "https://mcp.example.test/mcp", mode: "read-only", config: { headerName: "X-Api-Key", readOnlyTools: ["list_tickets"] }, definitionId: definition.id, personId: person.id,
+    });
+    await db.update(connections).set({ status: "active", secretCipher: encrypt(key, "mcp-tok") }).where(eq(connections.id, connection.id));
+    const q = fakeQuery({ calls: [["mcp__conn-desk__list_tickets", {}], ["mcp__conn-desk__close_ticket", { id: 1 }]] });
+    const d = deps(db, q.fn);
+    const requests: ConfirmationRequest[] = [];
+    await runTurn(d, {
+      tenantId: "t1", chatId: "c1", definition, person, text: "x",
+      askConfirmation: async (r) => {
+        requests.push(r);
+        d.confirmations.resolve(r.actionId, person.id, "no");
+      },
+    });
+    expect(q.seen[0]!.mcpServers!["conn-desk"]).toEqual({ type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Api-Key": "mcp-tok" } });
+    expect(q.decisions).toEqual(["allow", "deny"]);
+    expect(requests.map((r) => r.summary)).toEqual(['close_ticket {"id":1}']);
+  });
+
+  it("a pending mcp connection is not attached", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await requestConnection({ db, ssh: fakeSsh(), secretsKey: key }, "t1", {
+      kind: "mcp", name: "desk", target: "https://mcp.example.test/mcp", mode: "read-only", config: { readOnlyTools: ["list_tickets"] }, definitionId: definition.id, personId: person.id,
+    });
+    const q = fakeQuery({ calls: [["mcp__conn-desk__list_tickets", {}]] });
+    const d = deps(db, q.fn);
+    const requests: ConfirmationRequest[] = [];
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => void (requests.push(r), d.confirmations.resolve(r.actionId, person.id, "no")) });
+    expect(Object.keys(q.seen[0]!.mcpServers!)).not.toContain("conn-desk");
+    expect(requests).toHaveLength(1);
   });
 });

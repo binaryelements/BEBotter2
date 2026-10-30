@@ -28,7 +28,7 @@ describe("connections mcp", () => {
     personId = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" })).id;
     const bob = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a2", name: "Bob" })).id;
     const caller = (who: string) => {
-      const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "up 3 days" }), secretsKey: key, publicUrl: "https://bot.example.test" }, { tenantId: "t1", definitionId, personId: who, confirmedBy: () => confirmer });
+      const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "up 3 days" }), secretsKey: key, publicUrl: "https://bot.example.test", fetchFn: (async () => new Response("ok")) as typeof fetch }, { tenantId: "t1", definitionId, personId: who, confirmedBy: () => confirmer });
       const tools = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
       return (name: string, args: Record<string, unknown> = {}) => tools[name].handler(args);
     };

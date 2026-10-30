@@ -6,7 +6,7 @@ import type { Db } from "../db/client.js";
 import { people } from "../db/schema.js";
 import type { Connection } from "../db/schema.js";
 import { createSecretLink } from "./secret-links.js";
-import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, needsSecret, requestConnection, runSsh, verifyConnection } from "./store.js";
+import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, needsSecret, requestConnection, runHttp, runSsh, verifyConnection } from "./store.js";
 import type { ConnectionDeps } from "./store.js";
 
 type Ctx = { tenantId: string; definitionId: string; personId: string; confirmedBy: () => string | undefined };
@@ -81,7 +81,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       ),
       tool(
         "verify",
-        "Check that a requested connection works once the person says the access is in place. A changed host key blocks the connection until an admin resets it. Once a connection is active, map the system read-only and record what you learn with the knowledge tools.",
+        "Check that a requested connection works once the person says the access is in place. A changed host key blocks the connection until an admin resets it. For http give probePath, a path for a read-only GET under the connection's URL. Once a connection is active, map the system read-only and record what you learn with the knowledge tools.",
         { name: z.string(), probePath: z.string().optional() },
         ({ name, probePath }) =>
           run(async () => {
@@ -116,6 +116,21 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       ),
       tool("ssh_read", `Run a command on an active read-only ssh connection. ${READ_ONLY_RULE}`, { name: z.string(), command: z.string() }, sshTool("read-only")),
       tool("ssh_change", "Run a command on an active change ssh connection; each call is confirmed in the chat.", { name: z.string(), command: z.string() }, sshTool("change")),
+      tool(
+        "http_read",
+        `Send a GET or HEAD request on an active http connection. path is relative to the connection's URL; the service adds the secret. ${READ_ONLY_RULE}`,
+        { name: z.string(), path: z.string(), method: z.enum(["GET", "HEAD"]).optional(), query: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional() },
+        ({ name, method, ...req }) => run(() => runHttp(deps, tenantId, definitionId, name, { method: method ?? "GET", ...req }, "read-only")),
+      ),
+      tool(
+        "http_change",
+        "Send a request on an active change http connection; each call is confirmed in the chat. path is relative to the connection's URL; the service adds the secret.",
+        {
+          name: z.string(), method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]), path: z.string(),
+          query: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional(), body: z.string().optional(),
+        },
+        ({ name, ...req }) => run(() => runHttp(deps, tenantId, definitionId, name, req, "change")),
+      ),
     ],
   });
 }

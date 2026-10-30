@@ -1,15 +1,18 @@
 import { and, eq, isNull, ne } from "drizzle-orm";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { connections, definitionConnections, secretLinks } from "../db/schema.js";
 import type { Connection, ConnectionConfig } from "../db/schema.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
+import { listMcpTools, sendHttp } from "./http.js";
+import type { HttpConfig, HttpRequest } from "./http.js";
 import { validTarget } from "./ssh.js";
 import type { SshRunner } from "./ssh.js";
 
 export class ConnectionError extends Error {}
 
-export type ConnectionDeps = { db: Db; ssh: SshRunner; secretsKey: Buffer };
+export type ConnectionDeps = { db: Db; ssh: SshRunner; secretsKey: Buffer; fetchFn: typeof fetch };
 export type ConnectionKind = "ssh" | "http" | "mcp";
 export type ConnectionMode = "read-only" | "change";
 export type ConnectionRequest = {
@@ -120,7 +123,7 @@ export async function setLinked(db: Db, tenantId: string, definitionId: string, 
   else await db.delete(definitionConnections).where(and(eq(definitionConnections.definitionId, definitionId), eq(definitionConnections.connectionId, connectionId)));
 }
 
-export async function requestConnection(deps: ConnectionDeps, tenantId: string, input: ConnectionRequest): Promise<{ connection: Connection; publicKey?: string }> {
+export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, tenantId: string, input: ConnectionRequest): Promise<{ connection: Connection; publicKey?: string }> {
   const { db } = deps;
   const config = checkRequest(input);
   if (input.needsSecret && !needsSecret({ kind: input.kind, config })) fail("Say where the secret goes: auth for http, headerName for mcp");
@@ -179,13 +182,27 @@ export async function verifyConnection(
   tenantId: string,
   definitionId: string,
   name: string,
-  _probe?: { path: string },
+  probe?: { path: string },
 ): Promise<{ status: Connection["status"]; output: string }> {
   const c = await linkedConnection(deps.db, tenantId, definitionId, name);
   if (c.status === "revoked") fail("The connection was revoked");
   if (c.status === "blocked") fail(BLOCKED);
   if (needsSecret(c) && !c.secretCipher) return { status: c.status, output: "Waiting for the secret" };
-  if (c.kind !== "ssh") fail(`Verify is not available yet for ${c.kind} connections`);
+  if (c.kind !== "ssh") {
+    let output: string;
+    if (c.kind === "http") {
+      if (!probe?.path) fail("Give a probe path: a read-only GET under the connection's URL");
+      const r = await sendHttp(deps.fetchFn, httpConn(deps, c), { method: "GET", path: probe!.path });
+      if (r.status < 200 || r.status > 299) return { status: c.status, output: r.text };
+      output = r.text;
+    } else {
+      output = `Tools: ${(await listMcpTools(deps.fetchFn, mcpConn(deps, c))).join(", ") || "none"}`;
+    }
+    // http and mcp always need an approval, whatever the mode
+    const status = c.status === "active" ? "active" : "awaiting-approval";
+    if (status !== c.status) await setStatus(deps.db, c, { status });
+    return { status, output: `${output}\n${status === "active" ? "Connected; the connection is active" : "Connected; an admin or department head must approve it"}` };
+  }
   const r = await exec(deps, c, "exit 0");
   if (r.hostKeyMismatch) {
     await setStatus(deps.db, c, { status: "blocked" });
@@ -218,6 +235,37 @@ export async function runSsh(deps: ConnectionDeps, tenantId: string, definitionI
     fail(BLOCKED);
   }
   return scrub(r.output);
+}
+
+const secretOf = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => (c.secretCipher ? decrypt(deps.secretsKey, c.secretCipher) : undefined);
+const httpConn = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => ({ target: c.target, config: c.config as HttpConfig, secret: secretOf(deps, c) });
+const mcpConn = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => ({ target: c.target, headerName: (c.config as { headerName?: string }).headerName, secret: secretOf(deps, c) });
+
+/** http_read (GET/HEAD on any active http connection) and http_change (a change connection, confirmed per call). */
+export async function runHttp(deps: ConnectionDeps, tenantId: string, definitionId: string, name: string, req: HttpRequest, mode: ConnectionMode): Promise<string> {
+  const c = await linkedConnection(deps.db, tenantId, definitionId, name);
+  if (c.kind !== "http") fail(`${name} is not an http connection`);
+  if (c.status !== "active") fail(`${name} is not active (${c.status})`);
+  if (mode === "read-only" && req.method !== "GET" && req.method !== "HEAD") fail("http_read only sends GET or HEAD; use http_change on a change connection");
+  if (mode === "change" && c.mode !== "change") fail(`${name} is a read-only connection; use http_read`);
+  if (needsSecret(c) && !c.secretCipher) fail(`${name} has no secret`);
+  return (await sendHttp(deps.fetchFn, httpConn(deps, c), req)).text;
+}
+
+/** Active mcp connections linked to the bot, attached as `conn-<name>` servers, with the tools approved as read-only. */
+export async function connectionMcpConfigs(
+  db: Db,
+  secretsKey: Buffer,
+  tenantId: string,
+  definitionId: string,
+): Promise<{ servers: Record<string, McpServerConfig>; readOnly: { name: string; readOnlyTools: string[] }[] }> {
+  const active = (await listConnectionsFor(db, tenantId, definitionId)).filter((c) => c.kind === "mcp" && c.status === "active");
+  const servers: Record<string, McpServerConfig> = {};
+  for (const c of active) {
+    const { headerName, secret } = mcpConn({ secretsKey }, c);
+    servers[`conn-${c.name}`] = { type: "http", url: c.target, ...(headerName && secret ? { headers: { [headerName]: secret } } : {}) };
+  }
+  return { servers, readOnly: active.map((c) => ({ name: `conn-${c.name}`, readOnlyTools: (c.config as { readOnlyTools: string[] }).readOnlyTools })) };
 }
 
 export async function revokeConnection(db: Db, tenantId: string, id: string): Promise<Connection> {
