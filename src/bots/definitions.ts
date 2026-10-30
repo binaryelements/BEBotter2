@@ -63,6 +63,9 @@ export async function definitionsForChat(db: Db, chatId: string): Promise<BotDef
   return rows.map((r) => r.def);
 }
 
+// stdio servers get no service secrets, only what a command needs to start
+const stdioEnv = () => ({ PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" });
+
 export function mcpServerConfigs(def: BotDefinition, secretsKey: Buffer): Record<string, McpServerConfig> {
   const out: Record<string, McpServerConfig> = {};
   for (const s of def.mcpServers) {
@@ -75,7 +78,7 @@ export function mcpServerConfigs(def: BotDefinition, secretsKey: Buffer): Record
             url: s.url!,
             ...(s.headersCipher ? { headers: JSON.parse(decrypt(secretsKey, s.headersCipher)) as Record<string, string> } : {}),
           }
-        : { type: "stdio", command: s.command!, ...(s.args ? { args: s.args } : {}), env: {} };
+        : { type: "stdio", command: s.command!, ...(s.args ? { args: s.args } : {}), env: stdioEnv() };
   }
   return out;
 }

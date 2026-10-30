@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertTenant } from "../org/org.js";
 import { assignToChat, botDefinitionInput, definitionsForChat, mcpServerConfigs, upsertDefinition } from "./definitions.js";
@@ -66,7 +66,12 @@ describe("bot definitions", () => {
       name: "s", label: "S", persona: "p",
       mcpServers: [{ name: "local", transport: "stdio", command: "run-mcp", args: ["--x"] }],
     });
-    expect(mcpServerConfigs(def, key)).toEqual({ local: { type: "stdio", command: "run-mcp", args: ["--x"], env: {} } });
+    vi.stubEnv("SECRETS_KEY", "x");
+    vi.stubEnv("PATH", "/usr/bin");
+    vi.stubEnv("HOME", "/root");
+    const configs = mcpServerConfigs(def, key);
+    vi.unstubAllEnvs();
+    expect(configs).toEqual({ local: { type: "stdio", command: "run-mcp", args: ["--x"], env: { PATH: "/usr/bin", HOME: "/root" } } });
     const broken = { ...def, mcpServers: [{ name: "local", transport: "stdio" as const, readOnlyTools: [] }] };
     expect(() => mcpServerConfigs(broken, key)).toThrow("MCP server local has no command");
   });
