@@ -8,3 +8,5 @@ A Microsoft Teams bot service on the Claude Agent SDK: bot definitions per tenan
 4. `docker compose exec app pnpm bot-def upsert --tenant <tenantId> --file examples/it-support.json`
 5. Message the bot in the chat; the service logs `chat <id> (<type>)` for every message (`docker compose logs app`).
 6. `docker compose exec app pnpm bot-def assign --tenant <tenantId> --chat <id> --name it-support`
+
+stdio MCP servers run inside the service container.

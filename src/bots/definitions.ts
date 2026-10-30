@@ -75,7 +75,7 @@ export function mcpServerConfigs(def: BotDefinition, secretsKey: Buffer): Record
             url: s.url!,
             ...(s.headersCipher ? { headers: JSON.parse(decrypt(secretsKey, s.headersCipher)) as Record<string, string> } : {}),
           }
-        : { type: "stdio", command: s.command!, ...(s.args ? { args: s.args } : {}) };
+        : { type: "stdio", command: s.command!, ...(s.args ? { args: s.args } : {}), env: {} };
   }
   return out;
 }

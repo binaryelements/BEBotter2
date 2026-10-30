@@ -187,6 +187,21 @@ describe("runTurn", () => {
     errors.mockRestore();
   });
 
+  it("passes the model's process only the environment it needs", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-test");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "/tmp/claude-config");
+    vi.stubEnv("SECRETS_KEY", "secret");
+    vi.stubEnv("DATABASE_URL", "postgres://x");
+    vi.stubEnv("PATH", "/usr/bin");
+    vi.stubEnv("HOME", "/root");
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    vi.unstubAllEnvs();
+    expect(q.seen[0]!.env).toEqual({ PATH: "/usr/bin", HOME: "/root", ANTHROPIC_API_KEY: "sk-test", CLAUDE_CONFIG_DIR: "/tmp/claude-config" });
+  });
+
   it("leaves out the computer when the definition has none", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

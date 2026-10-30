@@ -66,7 +66,7 @@ describe("bot definitions", () => {
       name: "s", label: "S", persona: "p",
       mcpServers: [{ name: "local", transport: "stdio", command: "run-mcp", args: ["--x"] }],
     });
-    expect(mcpServerConfigs(def, key)).toEqual({ local: { type: "stdio", command: "run-mcp", args: ["--x"] } });
+    expect(mcpServerConfigs(def, key)).toEqual({ local: { type: "stdio", command: "run-mcp", args: ["--x"], env: {} } });
     const broken = { ...def, mcpServers: [{ name: "local", transport: "stdio" as const, readOnlyTools: [] }] };
     expect(() => mcpServerConfigs(broken, key)).toThrow("MCP server local has no command");
   });

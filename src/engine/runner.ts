@@ -111,6 +111,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     settingSources: [],
     persistSession: true,
     maxTurns: 25,
+    // the model's process gets no service secrets, only what it needs to run
+    env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
     mcpServers: { ...(computer ? { computer } : {}), ...mcpServerConfigs(definition, deps.secretsKey) },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
