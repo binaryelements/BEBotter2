@@ -98,8 +98,8 @@ A bot definition is the unit an admin creates and edits. **[M]** Fields:
   is ever placed in the computer, because the model can read anything there. Both modes run
   through connection tools in the service process: the `read-only` tool runs without asking, the
   `change` tool is gated by confirmation. **[C, revised 2026-10-30]**
-- Connection kinds are not hard coded: version one speaks SSH (Linux, Windows OpenSSH, Proxmox
-  hosts); WinRM and API tokens come later as further kinds. **[C]**
+- Connections cover any method a job needs: `ssh`, `http` APIs and `mcp` servers in version one,
+  further transports later (section 4.9). **[M, 2026-10-30]**
 - Connections are set up from the chat, led by the bot (section 4.9). Nobody pastes a private key
   anywhere. **[M, 2026-10-30]**
 - Computer: on or off. A computer is a Linux container with no credentials and no host mounts. **[M]** One container per bot
@@ -199,26 +199,44 @@ Minimal copy. No explainer text.
 
 ### 4.9 Connection setup led by the bot
 
-Added 2026-10-30. **[M]** Staff give a bot access to a system by following the bot's instructions in
-the chat. Flow **[C]**:
+Added 2026-10-30. **[M]** Any connectivity a job needs, by any method, is set up by the bot when
+asked: staff follow the bot's instructions in the chat. Version one handles three transports that
+between them reach almost anything **[C]**:
 
-1. Someone asks a bot for access ("get access to pve1, read-only").
-2. The service generates a key pair for that connection (ed25519). The private key is stored
-   encrypted and never leaves the service in readable form, except into the bot's container for a
-   `read-only` connection (4.2). The model never sees it.
-3. The bot posts copy-paste instructions: create a dedicated account on the target, add the public
-   key to it, and, for `change`, the exact rights it is asking for. The bot writes these itself
-   for whatever the target is; the service hands it only facts (public key, account name).
-4. The person replies that it is done. The bot tests the connection and records the host's key
-   fingerprint (trust on first use, confirmed by the person who set it up). A later fingerprint
-   change blocks the connection until an admin accepts it.
-5. A connection asked for as `change` needs an admin or a head of a department allowed to use the
-   bot to confirm it on a card before it becomes active; `read-only` is active on the person's done.
-6. Admins see, rename and revoke connections on the admin page (Bots, Connections tab). Revoke
-   deletes our key and tells the admin which line to remove on the target.
+- `ssh`: Linux, Windows (OpenSSH), Proxmox and network devices; the service generates the key.
+- `http`: any HTTP API (Proxmox API, SaaS, internal services); a base URL plus an optional secret
+  the service adds to every request (a header or a query parameter, as the bot asks).
+- `mcp`: any MCP server over HTTP; a URL plus an optional secret header. Once active it is attached
+  to the bots it is linked to, like an MCP server an admin added by hand.
 
-Network reach: the bot's container reaches targets over the tailnet. A target outside the tailnet
-is out of scope for version one. **[C]**
+New transports are later additions of the same shape. Flow **[C]**:
+
+1. Someone asks a bot for access ("get access to pve1, read-only", "connect to our helpdesk API").
+2. The bot requests a connection: kind, name, target, mode, and for `mcp` which tools only read.
+   - `ssh`: the service generates a key pair (ed25519); the private key is stored encrypted and
+     never leaves the service. The bot gets the public key.
+   - `http`/`mcp` with a secret: the service creates a one-time secret link (valid 30 minutes, for
+     the person who asked, behind Microsoft sign-in). The person opens it and pastes the API key or
+     token there. Secrets are never typed into the chat.
+3. The bot posts the instructions for whatever the target is (create an account and add this key;
+   create an API token with these rights; where to find the MCP token). The bot writes them; the
+   service hands it only facts.
+4. The person says it is done. The bot verifies: `ssh` connects and pins the host key (a later
+   change blocks the connection until an admin resets it); `http` makes a read-only request the bot
+   chooses; `mcp` lists the server's tools.
+5. Activation: an `ssh` `read-only` connection is active once verified, because the target account
+   itself is the limit. Every other connection (`change`, any `http`, any `mcp`) needs an admin or a
+   head of a department allowed to use the bot to approve it on a card that shows the target, mode
+   and, for `mcp`, the tools marked read-only.
+6. Use: `ssh` and `http` through connection tools in the service (`read-only` tools run freely,
+   `http` read is GET/HEAD only; `change` tools are confirmed per call); `mcp` tools are classified
+   by the approved read-only list, everything else is confirmed per call. Credentials never reach
+   the model, the computer or the audit trail.
+7. Admins see, link to other bots and revoke connections on the admin page. Revoke deletes our
+   secret; the page says what to remove on the target.
+
+Network reach: targets are reached from the host's network, which for BE's stack includes the
+tailnet. **[C]**
 
 ### 4.10 Shared knowledge
 
