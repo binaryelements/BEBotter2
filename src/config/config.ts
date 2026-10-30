@@ -9,6 +9,11 @@ const schema = z.object({
     .refine((b) => b.length === 32, "SECRETS_KEY must be 32 bytes"),
   BOT_NAME: z.string().default("BE Bot"),
   DEFAULT_MODEL: z.string().default("claude-haiku-5-5"),
+  PUBLIC_URL: z.string().min(1).transform((s) => s.replace(/\/+$/, "")),
+  ADMIN_EMAILS: z
+    .string()
+    .default("")
+    .transform((s) => s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean)),
   PORT: z.coerce.number().int().default(3978),
   clientId: z.string().min(1),
   tenantId: z.string().min(1),
@@ -24,6 +29,8 @@ export type Config = {
   secretsKey: Buffer;
   botName: string;
   defaultModel: string;
+  publicUrl: string;
+  adminEmails: string[];
   port: number;
   teams: { clientId: string; tenantId: string; clientSecret: string };
   computerImage: string;
@@ -39,6 +46,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     secretsKey: e.SECRETS_KEY,
     botName: e.BOT_NAME,
     defaultModel: e.DEFAULT_MODEL,
+    publicUrl: e.PUBLIC_URL,
+    adminEmails: e.ADMIN_EMAILS,
     port: e.PORT,
     teams: { clientId: e.clientId, tenantId: e.tenantId, clientSecret: e.clientSecret },
     computerImage: e.COMPUTER_IMAGE,
