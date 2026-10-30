@@ -165,6 +165,28 @@ describe("runTurn", () => {
     expect(await db.select().from(sessions)).toHaveLength(1);
   });
 
+  it("starts a fresh session when resuming the stored one fails", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(sessions).values({ chatId: "c1", definitionId: definition.id, sdkSessionId: "gone", updatedAt: new Date() });
+    const seen: Options[] = [];
+    const queryFn = (({ options }: { prompt: string; options: Options }) => {
+      seen.push(options);
+      return (async function* () {
+        if (options.resume) throw new Error("No conversation found with session ID: gone");
+        yield { type: "result", subtype: "success", result: "Fresh.", session_id: "s-new", total_cost_usd: 0.002, num_turns: 1, duration_ms: 10, is_error: false };
+      })();
+    }) as unknown as typeof query;
+    const result = await runTurn(deps(db, queryFn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
+    });
+    expect(result).toEqual({ text: "Fresh.", costUsd: 0.002, sessionId: "s-new" });
+    expect(seen.map((o) => o.resume)).toEqual(["gone", undefined]);
+    expect(await db.select().from(sessions)).toMatchObject([{ chatId: "c1", sdkSessionId: "s-new" }]);
+    errors.mockRestore();
+  });
+
   it("leaves out the computer when the definition has none", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

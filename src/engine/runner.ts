@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import type { CanUseTool, HookCallback, Options, query } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, HookCallback, Options, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import { beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
 import { ensureComputer } from "../computer/computer.js";
@@ -111,7 +111,6 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     settingSources: [],
     persistSession: true,
     maxTurns: 25,
-    ...(session ? { resume: session.sdkSessionId } : {}),
     mcpServers: { ...(computer ? { computer } : {}), ...mcpServerConfigs(definition, deps.secretsKey) },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
@@ -122,22 +121,45 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     await completeAction(db, auditId, { status, ...(costUsd !== undefined ? { costUsd } : {}) });
   };
 
-  try {
-    for await (const msg of deps.queryFn({ prompt: turn.text, options })) {
-      if (msg.type !== "result") continue;
-      // a "success" with is_error carries API error text in result, which must not reach the chat
-      const ok = msg.subtype === "success" && !msg.is_error;
-      const text = ok && msg.subtype === "success" ? msg.result : FAILED_TEXT;
-      const now = new Date();
-      await db
-        .insert(sessions)
-        .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
-        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
-      await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd);
-      return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id };
+  const attempt = async (resume?: string): Promise<SDKResultMessage | undefined> => {
+    for await (const msg of deps.queryFn({ prompt: turn.text, options: { ...options, ...(resume ? { resume } : {}) } })) {
+      if (msg.type === "result") return msg;
     }
-    await auditMessage(FAILED_TEXT, "failed");
-    throw new Error("Agent SDK query ended without a result");
+    return undefined;
+  };
+  // a "success" with is_error carries API error text in result, which must not reach the chat
+  const succeeded = (msg?: SDKResultMessage) => msg?.subtype === "success" && !msg.is_error;
+
+  try {
+    let msg: SDKResultMessage | undefined;
+    if (session) {
+      try {
+        msg = await attempt(session.sdkSessionId);
+      } catch (err) {
+        console.error("resume failed", err);
+      }
+      if (!succeeded(msg)) {
+        // the transcript may be gone (redeploy, lost volume); start a fresh session once
+        if (msg) await auditMessage(FAILED_TEXT, "failed", msg.total_cost_usd);
+        await db.delete(sessions).where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
+        msg = await attempt();
+      }
+    } else {
+      msg = await attempt();
+    }
+    if (!msg) {
+      await auditMessage(FAILED_TEXT, "failed");
+      throw new Error("Agent SDK query ended without a result");
+    }
+    const ok = succeeded(msg);
+    const text = ok && msg.subtype === "success" ? msg.result : FAILED_TEXT;
+    const now = new Date();
+    await db
+      .insert(sessions)
+      .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
+      .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
+    await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd);
+    return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id };
   } finally {
     // allowed but never finished (interrupted, maxTurns hit, stream died)
     for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });

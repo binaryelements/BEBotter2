@@ -6,6 +6,7 @@ services:
       - "127.0.0.1:3978:3978"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - claude:/root/.claude
     depends_on:
       - postgres
     restart: unless-stopped
@@ -20,3 +21,4 @@ services:
     restart: unless-stopped
 volumes:
   pgdata:
+  claude:
