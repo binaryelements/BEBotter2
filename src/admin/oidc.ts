@@ -51,7 +51,7 @@ export function oidcRoutes(deps: OidcDeps): Router {
     res.redirect(302, `${authority(config.teams.tenantId)}/oauth2/v2.0/authorize?${query}`);
   });
 
-  router.get("/auth/callback", async (req, res, next) => {
+  router.get("/auth/callback", async (req, res) => {
     try {
       // The login state is single-use: drop it whatever happens next.
       res.append("Set-Cookie", cookie(LOGIN_COOKIE, "", 0));
@@ -84,7 +84,9 @@ export function oidcRoutes(deps: OidcDeps): Router {
       res.append("Set-Cookie", cookie(SESSION_COOKIE, signSession(sKey, session), SESSION_SECONDS));
       res.redirect(303, "/admin");
     } catch (e) {
-      next(e);
+      // Answered here so no stack trace ever reaches the browser.
+      console.error("admin sign-in failed", e);
+      page(res, 500, "Sign-in failed. Start again.");
     }
   });
 
@@ -118,7 +120,7 @@ export function realOidcDeps(config: OidcDeps["config"], db: Db): OidcDeps {
       return { id_token: body.id_token };
     },
     verifyIdToken: async (idToken, nonce) => {
-      const { payload } = await jwtVerify(idToken, jwks, { issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`, audience: clientId, algorithms: ["RS256"] });
+      const { payload } = await jwtVerify(idToken, jwks, { issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`, audience: clientId, algorithms: ["RS256"], requiredClaims: ["exp", "iat"] });
       if (typeof payload.nonce !== "string" || !sameSecret(payload.nonce, nonce)) throw new Error("ID token nonce mismatch");
       const oid = str(payload.oid), tid = str(payload.tid);
       if (!oid || !tid) throw new Error("ID token lacks oid or tid");

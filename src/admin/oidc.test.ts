@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import express from "express";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { people } from "../db/schema.js";
 import { oidcRoutes } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
-import { readSession, sessionKey, signSession } from "./session.js";
+import { loginKey, readSession, sessionKey, signSession, signToken } from "./session.js";
 import { serve } from "./test-server.js";
 
 type Claims = { oid: string; tid: string; name: string; email: string };
@@ -146,7 +146,7 @@ describe("oidc", () => {
     // Replayed without the cleared login cookie, as a browser would after a callback.
     expect((await callback("code-user", fresh.state)).status).toBe(400);
     // A login cookie forged under another key with a chosen state.
-    const forged = signSession(sessionKey(Buffer.alloc(32, 9)), { state: "s", nonce: "n", verifier: "v", exp: Date.now() + 60_000 } as never);
+    const forged = signToken(loginKey(Buffer.alloc(32, 9)), { state: "s", nonce: "n", verifier: "v", exp: Date.now() + 60_000 });
     expect((await callback("code-user", "s", `bb_login=${forged}`)).status).toBe(400);
     expect(exchanged.find((e) => e.code === "code-user")).toBeUndefined();
   });
@@ -193,5 +193,29 @@ describe("oidc", () => {
         expect(setCookie(res, "bb_session")).toBeUndefined();
       }
     });
+  });
+
+  it("answers a database failure with a plain 500 and no stack trace", async () => {
+    const broken = new Proxy({}, { get: () => { throw new Error("db down"); } }) as Db;
+    const app = express();
+    app.use("/admin", oidcRoutes({ db: broken, config, exchangeCode: async () => ({ id_token: "id-code-admin" }), verifyIdToken: async () => tokens["code-admin"] }));
+    const other = await serve(app);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const start = await fetch(`${other.url}/admin/auth/login`, { redirect: "manual" });
+      const token = value(setCookie(start, "bb_login"));
+      const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+      const res = await fetch(`${other.url}/admin/auth/callback?code=c&state=${state}`, { redirect: "manual", headers: { cookie: `bb_login=${token}` } });
+      const body = await res.text();
+      expect(res.status).toBe(500);
+      expect(body).toContain("Sign-in failed. Start again.");
+      expect(body).not.toMatch(/\bat /);
+      expect(body).not.toContain("db down");
+      expect(setCookie(res, "bb_session")).toBeUndefined();
+      expect(errors).toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+      await other.close();
+    }
   });
 });
