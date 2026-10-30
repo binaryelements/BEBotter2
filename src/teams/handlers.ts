@@ -89,5 +89,6 @@ export function handleConfirmClick(
 
 export const membersAddedGreeting = (botName: string): string => `Hi, I'm ${botName}. Mention me with a question or a job.`;
 
-export const tenantBotName = async (db: Db, tenantId: string, fallback: string): Promise<string> =>
-  (await getTenantSettings(db, tenantId)).botName ?? fallback;
+/** A failed settings lookup must not cost the greeting; it falls back to the environment name. */
+export const tenantBotName = (db: Db, tenantId: string, fallback: string): Promise<string> =>
+  getTenantSettings(db, tenantId).then((s) => s.botName ?? fallback, () => fallback);

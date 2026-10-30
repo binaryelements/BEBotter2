@@ -48,15 +48,21 @@ export async function mayEditPersona(db: Db, a: Actor, definitionId: string): Pr
 }
 
 export async function mayUseDefinition(db: Db, tenantId: string, personId: string, definitionId: string): Promise<boolean> {
-  if (!(await inTenant(db, tenantId, botDefinitions, definitionId))) return false;
-  const linked = await db.select({ id: definitionDepartments.departmentId }).from(definitionDepartments).where(eq(definitionDepartments.definitionId, definitionId));
+  // One row per linked department, or one row with a null department when there are none; no rows means not in this tenant.
+  const links = await db
+    .select({ id: definitionDepartments.departmentId })
+    .from(botDefinitions)
+    .leftJoin(definitionDepartments, eq(definitionDepartments.definitionId, botDefinitions.id))
+    .where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, tenantId)));
+  if (links.length === 0) return false;
+  const linked = links.flatMap((l) => (l.id ? [l.id] : []));
   if (linked.length === 0) return true;
-  const actor = await loadActor(db, tenantId, personId);
-  if (!actor) return false;
-  if (isAdmin(actor)) return true;
+  const [p] = await db.select({ role: people.role }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
+  if (!p) return false;
+  if (p.role === "admin") return true;
   const mine = await db
     .select({ id: departmentMembers.departmentId })
     .from(departmentMembers)
-    .where(and(eq(departmentMembers.personId, personId), inArray(departmentMembers.departmentId, linked.map((l) => l.id))));
+    .where(and(eq(departmentMembers.personId, personId), inArray(departmentMembers.departmentId, linked)));
   return mine.length > 0;
 }

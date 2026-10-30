@@ -137,6 +137,11 @@ it("greets with the tenant bot name when set", async () => {
   expect(membersAddedGreeting(await tenantBotName(db, "t1", "Bot"))).toBe("Hi, I'm Helper. Mention me with a question or a job.");
 });
 
+it("greets with the fallback name when the settings lookup fails", async () => {
+  const db = { select: () => { throw new Error("db down"); } } as never;
+  expect(await tenantBotName(db, "t1", "Bot")).toBe("Bot");
+});
+
 describe("handleMessage department access", () => {
   async function restricted() {
     const db = await testDb();
