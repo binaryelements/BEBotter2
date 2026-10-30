@@ -7,24 +7,60 @@ const MAX_OUTPUT = 20_000;
 const MAX_BODY = 100_000;
 const HTTP_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 // hop-by-hop headers and the ones that would let a caller act as someone else
-const BLOCKED_HEADERS = new Set(["host", "cookie", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "content-length"]);
+const BLOCKED_HEADERS = new Set([
+  "host", "cookie", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "content-length",
+  // headers some servers and proxies obey to rewrite the path, host or method
+  "x-original-url", "x-rewrite-url", "x-override-url", "x-http-method-override", "x-http-method", "x-method-override",
+  "x-forwarded-host", "x-forwarded-prefix", "x-forwarded-path", "x-forwarded-proto", "x-original-host", "x-host", "forwarded",
+]);
 
 const fail = (message: string): never => {
   throw new ConnectionError(message);
 };
 
-/** Replaces the secret, raw and URL-encoded, wherever it might be echoed back. */
-function scrubber(secret?: string): (s: string) => string {
-  if (!secret) return (s) => s;
-  const forms = [...new Set([secret, encodeURIComponent(secret), new URLSearchParams({ s: secret }).toString().slice(2)])];
-  return (s) => forms.reduce((out, f) => out.replaceAll(f, "[secret]"), s);
+type Mask = ((text: string, max?: number) => string) & { longest: number };
+
+/** Every form of the secret a target could echo back: raw, URL- and form-encoded, JSON-escaped, base64. */
+function secretForms(secret: string): string[] {
+  const json = JSON.stringify(secret).slice(1, -1);
+  const unicode = (upper: boolean) => secret.replace(/[^A-Za-z0-9]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")[upper ? "toUpperCase" : "toLowerCase"]()}`);
+  const forms = [
+    secret, encodeURIComponent(secret), new URLSearchParams({ s: secret }).toString().slice(2),
+    json, json.replaceAll("/", "\\/"), unicode(false), unicode(true),
+    // unpadded, so it also matches inside longer base64
+    Buffer.from(secret).toString("base64").replace(/=+$/, ""),
+  ];
+  return [...new Set(forms)].filter((f) => f.length > 0).sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Replaces the secret with [secret] and keeps the first `max` characters of the original text, so a
+ * secret crossing the cap is dropped, never cut in half. Text cut at a read limit must hold
+ * `max + longest` characters for every secret starting before `max` to be whole.
+ */
+function masker(secret?: string): Mask {
+  const forms = secret ? secretForms(secret) : [];
+  const re = forms.length ? new RegExp(forms.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g") : undefined;
+  const mask = (text: string, max = Infinity) => {
+    let out = "";
+    let last = 0;
+    for (const m of re ? text.matchAll(re) : []) {
+      if (m.index >= max) break;
+      out += text.slice(last, m.index) + "[secret]";
+      last = m.index + m[0].length;
+    }
+    return (out + text.slice(last, Math.max(last, Math.min(text.length, max)))).slice(0, max);
+  };
+  return Object.assign(mask, { longest: forms[0]?.length ?? 0 });
 }
 
 /** Resolves a model-chosen path under the base URL, or refuses it before any request. */
 function resolvePath(target: string, path: string): URL {
-  const plain = path.split(/[?#]/)[0]!.replace(/%2e/gi, ".").replace(/%2f/gi, "/").replace(/%5c/gi, "\\");
-  if (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("//") || /[\\\x00-\x1f\x7f]/.test(path + plain) || plain.split("/").includes(".."))
-    fail("The path must be relative to the connection's URL, without .. segments, backslashes or control characters");
+  const pathPart = path.split(/[?#]/)[0]!;
+  const plain = pathPart.replace(/%2e/gi, ".").replace(/%2f/gi, "/").replace(/%5c/gi, "\\").replace(/%3b/gi, ";");
+  // %25 is a double encoding a server may decode twice; "..;" climbs on servers that strip path parameters
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("//") || /[\\\x00-\x1f\x7f]/.test(path + plain) || /%25/i.test(pathPart) || plain.split("/").some((seg) => seg.split(";")[0] === ".."))
+    fail("The path must be relative to the connection's URL, without .. segments, double encoding, backslashes or control characters");
   const base = new URL(target);
   if (!base.pathname.endsWith("/")) base.pathname += "/";
   const url = new URL(path, base);
@@ -46,7 +82,7 @@ async function readCapped(res: Response, max: number): Promise<string> {
   return text.slice(0, max);
 }
 
-async function send(fetchFn: typeof fetch, url: URL, init: RequestInit, scrub: (s: string) => string, timeoutMs: number): Promise<Response> {
+async function send(fetchFn: typeof fetch, url: URL, init: RequestInit, scrub: Mask, timeoutMs: number): Promise<Response> {
   try {
     return await fetchFn(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
   } catch (e) {
@@ -62,7 +98,7 @@ export async function sendHttp(
   req: HttpRequest,
   timeoutMs = 60_000,
 ): Promise<{ status: number; text: string }> {
-  const scrub = scrubber(conn.secret);
+  const scrub = masker(conn.secret);
   if (!HTTP_TOKEN.test(req.method)) fail("Invalid method");
   if (req.body !== undefined && req.body.length > MAX_BODY) fail(`The body is over ${MAX_BODY} characters`);
   const url = resolvePath(conn.target, req.path);
@@ -82,8 +118,8 @@ export async function sendHttp(
   const res = await send(fetchFn, url, { method: req.method, headers, ...(req.body !== undefined ? { body: req.body } : {}) }, scrub, timeoutMs);
   const location = res.headers.get("location");
   const head = `HTTP ${res.status} ${res.statusText}\n${location ? `Location: ${location}\n` : ""}`;
-  const body = await readCapped(res, MAX_OUTPUT);
-  return { status: res.status, text: scrub(head + body).slice(0, MAX_OUTPUT) };
+  const body = await readCapped(res, MAX_OUTPUT + scrub.longest);
+  return { status: res.status, text: scrub(head + body, MAX_OUTPUT) };
 }
 
 export const callHttp = async (...args: Parameters<typeof sendHttp>): Promise<string> => (await sendHttp(...args)).text;
@@ -92,7 +128,7 @@ type JsonRpc = { id?: number; result?: Record<string, unknown>; error?: { messag
 
 /** Connects to an MCP server over Streamable HTTP and returns its tool names. */
 export async function listMcpTools(fetchFn: typeof fetch, conn: { target: string; headerName?: string; secret?: string }, timeoutMs = 30_000): Promise<string[]> {
-  const scrub = scrubber(conn.secret);
+  const scrub = masker(conn.secret);
   const url = new URL(conn.target);
   const headers = new Headers({ Accept: "application/json, text/event-stream", "Content-Type": "application/json" });
   if (conn.headerName && conn.secret) headers.set(conn.headerName, conn.secret);
@@ -117,8 +153,8 @@ export async function listMcpTools(fetchFn: typeof fetch, conn: { target: string
         // not JSON: ignored, and reported below if no reply came
       }
     }
-    if (reply?.error) fail(scrub(`MCP ${method} failed: ${String(reply.error.message ?? "error")}`.slice(0, 500)));
-    return reply?.result ?? fail(`MCP ${method} failed: no readable answer (${res.status} ${res.statusText})`);
+    if (reply?.error) fail(scrub(`MCP ${method} failed: ${String(reply.error.message ?? "error")}`, 500));
+    return reply?.result ?? fail(scrub(`MCP ${method} failed: no readable answer (${res.status} ${res.statusText})`));
   };
   const init = await post("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "be-botter", version: "2" } });
   if (typeof init.protocolVersion === "string") headers.set("MCP-Protocol-Version", init.protocolVersion);
