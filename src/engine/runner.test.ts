@@ -148,9 +148,11 @@ describe("runTurn", () => {
       routine: { id: "r1", grantPersonId: person.id, post: async () => {} },
     });
     expect(asked).toHaveLength(1);
+    const row = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "tool")!;
+    expect(row).toMatchObject({ status: "denied", authority: null });
   });
 
-  it("confirmedBy returns the clicker while the approved tool runs", async () => {
+  it("confirmedBy is cleared once the approved tool has finished", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
     const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
@@ -168,7 +170,48 @@ describe("runTurn", () => {
       },
     });
     expect(seenBefore.v).toBeUndefined();
-    expect((q.seen[0]!.mcpServers!.probe as unknown as { confirmedBy: () => string | undefined }).confirmedBy()).toBe(boss.id);
+    expect((q.seen[0]!.mcpServers!.probe as unknown as { confirmedBy: () => string | undefined }).confirmedBy()).toBeUndefined();
+  });
+
+  it("confirmedBy names the admin who approved even when a parallel write is confirmed by someone else", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
+    await setRole(db, "t1", boss.id, "admin");
+    let readInside: string | undefined = "unset";
+    let approveConfirmed!: () => void;
+    const approved = new Promise<void>((r) => (approveConfirmed = r));
+    const fn = (({ options }: { options: Options }) =>
+      (async function* () {
+        const signal = new AbortController().signal;
+        const ask = (name: string, id: string, input: Record<string, unknown>) =>
+          options.canUseTool!(name, input, { signal, toolUseID: id } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+        const hook = options.hooks!.PostToolUse![0]!.hooks[0] as HookCallback;
+        const common = (name: string, id: string) => ({ hook_event_name: "PostToolUse", tool_name: name, tool_input: {}, tool_use_id: id, tool_response: "ok", session_id: "s-1", transcript_path: "", cwd: "" });
+        const approve = ask("mcp__connections__approve", "tu-a", { name: "x" }).then(async () => {
+          readInside = (options.mcpServers!.probe as unknown as { confirmedBy: () => string | undefined }).confirmedBy();
+          await hook(common("mcp__connections__approve", "tu-a") as PostToolUseHookInput, "tu-a", { signal });
+        });
+        const write = ask("mcp__tickets__close_ticket", "tu-w", { id: 7 }).then(() => hook(common("mcp__tickets__close_ticket", "tu-w") as PostToolUseHookInput, "tu-w", { signal }));
+        await Promise.all([approve, write]);
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, num_turns: 1, duration_ms: 1, is_error: false };
+      })()) as unknown as typeof query;
+    const d = { ...deps(db, fn), builtinServers: ({ confirmedBy }: { confirmedBy: () => string | undefined }) => ({ probe: { confirmedBy } as never }) };
+    await runTurn(d, {
+      tenantId: "t1", chatId: "c1", definition, person, text: "x",
+      askConfirmation: async (r) => {
+        if (r.summary.startsWith("approve")) {
+          await d.confirmations.resolve(r.actionId, boss.id, "yes");
+          approveConfirmed();
+        } else {
+          await approved;
+          await d.confirmations.resolve(r.actionId, person.id, "yes");
+        }
+      },
+    });
+    expect(readInside).toBe(boss.id);
+    const approveRow = (await listActions(db, { tenantId: "t1" })).find((r) => r.toolName === "mcp__connections__approve")!;
+    expect(approveRow.authority).toEqual({ type: "confirmation", personId: boss.id });
   });
 
   it("audits two identical parallel calls on their own rows", async () => {

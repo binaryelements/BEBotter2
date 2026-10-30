@@ -90,6 +90,7 @@ describe("access", () => {
     expect(await may(head.personId)).toBe(true);
     expect(await may(inA)).toBe(false);
     expect(await may(inB)).toBe(false);
+    expect(await confirmerPolicy(db, "t1", restricted, null, "write")(user.personId)).toBe(false);
   });
 
   it("approve: a plain-user asker may not; admin and allowed head may", async () => {
@@ -101,7 +102,6 @@ describe("access", () => {
     const headB = await upsertPerson(db, { tenantId: "t1", aadObjectId: "headB", name: "headB" });
     await setMembership(db, "t1", depB, headB.id, "head");
     expect(await may(headB.id)).toBe(false);
-    expect(await confirmerPolicy(db, "t1", restricted, null, "write")(user.personId)).toBe(false);
   });
 
   it("clicker from another tenant is refused", async () => {

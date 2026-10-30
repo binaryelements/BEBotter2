@@ -63,9 +63,19 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   // tool use id → audit row of a call that was allowed and has not finished yet
   const inFlight = new Map<string, string>();
-  // SDK tool handlers never see the confirmation; calls wait on their card, so the latest confirmer owns the running call
+  // SDK tool handlers never see the confirmation. Parallel calls may be confirmed in any order, so only an
+  // approve-class call sets the marker and approve calls run one at a time, each waiting for the previous to finish.
   let lastConfirmer: string | undefined;
   const confirmedBy = () => lastConfirmer;
+  let approveTail: Promise<void> = Promise.resolve();
+  const approveReleases = new Map<string, () => void>(); // tool use id → frees the next approve call
+  const releaseApprove = (toolUseID: string) => {
+    const release = approveReleases.get(toolUseID);
+    if (!release) return;
+    approveReleases.delete(toolUseID);
+    lastConfirmer = undefined;
+    release();
+  };
 
   const canUseTool: CanUseTool = async (toolName, input, { toolUseID }) => {
     const json = JSON.stringify(input);
@@ -87,10 +97,16 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
     }
+    if (kind === "approve") {
+      const previous = approveTail;
+      approveTail = new Promise<void>((resolve) => approveReleases.set(toolUseID, resolve));
+      await previous;
+    }
     // the card shows every argument, so a call too large to show is never asked
     const args = JSON.stringify(input, null, 2);
     if (args.length > MAX_CARD_ARGS) {
       await completeAction(db, auditId, { status: "denied" });
+      releaseApprove(toolUseID);
       return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
     }
     const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind) });
@@ -103,12 +119,13 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       o = { result: "failed" }; // the question never reached the asker; the model gets the denial and the turn goes on
     }
     if (o.result === "confirmed") {
-      lastConfirmer = o.personId;
+      if (kind === "approve") lastConfirmer = o.personId;
       await recordAuthority(db, auditId, { type: "confirmation", personId: o.personId });
       inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
     }
     await completeAction(db, auditId, { status: o.result });
+    releaseApprove(toolUseID);
     return { behavior: "deny", message: NOT_DONE[o.result] };
   };
 
@@ -117,6 +134,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const auditId = inFlight.get(input.tool_use_id);
     if (auditId) {
       inFlight.delete(input.tool_use_id);
+      releaseApprove(input.tool_use_id);
       await completeAction(db, auditId, { status: input.hook_event_name === "PostToolUse" ? "done" : "failed" });
     }
     return {};
@@ -203,5 +221,6 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     // allowed but never finished (interrupted, maxTurns hit, stream died)
     for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });
     inFlight.clear();
+    for (const id of [...approveReleases.keys()]) releaseApprove(id);
   }
 }
