@@ -15,7 +15,8 @@ export function confirmationCard({ actionId, label, summary, args }: Confirmatio
     [
       { type: "TextBlock", text: `${label} wants to:`, weight: "Bolder" },
       { type: "TextBlock", text: summary, wrap: true },
-      { type: "TextBlock", text: args, wrap: true, fontType: "Monospace" },
+      // RichTextBlock does not render Markdown, so tool arguments show exactly as sent
+      { type: "RichTextBlock", inlines: [{ type: "TextRun", text: args, fontType: "Monospace" }] },
     ],
     [
       { type: "Action.Execute", title: "Yes, do it", verb: "confirm", data: { actionId, answer: "yes" } },
