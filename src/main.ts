@@ -9,6 +9,7 @@ import { loadEnvFile } from "./config/env-file.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { connect } from "./db/client.js";
 import { Confirmations } from "./engine/confirm.js";
+import { systemSsh } from "./connections/ssh.js";
 import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { createTeamsApp } from "./teams/app.js";
@@ -25,6 +26,7 @@ const runnerDeps: RunnerDeps = {
   docker: dockerodeClient(config.dockerSocket),
   computerImage: config.computerImage,
   filesDir: config.filesDir,
+  ssh: systemSsh(),
 };
 const fetchUsers = graphFetchUsers(config);
 const app = createTeamsApp({ db, runTurn: (turn) => runTurn(runnerDeps, turn), confirmations, botName: config.botName });

@@ -7,6 +7,7 @@ import { listActions } from "../audit/audit.js";
 import { upsertDefinition } from "../bots/definitions.js";
 import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
+import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
 import { setRole } from "../org/directory.js";
@@ -70,7 +71,7 @@ const filesDir = fs.mkdtempSync(path.join(os.tmpdir(), "bebotter2-files-"));
 
 function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()) {
   const docker = fakeDockerClient();
-  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir };
+  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir, ssh: fakeSsh() };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -93,7 +94,7 @@ describe("runTurn", () => {
     expect(result).toEqual({ text: "Done.", costUsd: 0.001, sessionId: "s-1" });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
-    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "knowledge", "tickets"]);
+    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
     expect(q.seen[0]!.cwd).toBe(filesDir);
 

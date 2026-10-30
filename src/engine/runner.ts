@@ -7,6 +7,8 @@ import { mcpServerConfigs } from "../bots/definitions.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
+import { connectionsMcpServer } from "../connections/mcp.js";
+import type { SshRunner } from "../connections/ssh.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
@@ -22,6 +24,7 @@ export type RunnerDeps = {
   docker: DockerClient;
   computerImage: string;
   filesDir: string;
+  ssh: SshRunner;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
 };
@@ -155,7 +158,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     maxTurns: 25,
     // the model's process gets no service secrets, only what it needs to run
     env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey) },
+    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), connections: connectionsMcpServer(deps, { ...base, confirmedBy }), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey) },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };
