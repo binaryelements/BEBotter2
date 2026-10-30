@@ -5,7 +5,7 @@ import type { Db } from "../db/client.js";
 import { botDefinitions, chatAssignments, chats, definitionDepartments, departments } from "../db/schema.js";
 import type { BotDefinition, McpServerRecord } from "../db/schema.js";
 import { DirectoryError } from "../org/directory.js";
-import { upsertTenant } from "../org/org.js";
+import { getTenantSettings, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
 export const mcpServerInput = z.object({
@@ -27,7 +27,7 @@ export const botDefinitionInput = z.object({
   name: z.string().min(1),
   label: z.string().min(1),
   persona: z.string(),
-  model: z.string().default("claude-haiku-5-5"),
+  model: z.string().optional(),
   webSearch: z.boolean().default(false),
   computer: z.boolean().default(false),
   mcpServers: z.array(mcpServerInput).default([]),
@@ -41,8 +41,9 @@ export async function upsertDefinition(db: Db, secretsKey: Buffer, tenantId: str
     ...s,
     ...(headers && Object.keys(headers).length > 0 ? { headersCipher: encrypt(secretsKey, JSON.stringify(headers)) } : {}),
   }));
-  const fields = { label: p.label, persona: p.persona, model: p.model, webSearch: p.webSearch, computer: p.computer, mcpServers };
   await upsertTenant(db, { id: tenantId }); // the definition row references tenants
+  const model = p.model ?? (await getTenantSettings(db, tenantId)).defaultModel ?? "claude-haiku-5-5";
+  const fields = { label: p.label, persona: p.persona, model, webSearch: p.webSearch, computer: p.computer, mcpServers };
   const [row] = await db
     .insert(botDefinitions)
     .values({ id: crypto.randomUUID(), tenantId, name: p.name, ...fields })

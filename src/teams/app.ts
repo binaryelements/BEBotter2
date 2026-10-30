@@ -5,7 +5,7 @@ import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { findPersonId } from "../org/org.js";
 import { resultCard } from "./cards.js";
-import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting } from "./handlers.js";
+import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting, tenantBotName } from "./handlers.js";
 
 export type TeamsAppDeps = {
   db: Db;
@@ -21,7 +21,8 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
   app.onConversationUpdate("membersAdded", async (ctx) => {
     const botId = ctx.activity.recipient?.id;
     if (!ctx.activity.membersAdded?.some((m) => m.id === botId)) return;
-    await ctx.sendActivity(membersAddedGreeting(deps.botName));
+    const tenantId = ctx.activity.conversation?.tenantId;
+    await ctx.sendActivity(membersAddedGreeting(tenantId ? await tenantBotName(deps.db, tenantId, deps.botName) : deps.botName));
   });
 
   app.onActivity("message", async (ctx) => {

@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { upsertDefinition } from "../bots/definitions.js";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
-import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { eq } from "drizzle-orm";
 import { auditEvents } from "../db/schema.js";
-import { beginAction, completeAction, listActions, pruneAudit, recordAuthority, summarise } from "./audit.js";
+import { beginAction, completeAction, listActions, pruneAudit, recordAuthority, startAuditPruning, summarise } from "./audit.js";
 
 async function setup(db: Db) {
   await upsertTenant(db, { id: "t1" });
@@ -93,5 +93,26 @@ describe("audit filters and prune", () => {
     expect(await pruneAudit(db, "t1", 30)).toBe(1);
     expect(await listActions(db, { tenantId: "t1" })).toHaveLength(2);
     expect(await listActions(db, { tenantId: "t2" })).toHaveLength(1);
+  });
+});
+
+describe("startAuditPruning", () => {
+  it("prunes every tenant by its retention at once and on each tick, and logs", async () => {
+    const db = await testDb();
+    const ids = await setup(db);
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 1, defaultModel: null });
+    const old = async () => {
+      const id = await beginAction(db, { tenantId: "t1", ...ids, kind: "message", summary: "x" });
+      await completeAction(db, id, { status: "done" });
+      await db.update(auditEvents).set({ finishedAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(auditEvents.id, id));
+    };
+    await old();
+    const log = vi.fn();
+    const stop = startAuditPruning(db, 200, log);
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith("audit prune: t1=1"));
+    await old();
+    await vi.waitFor(() => expect(log.mock.calls.filter(([l]) => l === "audit prune: t1=1")).toHaveLength(2), { timeout: 5000 });
+    stop();
+    expect(await listActions(db, { tenantId: "t1" })).toEqual([]);
   });
 });

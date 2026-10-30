@@ -6,6 +6,7 @@ import {
 } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { DirectoryError, listDepartments } from "../org/directory.js";
+import { getTenantSettings } from "../org/org.js";
 import { isAdmin, mayEditPersona } from "./access.js";
 import { html, layout } from "./html.js";
 import type { SafeHtml } from "./html.js";
@@ -38,7 +39,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
     wrap(async (_req, res) => {
       const { actor } = adminOf(res);
       const admin = isAdmin(actor);
-      const [defs, depts] = await Promise.all([listDefinitions(db, actor.tenantId), listDepartments(db, actor.tenantId)]);
+      const [defs, depts, settings] = await Promise.all([listDefinitions(db, actor.tenantId), listDepartments(db, actor.tenantId), getTenantSettings(db, actor.tenantId)]);
       const names = new Map(depts.map((d) => [d.id, d.name]));
       const rows = [];
       for (const d of defs) {
@@ -53,7 +54,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
 <table><thead><tr><th>Name</th><th>Label</th><th>Model</th><th>Computer</th><th>Web search</th><th>Departments</th></tr></thead><tbody>${rows}</tbody></table>${
           admin
             ? html`<h2>New bot</h2><form method="post" action="/admin/bots">${csrfField(res)}
-<p><label>Name <input name="name" required></label> <label>Label <input name="label" required></label> <label>Model <input name="model" value="${defaultModel}"></label></p>
+<p><label>Name <input name="name" required></label> <label>Label <input name="label" required></label> <label>Model <input name="model" value="${settings.defaultModel ?? defaultModel}"></label></p>
 <p><label>Persona<textarea name="persona"></textarea></label></p><button>Create</button></form>`
             : ""
         }`,
@@ -67,7 +68,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       const parsed = botDefinitionInput.safeParse({
-        name: field(req, "name").trim(), label: field(req, "label").trim(), persona: field(req, "persona"), model: field(req, "model").trim() || defaultModel,
+        name: field(req, "name").trim(), label: field(req, "label").trim(), persona: field(req, "persona"), model: field(req, "model").trim() || undefined,
       });
       if (!parsed.success) throw new DirectoryError(parsed.error.issues[0].message);
       if ((await listDefinitions(db, actor.tenantId)).some((d) => d.name === parsed.data.name)) throw new DirectoryError(`Bot "${parsed.data.name}" already exists`);

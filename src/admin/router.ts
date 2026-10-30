@@ -9,6 +9,7 @@ import { adminOf, wrap } from "./http.js";
 import { oidcRoutes, page } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
 import { peopleRoutes } from "./people.js";
+import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 
 export type AdminDeps = OidcDeps & { botName: string; defaultModel: string };
@@ -40,6 +41,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));
+  router.use(settingsRoutes(db));
 
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof DirectoryError) return page(res, 400, err.message);

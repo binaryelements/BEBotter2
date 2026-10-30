@@ -3,8 +3,11 @@ import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
-import { upsertChat, upsertTenant } from "../org/org.js";
-import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting } from "./handlers.js";
+import { setAllowedDepartments } from "../bots/definitions.js";
+import { auditEvents } from "../db/schema.js";
+import { createDepartment, setMembership, setRole } from "../org/directory.js";
+import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting, tenantBotName } from "./handlers.js";
 import type { IncomingMessage } from "./handlers.js";
 
 const msg = (conversationType: string): IncomingMessage => ({
@@ -125,3 +128,48 @@ describe("clickPayload", () => {
 });
 
 it("greets", () => expect(membersAddedGreeting("Bot")).toBe("Hi, I'm Bot. Mention me with a question or a job."));
+
+it("greets with the tenant bot name when set", async () => {
+  const db = await testDb();
+  await upsertTenant(db, { id: "t1" });
+  expect(membersAddedGreeting(await tenantBotName(db, "t1", "Bot"))).toContain("I'm Bot.");
+  await setTenantSettings(db, "t1", { botName: "Helper", retentionDays: 90, defaultModel: null });
+  expect(membersAddedGreeting(await tenantBotName(db, "t1", "Bot"))).toBe("Hi, I'm Helper. Mention me with a question or a job.");
+});
+
+describe("handleMessage department access", () => {
+  async function restricted() {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    await upsertChat(db, { id: "c1", tenantId: "t1", conversationType: "personal" });
+    const def = await upsertDefinition(db, Buffer.alloc(32), "t1", { name: "helper", label: "Helper", persona: "p" });
+    await assignToChat(db, "c1", def.id);
+    const sales = await createDepartment(db, "t1", "Sales");
+    await setAllowedDepartments(db, "t1", def.id, [sales.id]);
+    const mem = await upsertPerson(db, { tenantId: "t1", aadObjectId: "member", name: "Mo" });
+    await setMembership(db, "t1", sales.id, mem.id, "member");
+    const adm = await upsertPerson(db, { tenantId: "t1", aadObjectId: "admin", name: "Ad" });
+    await setRole(db, "t1", adm.id, "admin");
+    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s" }));
+    const as = async (aadObjectId: string) => {
+      const sent: string[] = [];
+      await handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, async (t) => void sent.push(t), async () => {});
+      return sent;
+    };
+    return { db, runTurn, as };
+  }
+
+  it("serves a member of a linked department and an admin", async () => {
+    const s = await restricted();
+    expect(await s.as("member")).toEqual(["reply"]);
+    expect(await s.as("admin")).toEqual(["reply"]);
+    expect(s.runTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses anyone else without a model call or audit row", async () => {
+    const s = await restricted();
+    expect(await s.as("stranger")).toEqual(["You don't have access to this bot."]);
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(await s.db.select().from(auditEvents)).toEqual([]);
+  });
+});

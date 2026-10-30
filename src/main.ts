@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { startServer } from "@microsoft/agents-hosting-express";
 import { realOidcDeps } from "./admin/oidc.js";
 import { adminRouter } from "./admin/router.js";
+import { startAuditPruning } from "./audit/audit.js";
 import { dockerodeClient } from "./computer/docker.js";
 import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
@@ -34,3 +35,5 @@ startServer(app, {
     express.get("/health", (_req, res) => void res.json({ ok: true }));
   },
 });
+
+startAuditPruning(db, 24 * 60 * 60 * 1000);

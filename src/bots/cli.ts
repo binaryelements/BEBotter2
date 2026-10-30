@@ -31,7 +31,9 @@ async function main(): Promise<void> {
 
   if (command === "upsert") {
     if (!values.tenant || !values.file) throw new Error(usage);
-    const input = botDefinitionInput.parse({ model: config.defaultModel, ...JSON.parse(readFileSync(values.file, "utf8")) });
+    // An explicit DEFAULT_MODEL wins over the tenant default; otherwise upsertDefinition picks tenant, then built-in.
+    const fallback = process.env.DEFAULT_MODEL ? { model: config.defaultModel } : {};
+    const input = botDefinitionInput.parse({ ...fallback, ...JSON.parse(readFileSync(values.file, "utf8")) });
     console.log((await upsertDefinition(db, config.secretsKey, values.tenant, input)).id);
   } else if (command === "assign") {
     if (!values.tenant || !values.chat || !values.name) throw new Error(usage);

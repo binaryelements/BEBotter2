@@ -48,3 +48,17 @@ export async function findPersonId(db: Db, tenantId: string, aadObjectId: string
     .where(and(eq(people.tenantId, tenantId), eq(people.aadObjectId, aadObjectId)));
   return row?.id;
 }
+
+export type TenantSettings = { botName: string | null; retentionDays: number; defaultModel: string | null };
+
+export async function getTenantSettings(db: Db, tenantId: string): Promise<TenantSettings> {
+  const [row] = await db
+    .select({ botName: tenants.botName, retentionDays: tenants.retentionDays, defaultModel: tenants.defaultModel })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  return row ?? { botName: null, retentionDays: 90, defaultModel: null };
+}
+
+export async function setTenantSettings(db: Db, tenantId: string, settings: TenantSettings): Promise<void> {
+  await db.update(tenants).set(settings).where(eq(tenants.id, tenantId));
+}

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { auditEvents } from "../db/schema.js";
+import { auditEvents, tenants } from "../db/schema.js";
 import type { AuditEvent } from "../db/schema.js";
 
 export async function beginAction(
@@ -74,6 +74,22 @@ export async function pruneAudit(db: Db, tenantId: string, retentionDays: number
     .where(and(eq(auditEvents.tenantId, tenantId), isNotNull(auditEvents.finishedAt), lt(auditEvents.finishedAt, cutoff)))
     .returning({ id: auditEvents.id });
   return gone.length;
+}
+
+/** Prunes every tenant now and then every intervalMs; returns a stop function. Failures are logged, never thrown. */
+export function startAuditPruning(db: Db, intervalMs: number, log: (line: string) => void = console.log): () => void {
+  const run = async () => {
+    try {
+      const counts = [];
+      for (const t of await db.select({ id: tenants.id, days: tenants.retentionDays }).from(tenants)) counts.push(`${t.id}=${await pruneAudit(db, t.id, t.days)}`);
+      log(`audit prune: ${counts.join(" ")}`);
+    } catch (err) {
+      console.error("audit prune failed", err);
+    }
+  };
+  void run();
+  const timer = setInterval(() => void run(), intervalMs).unref();
+  return () => clearInterval(timer);
 }
 
 // shortcut: summaries are plain text cut at 200 characters, no redaction; revisit if tool inputs carry secrets.
