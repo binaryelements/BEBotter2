@@ -60,6 +60,8 @@ export function systemSsh(execFileImpl: ExecFileImpl = execFile as unknown as Ex
 
     exec: (target, command, timeoutMs = 120_000) =>
       withDir(async (dir) => {
+        const invalid = validTarget(target);
+        if (invalid) throw new Error(invalid);
         const keyFile = join(dir, "key");
         const known = join(dir, "known_hosts");
         const hostRef = target.port === 22 ? target.host : `[${target.host}]:${target.port}`;
@@ -73,9 +75,10 @@ export function systemSsh(execFileImpl: ExecFileImpl = execFile as unknown as Ex
         ], timeoutMs);
         let hostKey = target.hostKey;
         if (!hostKey) {
-          const line = (await readFile(known, "utf8").catch(() => "")).split("\n").find((l) => l.startsWith(`${hostRef} `));
-          const f = line?.split(/\s+/);
+          // the throwaway file holds only this connection, and ssh lowercases the host it writes
+          const f = (await readFile(known, "utf8").catch(() => "")).split("\n").find((l) => l.trim())?.trim().split(/\s+/);
           if (f && f.length >= 3) hostKey = `${f[1]} ${f[2]}`;
+          else if (r.exitCode !== 255) throw new Error("host key not recorded");
         }
         const hostKeyMismatch = !!target.hostKey && r.exitCode === 255 && MISMATCH.test(r.stderr);
         return { output: formatOutput(r), exitCode: r.exitCode, hostKey, hostKeyMismatch };

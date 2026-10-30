@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { systemSsh, validTarget, type ExecFileImpl } from "./ssh.js";
+import { systemSsh, validTarget } from "./ssh.js";
+import type { ExecFileImpl } from "./ssh.js";
 
 const have = (bin: string) => { try { execFileSync("which", [bin], { stdio: "ignore" }); return true; } catch { return false; } };
 const target = { host: "pve1", port: 2222, username: "bot", privateKey: "KEY", hostKey: "ssh-ed25519 AAAAx" };
@@ -49,7 +50,6 @@ describe("systemSsh", () => {
 
   it("first connect reads the accepted key back (non-default and default port)", async () => {
     for (const port of [2222, 22]) {
-      const { writeFileSync } = await import("node:fs");
       const impl: ExecFileImpl = (_f, args, _o, cb) => {
         expect(args).toContain("StrictHostKeyChecking=accept-new");
         const ref = port === 22 ? "pve1" : `[pve1]:${port}`;
@@ -68,5 +68,23 @@ describe("systemSsh", () => {
     expect(r.exitCode).toBe(255);
     const unpinned = await systemSsh(impl).exec({ ...target, hostKey: null }, "uptime");
     expect(unpinned.hostKeyMismatch).toBe(false);
+  });
+
+  it("exec refuses an invalid target before spawning ssh", async () => {
+    let called = false;
+    const impl: ExecFileImpl = () => { called = true; };
+    await expect(systemSsh(impl).exec({ ...target, host: "-oProxyCommand=x" }, "id")).rejects.toThrow();
+    expect(called).toBe(false);
+    expect(dirs()).toEqual([]);
+  });
+
+  it("first connect with an uppercase host still records the key; an unrecorded key throws", async () => {
+    const lower: ExecFileImpl = (_f, args, _o, cb) => {
+      writeFileSync(args.find((a) => a.startsWith("UserKnownHostsFile="))!.slice(19), "pve1 ssh-ed25519 AAAAnew\n");
+      cb(null, "", "");
+    };
+    expect((await systemSsh(lower).exec({ ...target, port: 22, host: "PVE1", hostKey: null }, "true")).hostKey).toBe("ssh-ed25519 AAAAnew");
+    const none: ExecFileImpl = (_f, _a, _o, cb) => cb(null, "", "");
+    await expect(systemSsh(none).exec({ ...target, hostKey: null }, "true")).rejects.toThrow("host key not recorded");
   });
 });
