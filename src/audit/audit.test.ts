@@ -3,7 +3,9 @@ import { upsertDefinition } from "../bots/definitions.js";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { beginAction, completeAction, listActions, recordAuthority, summarise } from "./audit.js";
+import { eq } from "drizzle-orm";
+import { auditEvents } from "../db/schema.js";
+import { beginAction, completeAction, listActions, pruneAudit, recordAuthority, summarise } from "./audit.js";
 
 async function setup(db: Db) {
   await upsertTenant(db, { id: "t1" });
@@ -62,5 +64,32 @@ describe("audit", () => {
     expect(summarise("mcp__tickets__close_ticket", { id: 7 })).toBe('close_ticket {"id":7}');
     expect(summarise("mcp__computer__bash", "not an object")).toBe("mcp__computer__bash");
     expect(summarise("WebSearch", { query: "x" })).toBe("WebSearch");
+  });
+});
+
+describe("audit filters and prune", () => {
+  it("filters by personIds, status and before; pending rows and other tenants survive prune", async () => {
+    const db = await testDb();
+    const ids = await setup(db);
+    await upsertTenant(db, { id: "t2" });
+    await upsertChat(db, { id: "c9", tenantId: "t2", conversationType: "groupChat" });
+    const other = await upsertDefinition(db, Buffer.alloc(32, 5), "t2", { name: "o", label: "O", persona: "" });
+    const old = new Date(Date.now() - 40 * 86_400_000);
+    const mk = async (tenantId: string, chatId: string, definitionId: string, status: "done" | "failed" | "pending", at: Date) => {
+      const id = await beginAction(db, { tenantId, chatId, definitionId, personId: ids.personId, kind: "message", summary: status });
+      if (status !== "pending") await completeAction(db, id, { status });
+      await db.update(auditEvents).set({ startedAt: at, ...(status === "pending" ? {} : { finishedAt: at }) }).where(eq(auditEvents.id, id));
+      return id;
+    };
+    await mk("t1", "c1", ids.definitionId, "done", old);
+    await mk("t1", "c1", ids.definitionId, "pending", old);
+    await mk("t1", "c1", ids.definitionId, "failed", new Date());
+    await mk("t2", "c9", other.id, "done", old);
+    expect(await listActions(db, { tenantId: "t1", personIds: [] })).toEqual([]);
+    expect(await listActions(db, { tenantId: "t1", personIds: [ids.personId], status: "failed" })).toHaveLength(1);
+    expect(await listActions(db, { tenantId: "t1", before: new Date(Date.now() - 86_400_000) })).toHaveLength(2);
+    expect(await pruneAudit(db, "t1", 30)).toBe(1);
+    expect(await listActions(db, { tenantId: "t1" })).toHaveLength(2);
+    expect(await listActions(db, { tenantId: "t2" })).toHaveLength(1);
   });
 });

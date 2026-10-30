@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { auditEvents } from "../db/schema.js";
 import type { AuditEvent } from "../db/schema.js";
@@ -44,18 +44,32 @@ export async function recordAuthority(db: Db, id: string, authority: { type: "co
 
 export async function listActions(
   db: Db,
-  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; limit?: number },
+  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; status?: string; before?: Date; limit?: number },
 ): Promise<AuditEvent[]> {
+  if (filter.personIds?.length === 0) return [];
   const conditions = [eq(auditEvents.tenantId, filter.tenantId)];
   if (filter.chatId) conditions.push(eq(auditEvents.chatId, filter.chatId));
   if (filter.definitionId) conditions.push(eq(auditEvents.definitionId, filter.definitionId));
   if (filter.personId) conditions.push(eq(auditEvents.personId, filter.personId));
+  if (filter.personIds) conditions.push(inArray(auditEvents.personId, filter.personIds));
+  if (filter.status) conditions.push(eq(auditEvents.status, filter.status));
+  if (filter.before) conditions.push(lt(auditEvents.startedAt, filter.before));
   return db
     .select()
     .from(auditEvents)
     .where(and(...conditions))
-    .orderBy(desc(auditEvents.startedAt))
+    .orderBy(desc(auditEvents.startedAt), desc(auditEvents.id))
     .limit(filter.limit ?? 100);
+}
+
+/** Deletes finished rows older than the retention; pending rows are never touched. */
+export async function pruneAudit(db: Db, tenantId: string, retentionDays: number, now = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
+  const gone = await db
+    .delete(auditEvents)
+    .where(and(eq(auditEvents.tenantId, tenantId), isNotNull(auditEvents.finishedAt), lt(auditEvents.finishedAt, cutoff)))
+    .returning({ id: auditEvents.id });
+  return gone.length;
 }
 
 // shortcut: summaries are plain text cut at 200 characters, no redaction; revisit if tool inputs carry secrets.

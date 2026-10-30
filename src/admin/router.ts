@@ -2,6 +2,7 @@ import express from "express";
 import type { NextFunction, Request, Response, Router } from "express";
 import { DirectoryError } from "../org/directory.js";
 import { isAdmin, loadActor, mayEnter } from "./access.js";
+import { activityRoutes } from "./activity.js";
 import { assignmentRoutes } from "./assignments.js";
 import { botRoutes } from "./bots.js";
 import { adminOf, wrap } from "./http.js";
@@ -38,6 +39,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(peopleRoutes(db));
   router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel }));
   router.use(assignmentRoutes(db));
+  router.use(activityRoutes(db));
 
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof DirectoryError) return page(res, 400, err.message);
