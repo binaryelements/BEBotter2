@@ -31,8 +31,8 @@ export async function upsertChat(
 ): Promise<Chat> {
   const [row] = await db
     .insert(chats)
-    .values({ id, tenantId, conversationType })
-    .onConflictDoUpdate({ target: chats.id, set: { conversationType } })
+    .values({ id, tenantId, conversationType, lastSeenAt: new Date() })
+    .onConflictDoUpdate({ target: chats.id, set: { conversationType, lastSeenAt: new Date() } })
     .returning();
   return row;
 }

@@ -2,7 +2,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
-import { botDefinitions, chatAssignments, definitionDepartments, departments } from "../db/schema.js";
+import { botDefinitions, chatAssignments, chats, definitionDepartments, departments } from "../db/schema.js";
 import type { BotDefinition, McpServerRecord } from "../db/schema.js";
 import { DirectoryError } from "../org/directory.js";
 import { upsertTenant } from "../org/org.js";
@@ -53,6 +53,28 @@ export async function upsertDefinition(db: Db, secretsKey: Buffer, tenantId: str
 
 export async function assignToChat(db: Db, chatId: string, definitionId: string): Promise<void> {
   await db.insert(chatAssignments).values({ chatId, definitionId }).onConflictDoNothing();
+}
+
+export async function unassignChat(db: Db, chatId: string): Promise<void> {
+  await db.delete(chatAssignments).where(eq(chatAssignments.chatId, chatId));
+}
+
+export async function setChatLabel(db: Db, tenantId: string, chatId: string, label: string): Promise<void> {
+  const value = label.trim() || null;
+  if (value && value.length > 80) throw new DirectoryError("Label is too long (80 characters at most)");
+  const rows = await db.update(chats).set({ label: value }).where(and(eq(chats.id, chatId), eq(chats.tenantId, tenantId))).returning({ id: chats.id });
+  if (!rows.length) throw new DirectoryError("Chat not found");
+}
+
+/** One bot per chat: replaces any existing link, or clears it when definitionId is null. */
+export async function setChatDefinition(db: Db, tenantId: string, chatId: string, definitionId: string | null): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [chat] = await tx.select({ id: chats.id }).from(chats).where(and(eq(chats.id, chatId), eq(chats.tenantId, tenantId)));
+    if (!chat) throw new DirectoryError("Chat not found");
+    if (definitionId && !(await tx.select({ id: botDefinitions.id }).from(botDefinitions).where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, tenantId)))).length) throw new DirectoryError("Bot not found");
+    await tx.delete(chatAssignments).where(eq(chatAssignments.chatId, chatId));
+    if (definitionId) await tx.insert(chatAssignments).values({ chatId, definitionId });
+  });
 }
 
 export async function definitionsForChat(db: Db, chatId: string): Promise<BotDefinition[]> {
