@@ -15,10 +15,11 @@ import type { Confirmations } from "./confirm.js";
 import { classify } from "./gate.js";
 
 export type RunnerDeps = { db: Db; queryFn: typeof query; confirmations: Confirmations; secretsKey: Buffer; docker: DockerClient; computerImage: string };
-export type ConfirmationRequest = { actionId: string; label: string; summary: string };
+export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
 export type RunResult = { text: string; costUsd: number; sessionId: string };
 
 const MAX_AUDIT_INPUT = 2000;
+const MAX_CARD_ARGS = 4000;
 const FAILED_TEXT = "I couldn't finish that.";
 
 export type RunTurnInput = {
@@ -59,10 +60,16 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
     }
+    // the card shows every argument, so a call too large to show is never asked
+    const args = JSON.stringify(input, null, 2);
+    if (args.length > MAX_CARD_ARGS) {
+      await completeAction(db, auditId, { status: "denied" });
+      return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
+    }
     const { actionId, outcome } = deps.confirmations.create({ auditId, askerPersonId: person.id });
     let o: "confirmed" | "denied" | "expired" | "failed";
     try {
-      await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input) });
+      await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input), args });
       o = await outcome;
     } catch {
       o = "failed"; // the question never reached the asker; the model gets the denial and the turn goes on

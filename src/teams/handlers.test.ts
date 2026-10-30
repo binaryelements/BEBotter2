@@ -20,7 +20,7 @@ async function setup(assign: boolean) {
   const turns: RunTurnInput[] = [];
   const runTurn = vi.fn(async (turn: RunTurnInput) => {
     turns.push(turn);
-    await turn.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X" });
+    await turn.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
     return { text: "reply", costUsd: 0, sessionId: "s" };
   });
   const sent: string[] = [];

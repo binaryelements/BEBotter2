@@ -84,7 +84,7 @@ describe("runTurn", () => {
 
     expect(result).toEqual({ text: "Done.", costUsd: 0.001, sessionId: "s-1" });
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}' });
+    expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
     expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
 
@@ -106,6 +106,18 @@ describe("runTurn", () => {
     await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
     const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
     expect(rows.map((r) => r.status)).toEqual(["done", "done"]);
+  });
+
+  it("denies a write call too large to show without asking", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7, note: "x".repeat(4000) }]] });
+    const asked: ConfirmationRequest[] = [];
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async (r) => void asked.push(r) });
+    expect(asked).toEqual([]);
+    expect(q.decisions).toEqual(["deny"]);
+    const row = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "tool")!;
+    expect(row.status).toBe("denied");
   });
 
   it("denies the write tool when the confirmation expires and still returns the result", async () => {
