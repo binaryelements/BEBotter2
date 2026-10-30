@@ -3,7 +3,7 @@ import { upsertDefinition } from "../bots/definitions.js";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { beginAction, completeAction, listActions, summarise } from "./audit.js";
+import { beginAction, completeAction, listActions, recordAuthority, summarise } from "./audit.js";
 
 async function setup(db: Db) {
   await upsertTenant(db, { id: "t1" });
@@ -15,6 +15,15 @@ async function setup(db: Db) {
 }
 
 describe("audit", () => {
+  it("records authority on a pending row without finishing it", async () => {
+    const db = await testDb();
+    const ids = await setup(db);
+    const id = await beginAction(db, { tenantId: "t1", ...ids, kind: "tool", toolName: "mcp__x__y", summary: "y" });
+    await recordAuthority(db, id, { type: "confirmation", personId: ids.personId });
+    const [row] = await listActions(db, { tenantId: "t1" });
+    expect(row).toMatchObject({ status: "pending", finishedAt: null, authority: { type: "confirmation", personId: ids.personId } });
+  });
+
   it("begins a pending row with startedAt set and finishedAt null", async () => {
     const db = await testDb();
     const ids = await setup(db);

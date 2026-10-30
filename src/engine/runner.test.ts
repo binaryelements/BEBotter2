@@ -19,24 +19,25 @@ const calls: [string, Record<string, unknown>][] = [
 ];
 
 /** Drives options.canUseTool and the PostToolUse hook the way the SDK does, then yields a result. */
-function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown> } = {}) {
+function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown>; calls?: [string, Record<string, unknown>][] } = {}) {
   const seen: Options[] = [];
   const decisions: (string | undefined)[] = [];
   const fn = (({ options }: { prompt: string; options: Options }) => {
     seen.push(options);
     return (async function* () {
       const signal = new AbortController().signal;
-      for (const [name, input] of calls) {
-        const r = await options.canUseTool!(name, input, { signal, toolUseID: "tu-1" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+      for (const [i, [name, input]] of (opts.calls ?? calls).entries()) {
+        const toolUseID = `tu-${i}`;
+        const r = await options.canUseTool!(name, input, { signal, toolUseID } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
         decisions.push(r?.behavior);
         if (r?.behavior !== "allow") continue;
-        const common = { tool_name: name, tool_input: input, tool_use_id: "tu-1", session_id: "s-1", transcript_path: "", cwd: "" };
+        const common = { tool_name: name, tool_input: input, tool_use_id: toolUseID, session_id: "s-1", transcript_path: "", cwd: "" };
         if (name === opts.failTool) {
           const hook = options.hooks!.PostToolUseFailure![0]!.hooks[0] as HookCallback;
-          await hook({ ...common, hook_event_name: "PostToolUseFailure", error: "boom" } as PostToolUseFailureHookInput, "tu-1", { signal });
+          await hook({ ...common, hook_event_name: "PostToolUseFailure", error: "boom" } as PostToolUseFailureHookInput, toolUseID, { signal });
         } else {
           const hook = options.hooks!.PostToolUse![0]!.hooks[0] as HookCallback;
-          await hook({ ...common, hook_event_name: "PostToolUse", tool_response: "ok" } as PostToolUseHookInput, "tu-1", { signal });
+          await hook({ ...common, hook_event_name: "PostToolUse", tool_response: "ok" } as PostToolUseHookInput, toolUseID, { signal });
         }
       }
       yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 2, duration_ms: 10, is_error: false, ...opts.result };
@@ -96,6 +97,15 @@ describe("runTurn", () => {
     expect(close.status).toBe("done");
     expect(close.authority).toEqual({ type: "confirmation", personId: person.id });
     expect(message).toMatchObject({ status: "done", summary: "Done.", costUsd: "0.001000", model: definition.model });
+  });
+
+  it("audits two identical parallel calls on their own rows", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db, { computer: true });
+    const q = fakeQuery({ calls: [["mcp__computer__bash", { command: "uptime" }], ["mcp__computer__bash", { command: "uptime" }]] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
+    expect(rows.map((r) => r.status)).toEqual(["done", "done"]);
   });
 
   it("denies the write tool when the confirmation expires and still returns the result", async () => {

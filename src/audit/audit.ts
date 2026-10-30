@@ -38,6 +38,10 @@ export async function completeAction(
     .where(eq(auditEvents.id, id));
 }
 
+export async function recordAuthority(db: Db, id: string, authority: { type: "confirmation"; personId: string }): Promise<void> {
+  await db.update(auditEvents).set({ authority }).where(eq(auditEvents.id, id));
+}
+
 export async function listActions(
   db: Db,
   filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; limit?: number },

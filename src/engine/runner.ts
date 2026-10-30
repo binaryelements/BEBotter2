@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import type { CanUseTool, HookCallback, Options, query } from "@anthropic-ai/claude-agent-sdk";
-import { beginAction, completeAction, summarise } from "../audit/audit.js";
+import { beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
@@ -43,12 +43,10 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     ? computerMcpServer(deps.docker, await ensureComputer(db, deps.docker, deps.computerImage, definition.id))
     : undefined;
 
-  // canUseTool gets no tool_use_id, so the PostToolUse hook finds its audit row by name + input.
-  // shortcut: two identical calls in one turn share a key; key on tool_use_id if the SDK starts passing it.
-  const inFlight = new Map<string, { auditId: string; authority?: { type: "confirmation"; personId: string } }>();
-  const keyOf = (toolName: string, input: unknown) => toolName + JSON.stringify(input);
+  // tool use id → audit row of a call that was allowed and has not finished yet
+  const inFlight = new Map<string, string>();
 
-  const canUseTool: CanUseTool = async (toolName, input) => {
+  const canUseTool: CanUseTool = async (toolName, input, { toolUseID }) => {
     const json = JSON.stringify(input);
     const auditId = await beginAction(db, {
       ...base,
@@ -58,7 +56,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       summary: summarise(toolName, input),
     });
     if (classify(toolName, definition) === "read") {
-      inFlight.set(keyOf(toolName, input), { auditId });
+      inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
     }
     const { actionId, outcome } = deps.confirmations.create({ auditId, askerPersonId: person.id });
@@ -70,7 +68,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       o = "failed"; // the question never reached the asker; the model gets the denial and the turn goes on
     }
     if (o === "confirmed") {
-      inFlight.set(keyOf(toolName, input), { auditId, authority: { type: "confirmation", personId: person.id } });
+      await recordAuthority(db, auditId, { type: "confirmation", personId: person.id });
+      inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
     }
     await completeAction(db, auditId, { status: o });
@@ -79,12 +78,10 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   const afterTool: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" && input.hook_event_name !== "PostToolUseFailure") return {};
-    const key = keyOf(input.tool_name, input.tool_input);
-    const entry = inFlight.get(key);
-    if (entry) {
-      inFlight.delete(key);
-      const status = input.hook_event_name === "PostToolUse" ? "done" : "failed";
-      await completeAction(db, entry.auditId, { status, ...(entry.authority ? { authority: entry.authority } : {}) });
+    const auditId = inFlight.get(input.tool_use_id);
+    if (auditId) {
+      inFlight.delete(input.tool_use_id);
+      await completeAction(db, auditId, { status: input.hook_event_name === "PostToolUse" ? "done" : "failed" });
     }
     return {};
   };
@@ -130,7 +127,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     throw new Error("Agent SDK query ended without a result");
   } finally {
     // allowed but never finished (interrupted, maxTurns hit, stream died)
-    for (const { auditId } of inFlight.values()) await completeAction(db, auditId, { status: "failed" });
+    for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });
     inFlight.clear();
   }
 }
