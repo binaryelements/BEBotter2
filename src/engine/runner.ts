@@ -21,6 +21,11 @@ export type RunResult = { text: string; costUsd: number; sessionId: string };
 const MAX_AUDIT_INPUT = 2000;
 const MAX_CARD_ARGS = 4000;
 const FAILED_TEXT = "I couldn't finish that.";
+const NOT_DONE = {
+  denied: "Not done: declined in the chat.",
+  expired: "Not done: nobody confirmed within 10 minutes. Tell the chat you did not do it.",
+  failed: "Not done: the confirmation could not be sent.",
+};
 
 export type RunTurnInput = {
   tenantId: string;
@@ -71,7 +76,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     try {
       await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input), args });
       o = await outcome;
-    } catch {
+    } catch (err) {
+      console.error("confirmation card failed", err);
       o = "failed"; // the question never reached the asker; the model gets the denial and the turn goes on
     }
     if (o === "confirmed") {
@@ -80,7 +86,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       return { behavior: "allow", updatedInput: input };
     }
     await completeAction(db, auditId, { status: o });
-    return { behavior: "deny", message: "Not confirmed." };
+    return { behavior: "deny", message: NOT_DONE[o] };
   };
 
   const afterTool: HookCallback = async (input) => {

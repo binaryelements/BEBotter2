@@ -22,6 +22,7 @@ const calls: [string, Record<string, unknown>][] = [
 function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown>; calls?: [string, Record<string, unknown>][] } = {}) {
   const seen: Options[] = [];
   const decisions: (string | undefined)[] = [];
+  const messages: (string | undefined)[] = [];
   const fn = (({ options }: { prompt: string; options: Options }) => {
     seen.push(options);
     return (async function* () {
@@ -30,6 +31,7 @@ function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown>; 
         const toolUseID = `tu-${i}`;
         const r = await options.canUseTool!(name, input, { signal, toolUseID } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
         decisions.push(r?.behavior);
+        if (r?.behavior === "deny") messages.push(r.message);
         if (r?.behavior !== "allow") continue;
         const common = { tool_name: name, tool_input: input, tool_use_id: toolUseID, session_id: "s-1", transcript_path: "", cwd: "" };
         if (name === opts.failTool) {
@@ -43,7 +45,7 @@ function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown>; 
       yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 2, duration_ms: 10, is_error: false, ...opts.result };
     })();
   }) as unknown as typeof query;
-  return { fn, seen, decisions };
+  return { fn, seen, decisions, messages };
 }
 
 async function setup(db: Db, def: Partial<BotDefinitionInput> = {}) {
@@ -116,6 +118,7 @@ describe("runTurn", () => {
     await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async (r) => void asked.push(r) });
     expect(asked).toEqual([]);
     expect(q.decisions).toEqual(["deny"]);
+    expect(q.messages).toEqual(["Not done: the request was too large to show for confirmation."]);
     const row = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "tool")!;
     expect(row.status).toBe("denied");
   });
@@ -138,6 +141,7 @@ describe("runTurn", () => {
     expect(result.text).toBe("Done.");
     const rows = await listActions(db, { tenantId: "t1" });
     expect(rows.find((r) => r.toolName === "mcp__tickets__close_ticket")!.status).toBe("expired");
+    expect(q.messages).toEqual(["Not done: nobody confirmed within 10 minutes. Tell the chat you did not do it."]);
     expect(rows.find((r) => r.toolName === "mcp__computer__bash")!.status).toBe("done");
   });
 
@@ -153,6 +157,7 @@ describe("runTurn", () => {
     await runTurn(d, turn);
     const close = (await listActions(db, { tenantId: "t1" })).find((r) => r.toolName === "mcp__tickets__close_ticket")!;
     expect(close.status).toBe("denied");
+    expect(q.messages[0]).toBe("Not done: declined in the chat.");
     expect((await db.select().from(sessions))[0]).toMatchObject({ chatId: "c1", definitionId: definition.id, sdkSessionId: "s-1" });
     expect(q.seen[0]!.resume).toBeUndefined();
     await runTurn(d, turn);
@@ -200,6 +205,7 @@ describe("runTurn", () => {
   });
 
   it("denies the write tool and fails its row when askConfirmation rejects", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const db = await testDb();
     const { definition, person } = await setup(db);
     const q = fakeQuery();
@@ -208,6 +214,9 @@ describe("runTurn", () => {
     });
     expect(result.text).toBe("Done.");
     expect(q.decisions).toEqual(["allow", "deny"]);
+    expect(q.messages).toEqual(["Not done: the confirmation could not be sent."]);
+    expect(errors).toHaveBeenCalledWith("confirmation card failed", expect.any(Error));
+    errors.mockRestore();
     const rows = await listActions(db, { tenantId: "t1" });
     expect(rows.find((r) => r.toolName === "mcp__tickets__close_ticket")!.status).toBe("failed");
   });
