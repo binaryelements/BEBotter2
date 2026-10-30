@@ -76,15 +76,27 @@ export function connectionsMcpServer(deps: ConnectionDeps, ctx: Ctx): McpSdkServ
       ),
       tool(
         "approve",
-        "Approve a verified connection that awaits approval; an admin or department head confirms it.",
-        { name: z.string() },
-        ({ name }) =>
+        "Approve a verified connection that awaits approval; an admin or department head confirms it. Give the connection's kind, target, mode and, for mcp, its read-only tools exactly as stored, so the approver sees what they approve.",
+        {
+          name: z.string(),
+          kind: z.enum(["ssh", "http", "mcp"]),
+          target: z.string(),
+          mode: z.enum(["read-only", "change"]),
+          readOnlyTools: z.array(z.string()).optional(),
+        },
+        (a) =>
           run(async () => {
             const approver = ctx.confirmedBy();
             if (!approver) throw new ConnectionError("Approval needs a confirmation");
-            await linkedConnection(db, tenantId, definitionId, name);
-            await approveConnection(db, tenantId, name, approver);
-            return `${name}: active`;
+            const c = await linkedConnection(db, tenantId, definitionId, a.name);
+            const stored = new Set(c.kind === "mcp" ? (c.config as { readOnlyTools: string[] }).readOnlyTools : []);
+            const given = new Set(a.readOnlyTools ?? []);
+            const sameTools = (c.kind !== "mcp" || a.readOnlyTools !== undefined) && stored.size === given.size && [...given].every((t) => stored.has(t));
+            // the card shows these arguments, so they must be what is really being approved
+            if (c.kind !== a.kind || c.target !== a.target || c.mode !== a.mode || !sameTools)
+              throw new ConnectionError(`The details do not match ${a.name}; nothing was approved. Stored: ${c.kind} ${c.target}, ${c.mode}`);
+            await approveConnection(db, tenantId, a.name, approver);
+            return `${a.name}: active`;
           }),
       ),
       tool("ssh_read", `Run a command on an active read-only ssh connection. ${READ_ONLY_RULE}`, { name: z.string(), command: z.string() }, sshTool("read-only")),

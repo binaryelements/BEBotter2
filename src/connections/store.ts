@@ -64,7 +64,7 @@ function checkRequest(input: ConnectionRequest): ConnectionConfig {
     if (!auth) return {};
     if (auth.in !== "header" && auth.in !== "query") fail("auth.in must be header or query");
     if (typeof auth.name !== "string" || !HTTP_TOKEN.test(auth.name)) fail("Invalid auth name");
-    if (auth.prefix !== undefined && (typeof auth.prefix !== "string" || /[\r\n\0]/.test(auth.prefix))) fail("Invalid auth prefix");
+    if (auth.prefix !== undefined && (typeof auth.prefix !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32} ?$/.test(auth.prefix))) fail("Invalid auth prefix");
     return { auth: { in: auth.in as "header" | "query", name: auth.name as string, ...(auth.prefix !== undefined ? { prefix: auth.prefix as string } : {}) } };
   }
   if (input.kind === "mcp") {
@@ -122,10 +122,15 @@ export async function requestConnection(deps: ConnectionDeps, tenantId: string, 
   const definition = await getDefinition(db, tenantId, input.definitionId);
   if (!definition) fail("Bot not found");
   const existing = await getConnection(db, tenantId, input.name);
+  if (existing) {
+    // linking another bot is an admin action, so an unlinked bot learns nothing more than that the name is taken
+    const [link] = await db.select().from(definitionConnections)
+      .where(and(eq(definitionConnections.definitionId, input.definitionId), eq(definitionConnections.connectionId, existing.id)));
+    if (!link) fail(`A connection named ${input.name} already exists; an admin can link it to this bot on the admin page.`);
+  }
   if (existing && existing.status !== "revoked") {
     if (existing.kind !== input.kind || existing.target !== input.target)
       fail(`A connection named ${input.name} already exists for a different ${existing.kind !== input.kind ? "kind" : "target"}`);
-    await setLinked(db, tenantId, input.definitionId, existing.id, true);
     return { connection: existing, ...(existing.publicKey ? { publicKey: existing.publicKey } : {}) };
   }
   const key = input.kind === "ssh" ? await deps.ssh.generateKey(`${definition!.name}@${input.name}`) : undefined;
@@ -134,11 +139,13 @@ export async function requestConnection(deps: ConnectionDeps, tenantId: string, 
     secretCipher: key ? encrypt(deps.secretsKey, key.privateKey) : null, publicKey: key?.publicKey ?? null, hostKey: null,
     requestedByPersonId: input.personId, approvedByPersonId: null, updatedAt: new Date(),
   };
-  // a revoked connection keeps its row (and links) and starts over; a concurrent request for a new name loses the race and gets the winner
+  // a revoked connection keeps its row and starts over; a concurrent request for a new name loses the race and gets the winner
   const [row] = existing
     ? await db.update(connections).set(values).where(and(byId(tenantId, existing.id), eq(connections.status, "revoked"))).returning()
     : await db.insert(connections).values({ id: crypto.randomUUID(), tenantId, name: input.name, ...values }).onConflictDoNothing().returning();
   if (!row) return requestConnection(deps, tenantId, input);
+  // the old links were for the old target, so only the asking bot keeps one
+  if (existing) await db.delete(definitionConnections).where(and(eq(definitionConnections.connectionId, row.id), ne(definitionConnections.definitionId, input.definitionId)));
   await setLinked(db, tenantId, input.definitionId, row.id, true);
   return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
 }
@@ -154,7 +161,7 @@ async function exec(deps: ConnectionDeps, c: Connection, command: string) {
     return await deps.ssh.exec({ host: c.target, port, username, privateKey: decrypt(deps.secretsKey, c.secretCipher!), hostKey: c.hostKey }, command);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
-    if (!KNOWN_SSH_ERRORS.has(msg)) console.error("ssh failed", (e as { code?: unknown }).code ?? "unknown");
+    if (!KNOWN_SSH_ERRORS.has(msg)) console.error("ssh failed", (e as { code?: unknown } | undefined)?.code ?? "unknown");
     return fail(KNOWN_SSH_ERRORS.has(msg) ? `ssh failed: ${msg}` : "ssh could not run");
   }
 }

@@ -44,10 +44,13 @@ describe("connections store", () => {
 
   it("a second request for the same name returns the same key", async () => {
     const first = await request();
-    const second = await request({ definitionId: otherDefId });
+    await verifyConnection(deps, "t1", defId, "pve1");
+    const second = await request();
     expect(second.connection.id).toBe(first.connection.id);
     expect(second.publicKey).toBe(first.publicKey);
-    expect((await listConnectionsFor(db, "t1", otherDefId)).map((c) => c.name)).toEqual(["pve1"]);
+    // another bot cannot link itself to an existing connection by naming it
+    await expect(request({ definitionId: otherDefId })).rejects.toThrow("A connection named pve1 already exists; an admin can link it to this bot on the admin page.");
+    expect(await listConnectionsFor(db, "t1", otherDefId)).toEqual([]);
     await expect(request({ target: "other.example.test" })).rejects.toThrow(/already exists/);
     await expect(request({ kind: "http", target: "https://pve1.example.test/", config: {} })).rejects.toThrow(/already exists/);
   });
@@ -135,8 +138,12 @@ describe("connections store", () => {
     await expect(runSsh(deps, "t1", defId, "pve1", "uptime", "read-only")).rejects.toThrow();
     await expect(verifyConnection(deps, "t1", defId, "pve1")).rejects.toThrow();
     expect(fake.calls).toEqual([]);
-    // asking again starts over with a new key
+    // asking again starts over with a new key; only the asking bot stays linked, and an unlinked bot cannot claim the name
+    await setLinked(db, "t1", otherDefId, connection.id, true);
+    const thirdDef = (await upsertDefinition(db, key, "t1", { name: "third", label: "Third", persona: "p" })).id;
+    await expect(request({ definitionId: thirdDef })).rejects.toThrow(/an admin can link it/);
     const again = await request();
+    expect(await listConnectionsFor(db, "t1", otherDefId)).toEqual([]);
     expect(again.connection).toMatchObject({ id: connection.id, status: "pending", hostKey: null });
     expect(again.connection.secretCipher).toBeTruthy();
   });
@@ -172,6 +179,7 @@ describe("connections store", () => {
       { kind: "http", target: "ftp://api.example.test/", config: {} },
       { kind: "http", target: "api.example.test", config: {} },
       { kind: "http", target: "https://api.example.test/", config: { auth: { in: "header", name: "X Bad" } } },
+      { kind: "http", target: "https://api.example.test/", config: { auth: { in: "header", name: "Authorization", prefix: `Bearer ${"x".repeat(40)}` } } },
       { kind: "mcp", target: "https://mcp.example.test/", config: { readOnlyTools: ["ok", "bad tool"] } },
       { kind: "mcp", target: "https://mcp.example.test/", config: { headerName: "X:y", readOnlyTools: [] } },
       { mode: "admin" as never },

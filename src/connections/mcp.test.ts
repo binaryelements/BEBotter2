@@ -2,6 +2,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
+import { eq } from "drizzle-orm";
+import { connections } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { connectionsMcpServer } from "./mcp.js";
@@ -54,12 +56,29 @@ describe("connections mcp", () => {
   it("approve activates with the confirming person recorded", async () => {
     await call("request", { kind: "ssh", name: "pve3", target: "pve3.example.test", mode: "change", username: "bot" });
     await call("verify", { name: "pve3" });
+    const details = { name: "pve3", kind: "ssh", target: "pve3.example.test", mode: "change" };
     confirmer = undefined;
-    expect((await call("approve", { name: "pve3" })).isError).toBe(true);
+    expect((await call("approve", details)).isError).toBe(true);
     confirmer = personId;
-    const r = await call("approve", { name: "pve3" });
+    for (const bad of [{ target: "other.example.test" }, { mode: "read-only" }, { kind: "http" }, { readOnlyTools: ["x"] }]) {
+      expect((await call("approve", { ...details, ...bad })).isError).toBe(true);
+      expect((await getConnection(db, "t1", "pve3"))!.status).toBe("awaiting-approval");
+    }
+    const r = await call("approve", details);
     expect(r.isError).toBeUndefined();
     expect(await getConnection(db, "t1", "pve3")).toMatchObject({ status: "active", approvedByPersonId: personId });
     expect((await call("ssh_change", { name: "pve3", command: "reboot" })).content[0].text).toBe("up 3 days");
+  });
+
+  it("approve of an mcp connection needs its read-only tools as stored", async () => {
+    await call("request", { kind: "mcp", name: "tickets", target: "https://mcp.example.test/mcp", mode: "read-only", readOnlyTools: ["list", "get"] });
+    await db.update(connections).set({ status: "awaiting-approval" }).where(eq(connections.name, "tickets"));
+    confirmer = personId;
+    const details = { name: "tickets", kind: "mcp", target: "https://mcp.example.test/mcp", mode: "read-only" };
+    expect((await call("approve", details)).isError).toBe(true);
+    expect((await call("approve", { ...details, readOnlyTools: ["list", "get", "delete"] })).isError).toBe(true);
+    expect((await getConnection(db, "t1", "tickets"))!.status).toBe("awaiting-approval");
+    expect((await call("approve", { ...details, readOnlyTools: ["get", "list"] })).isError).toBeUndefined();
+    expect((await getConnection(db, "t1", "tickets"))!.status).toBe("active");
   });
 });
