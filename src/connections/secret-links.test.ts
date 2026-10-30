@@ -6,7 +6,7 @@ import { secretLinks } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
-import { createSecretLink, hashToken, useSecretLink } from "./secret-links.js";
+import { createSecretLink, hashToken, secretLinkConnection, useSecretLink } from "./secret-links.js";
 import { fakeSsh } from "./ssh.js";
 import { getConnection, requestConnection } from "./store.js";
 
@@ -32,23 +32,36 @@ describe("secret links", () => {
 
   it("a link stores the secret encrypted once; a second use fails", async () => {
     const token = await link();
-    const c = await useSecretLink(db, key, hashToken(token), ann, "tok-123", now);
+    const c = await useSecretLink(db, key, "t1", hashToken(token), ann, "tok-123", now);
     expect(c.secretCipher).not.toContain("tok-123");
     expect(decrypt(key, (await getConnection(db, "t1", "api"))!.secretCipher!)).toBe("tok-123");
-    await expect(useSecretLink(db, key, hashToken(token), ann, "tok-456", now)).rejects.toThrow("This link has expired or was already used.");
+    await expect(useSecretLink(db, key, "t1", hashToken(token), ann, "tok-456", now)).rejects.toThrow("This link has expired or was already used.");
     expect(decrypt(key, (await getConnection(db, "t1", "api"))!.secretCipher!)).toBe("tok-123");
   });
 
   it("an expired link fails", async () => {
     const token = await link();
-    await expect(useSecretLink(db, key, hashToken(token), ann, "tok", new Date(now.getTime() + 30 * 60_000))).rejects.toThrow("This link has expired or was already used.");
+    await expect(useSecretLink(db, key, "t1", hashToken(token), ann, "tok", new Date(now.getTime() + 30 * 60_000))).rejects.toThrow("This link has expired or was already used.");
     expect((await getConnection(db, "t1", "api"))!.secretCipher).toBeNull();
   });
 
   it("another person cannot use the link", async () => {
     const token = await link();
-    await expect(useSecretLink(db, key, hashToken(token), bob, "tok", now)).rejects.toThrow("This link is for someone else.");
+    await expect(useSecretLink(db, key, "t1", hashToken(token), bob, "tok", now)).rejects.toThrow("This link is for someone else.");
     expect((await getConnection(db, "t1", "api"))!.secretCipher).toBeNull();
+  });
+
+  it("a link fails under another tenant's session", async () => {
+    await upsertTenant(db, { id: "t2" });
+    const token = await link();
+    await expect(useSecretLink(db, key, "t2", hashToken(token), ann, "tok", now)).rejects.toThrow("This link has expired or was already used.");
+    await expect(secretLinkConnection(db, "t2", hashToken(token), ann, now)).rejects.toThrow("expired");
+    expect((await secretLinkConnection(db, "t1", hashToken(token), ann, now)).name).toBe("api");
+  });
+
+  it("only the person who requested the connection gets a link", async () => {
+    await expect(createSecretLink(db, "t1", connectionId, bob, publicUrl, now)).rejects.toThrow();
+    expect(await db.select().from(secretLinks)).toEqual([]);
   });
 
   it("only the token hash is stored", async () => {
@@ -66,15 +79,15 @@ describe("secret links", () => {
   it("a new link replaces the earlier unused one", async () => {
     const first = await link();
     const second = await link();
-    await expect(useSecretLink(db, key, hashToken(first), ann, "tok", now)).rejects.toThrow("expired or was already used");
-    await useSecretLink(db, key, hashToken(second), ann, "tok", now);
+    await expect(useSecretLink(db, key, "t1", hashToken(first), ann, "tok", now)).rejects.toThrow("expired or was already used");
+    await useSecretLink(db, key, "t1", hashToken(second), ann, "tok", now);
   });
 
   it("refuses multi-line, empty or oversized secrets", async () => {
     const token = await link();
     for (const s of ["", "a\nb", "a\rb", "a\0b", "x".repeat(8001)])
-      await expect(useSecretLink(db, key, hashToken(token), ann, s, now)).rejects.toThrow("one line");
-    await useSecretLink(db, key, hashToken(token), ann, "x".repeat(8000), now);
+      await expect(useSecretLink(db, key, "t1", hashToken(token), ann, s, now)).rejects.toThrow("one line");
+    await useSecretLink(db, key, "t1", hashToken(token), ann, "x".repeat(8000), now);
   });
 
   it("an ssh connection gets no link", async () => {

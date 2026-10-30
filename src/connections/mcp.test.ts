@@ -8,6 +8,7 @@ import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { connectionsMcpServer } from "./mcp.js";
 import { fakeSsh } from "./ssh.js";
+import { hashToken, useSecretLink } from "./secret-links.js";
 import { getConnection } from "./store.js";
 
 type Result = { isError?: boolean; content: { text: string }[] };
@@ -19,14 +20,20 @@ describe("connections mcp", () => {
   let personId: string;
   let confirmer: string | undefined;
   let call: (name: string, args?: Record<string, unknown>) => Promise<Result>;
+  let callAsBob: (name: string, args?: Record<string, unknown>) => Promise<Result>;
   beforeAll(async () => {
     db = await testDb();
     await upsertTenant(db, { id: "t1" });
     const definitionId = (await upsertDefinition(db, key, "t1", { name: "ops", label: "Ops", persona: "p" })).id;
     personId = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" })).id;
-    const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "up 3 days" }), secretsKey: key, publicUrl: "https://bot.example.test" }, { tenantId: "t1", definitionId, personId, confirmedBy: () => confirmer });
-    const tools = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
-    call = (name, args = {}) => tools[name].handler(args);
+    const bob = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a2", name: "Bob" })).id;
+    const caller = (who: string) => {
+      const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "up 3 days" }), secretsKey: key, publicUrl: "https://bot.example.test" }, { tenantId: "t1", definitionId, personId: who, confirmedBy: () => confirmer });
+      const tools = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
+      return (name: string, args: Record<string, unknown> = {}) => tools[name].handler(args);
+    };
+    call = caller(personId);
+    callAsBob = caller(bob);
   });
 
   it("no tool result contains the private key", async () => {
@@ -91,6 +98,14 @@ describe("connections mcp", () => {
     const again = (await call("request", { kind: "mcp", name: "desk", target: "https://mcp.example.test/desk", mode: "read-only", headerName: "X-Api-Key" })).content[0].text;
     expect(again).toContain("Secret link: ");
     expect(again).not.toContain(link);
+    const fresh = again.match(/Secret link: (\S+)/)![1];
+    // another user of the bot gets no link and leaves Ann's link working
+    const bobs = (await callAsBob("request", { kind: "mcp", name: "desk", target: "https://mcp.example.test/desk", mode: "read-only", headerName: "X-Api-Key" })).content[0].text;
+    expect(bobs).not.toContain("Secret link");
+    expect(bobs).toContain("The secret link went to Ann");
+    const token = fresh.split("/").pop()!;
+    await useSecretLink(db, key, "t1", hashToken(token), personId, "tok");
+    expect((await getConnection(db, "t1", "desk"))!.secretCipher).not.toBeNull();
     const plain = await call("request", { kind: "mcp", name: "open", target: "https://mcp.example.test/open", mode: "read-only" });
     expect(plain.content[0].text).not.toContain("Secret link");
   });

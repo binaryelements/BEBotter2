@@ -1,6 +1,9 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { and, eq } from "drizzle-orm";
+import type { Db } from "../db/client.js";
+import { people } from "../db/schema.js";
 import type { Connection } from "../db/schema.js";
 import { createSecretLink } from "./secret-links.js";
 import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, needsSecret, requestConnection, runSsh, verifyConnection } from "./store.js";
@@ -16,6 +19,11 @@ const fail = (e: unknown) => {
 };
 
 const facts = (c: Connection) => `${c.name}: ${c.kind} ${c.target}, ${c.mode}, ${c.status}`;
+
+async function personName(db: Db, tenantId: string, personId: string | null): Promise<string> {
+  const [p] = personId ? await db.select({ name: people.name }).from(people).where(and(eq(people.tenantId, tenantId), eq(people.id, personId))) : [];
+  return p?.name ?? "someone else";
+}
 
 const READ_ONLY_RULE = "Read-only use must not change anything on the target.";
 
@@ -63,10 +71,12 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
             const { connection, publicKey } = await requestConnection(deps, tenantId, {
               kind: a.kind, name: a.name, target: a.target, mode: a.mode, config, needsSecret: a.needsSecret, definitionId, personId: ctx.personId,
             });
-            const link = needsSecret(connection) && !connection.secretCipher && connection.status !== "revoked"
-              ? await createSecretLink(db, tenantId, connection.id, ctx.personId, deps.publicUrl)
-              : undefined;
-            return [facts(connection), ...(publicKey ? [`Public key: ${publicKey}`] : []), ...(link ? [`Secret link: ${link}`] : [])].join("\n");
+            const waiting = needsSecret(connection) && !connection.secretCipher && connection.status !== "revoked";
+            // only the person who asked for the connection may supply its secret
+            const secretLine = !waiting ? []
+              : connection.requestedByPersonId === ctx.personId ? [`Secret link: ${await createSecretLink(db, tenantId, connection.id, ctx.personId, deps.publicUrl)}`]
+              : [`The secret link went to ${await personName(db, tenantId, connection.requestedByPersonId)}, who asked for this connection; they can ask again for a fresh link.`];
+            return [facts(connection), ...(publicKey ? [`Public key: ${publicKey}`] : []), ...secretLine].join("\n");
           }),
       ),
       tool(

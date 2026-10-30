@@ -26,7 +26,7 @@ export function secretRoutes(db: Db, secretsKey: Buffer): Router {
       const hash = hashToken(token);
 
       if (req.method === "GET") {
-        const c = await secretLinkConnection(db, hash, session.personId);
+        const c = await secretLinkConnection(db, session.tenantId, hash, session.personId);
         const body = html`<h1>${c.name}</h1><p class="muted">${c.kind} ${c.target}</p>
 <form method="post"><input type="hidden" name="csrf" value="${session.csrf}"><input type="password" name="secret" aria-label="Secret" autocomplete="off" required maxlength="8000"> <button>Save</button></form>`;
         return res.type("html").send(layout({ title: "BE Botter", body }));
@@ -34,7 +34,7 @@ export function secretRoutes(db: Db, secretsKey: Buffer): Router {
       if (req.method !== "POST") return page(res, 405, "Not allowed.");
       const form = (req.body ?? {}) as Record<string, unknown>;
       if (!csrfOk(session, form)) return page(res, 403, "Not allowed.");
-      await useSecretLink(db, secretsKey, hash, session.personId, typeof form.secret === "string" ? form.secret : "");
+      await useSecretLink(db, secretsKey, session.tenantId, hash, session.personId, typeof form.secret === "string" ? form.secret : "");
       page(res, 200, "Saved. Tell the bot it's done.");
     }),
   );
