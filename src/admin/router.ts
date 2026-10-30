@@ -1,5 +1,6 @@
 import express from "express";
 import type { NextFunction, Request, Response, Router } from "express";
+import { KnowledgeError } from "../knowledge/store.js";
 import { DirectoryError } from "../org/directory.js";
 import type { FetchUsers } from "../org/directory-sync.js";
 import { isAdmin, loadActor, mayEnter } from "./access.js";
@@ -7,6 +8,7 @@ import { activityRoutes } from "./activity.js";
 import { assignmentRoutes } from "./assignments.js";
 import { botRoutes } from "./bots.js";
 import { adminOf, wrap } from "./http.js";
+import { knowledgeRoutes } from "./knowledge.js";
 import { oidcRoutes, page } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
 import { peopleRoutes } from "./people.js";
@@ -49,13 +51,14 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));
+  router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(settingsRoutes(db));
 
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     // Body-parser errors (too large, malformed) carry a 4xx status and can arrive before sign-in.
     const status = (err as { status?: unknown } | null)?.status;
     if (typeof status === "number" && status < 500) return page(res, 400, "Bad request.");
-    if (err instanceof DirectoryError) return page(res, 400, err.message);
+    if (err instanceof DirectoryError || err instanceof KnowledgeError) return page(res, 400, err.message);
     console.error("admin request failed", err);
     page(res, 500, "Something went wrong.");
   });
