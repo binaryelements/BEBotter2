@@ -31,7 +31,7 @@ describe("settings screen", () => {
   afterAll(() => close());
 
   const get = (who: string) => fetch(url + "/admin/settings", { redirect: "manual", headers: { cookie: sessionCookie(secretsKey, T, id[who]) } });
-  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string }) =>
+  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string; timezone?: string }) =>
     fetch(url + "/admin/settings", {
       method: "POST",
       redirect: "manual",
@@ -60,6 +60,14 @@ describe("settings screen", () => {
       expect((await post("Ann", f)).status).toBe(400);
     }
     expect((await getTenantSettings(db, T)).retentionDays).toBe(30);
+  });
+
+  it("settings save a valid time zone and refuse an unknown one", async () => {
+    expect((await post("Ann", { retentionDays: "30", timezone: "Australia/Sydney" })).status).toBe(303);
+    expect((await getTenantSettings(db, T)).timezone).toBe("Australia/Sydney");
+    expect((await post("Ann", { retentionDays: "30", timezone: "Mars/Base" })).status).toBe(400);
+    expect((await getTenantSettings(db, T)).timezone).toBe("Australia/Sydney");
+    expect((await post("Ann", { retentionDays: "30", timezone: "UTC" })).status).toBe(303);
   });
 
   it("a head gets 403", async () => {

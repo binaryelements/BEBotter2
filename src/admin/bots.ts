@@ -4,9 +4,13 @@ import {
   addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setPersona,
   updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
+import { eq } from "drizzle-orm";
+import { listConnections, listConnectionsFor, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
 import type { Db } from "../db/client.js";
+import { chatAssignments, chats, people } from "../db/schema.js";
 import { DirectoryError, listDepartments } from "../org/directory.js";
 import { getTenantSettings } from "../org/org.js";
+import { createRoutine, deleteRoutine, listRoutines, updateRoutine } from "../routines/store.js";
 import { isAdmin, mayEditPersona } from "./access.js";
 import { html, layout } from "./html.js";
 import type { SafeHtml } from "./html.js";
@@ -90,7 +94,23 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
       if (!admin) {
         body = html`<h1>${def.label}</h1><form method="post" action="/admin/bots/${def.id}">${csrf}${personaBox}<button>Save</button></form>`;
       } else {
-        const [depts, allowed] = await Promise.all([listDepartments(db, actor.tenantId), allowedDepartments(db, def.id)]);
+        const [depts, allowed, conns, linked, rts, assigned, ppl] = await Promise.all([
+          listDepartments(db, actor.tenantId), allowedDepartments(db, def.id), listConnections(db, actor.tenantId), listConnectionsFor(db, actor.tenantId, def.id),
+          listRoutines(db, actor.tenantId, def.id),
+          db.select({ id: chats.id, label: chats.label }).from(chatAssignments).innerJoin(chats, eq(chats.id, chatAssignments.chatId))
+            .where(eq(chatAssignments.definitionId, def.id)),
+          db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, actor.tenantId)),
+        ]);
+        const linkedIds = new Set(linked.map((c) => c.id));
+        const chatLabel = new Map(assigned.map((c) => [c.id, c.label ?? c.id.slice(-12)]));
+        const personName = new Map(ppl.map((p) => [p.id, p.name]));
+        const connRows = conns.map((c) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}</td><td>${c.secretCipher ? "set" : "none"}</td>
+<td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${linkedIds.has(c.id) ? "off" : "on"}"><button class="secondary">${linkedIds.has(c.id) ? "Unlink" : "Link"}</button></form></td>
+<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="secondary">Revoke</button></form>`}${
+          c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="secondary">Reset host key</button></form>` : ""}</td></tr>`);
+        const routineRows = rts.map((r) => html`<tr><td>${r.prompt.slice(0, 80)}</td><td>${r.schedule ?? r.runAt?.toISOString() ?? ""}</td><td>${chatLabel.get(r.chatId) ?? r.chatId.slice(-12)}</td><td>${yesNo(r.quiet)}</td><td>${yesNo(r.enabled)}</td><td>${r.grantPersonId ? (personName.get(r.grantPersonId) ?? "") : ""}</td>
+<td><form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="secondary">${r.enabled ? "Disable" : "Enable"}</button></form>
+<form method="post" action="/admin/bots/${def.id}/routines/${r.id}/delete">${csrf}<button class="secondary">Delete</button></form></td></tr>`);
         body = html`<h1>${def.label}</h1>
 <form method="post" action="/admin/bots/${def.id}">${csrf}
 <p><label>Label <input name="label" value="${def.label}" required></label> <label>Model <input name="model" value="${def.model}" required></label></p>
@@ -105,7 +125,14 @@ ${personaBox}
 <form method="post" action="/admin/bots/${def.id}/servers">${csrf}
 <p><label>Name <input name="name" required></label> <label>Transport <select name="transport"><option>http</option><option>stdio</option></select></label> <label>URL <input name="url"></label> <label>Command <input name="command"></label> <label>Args <input name="args"></label></p>
 <p><label>Header name <input name="headerName"></label> <label>Header value <input type="password" name="headerValue" autocomplete="off"></label> <label>Read-only tools <input name="readOnlyTools"></label></p>
-<button>Add server</button></form>`;
+<button>Add server</button></form>
+<h2>Connections</h2>
+<table><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Secret</th><th>This bot</th><th></th></tr></thead><tbody>${connRows}</tbody></table>
+<h2>Routines</h2>
+<table><thead><tr><th>Prompt</th><th>When</th><th>Chat</th><th>Quiet</th><th>Enabled</th><th>Grant</th><th></th></tr></thead><tbody>${routineRows}</tbody></table>
+<form method="post" action="/admin/bots/${def.id}/routines">${csrf}
+<p><label>Chat <select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>Schedule <input name="schedule" placeholder="0 9 * * 1-5" required></label> <label><input type="checkbox" name="quiet"> Quiet</label> <label><input type="checkbox" name="grant"> Grant my access</label></p>
+<p><label>Prompt<textarea name="prompt" required></textarea></label></p><button>Add routine</button></form>`;
       }
       render(res, def.label, body);
     }),
@@ -160,6 +187,80 @@ ${personaBox}
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       await removeMcpServer(db, actor.tenantId, req.params.id, req.params.name);
+      res.redirect(303, `/admin/bots/${req.params.id}`);
+    }),
+  );
+
+  router.post(
+    "/bots/:id/connections/:connectionId/link",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await setLinked(db, actor.tenantId, req.params.id, req.params.connectionId, field(req, "linked") === "on");
+      res.redirect(303, `/admin/bots/${req.params.id}`);
+    }),
+  );
+
+  router.post(
+    "/connections/:connectionId/revoke",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const c = await revokeConnection(db, actor.tenantId, req.params.connectionId);
+      render(res, "Revoked", html`<h1>Revoked ${c.name}</h1>${
+        c.kind === "ssh" && c.publicKey
+          ? html`<p>Remove this line from the target's authorized_keys:</p><pre>${c.publicKey}</pre>`
+          : html`<p>Revoke the token at its source.</p>`
+      }<p><a href="/admin/bots">Back</a></p>`);
+    }),
+  );
+
+  router.post(
+    "/connections/:connectionId/reset-host-key",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await resetHostKey(db, actor.tenantId, req.params.connectionId);
+      res.redirect(303, "/admin/bots");
+    }),
+  );
+
+  router.post(
+    "/bots/:id/routines",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await createRoutine(db, actor.tenantId, {
+        definitionId: req.params.id, chatId: field(req, "chatId"), prompt: field(req, "prompt").trim(), schedule: field(req, "schedule").trim(),
+        quiet: field(req, "quiet") === "on", grantPersonId: field(req, "grant") === "on" ? actor.personId : null, createdByPersonId: actor.personId,
+      });
+      res.redirect(303, `/admin/bots/${req.params.id}`);
+    }),
+  );
+
+  // a routine id from another bot is refused, not edited
+  const ownRoutine = async (tenantId: string, botId: string, id: string) => {
+    if (!(await listRoutines(db, tenantId, botId)).some((r) => r.id === id)) throw new DirectoryError("No such routine");
+  };
+
+  router.post(
+    "/bots/:id/routines/:rid/enabled",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await ownRoutine(actor.tenantId, req.params.id, req.params.rid);
+      await updateRoutine(db, actor.tenantId, req.params.rid, { enabled: field(req, "enabled") === "on" });
+      res.redirect(303, `/admin/bots/${req.params.id}`);
+    }),
+  );
+
+  router.post(
+    "/bots/:id/routines/:rid/delete",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await ownRoutine(actor.tenantId, req.params.id, req.params.rid);
+      await deleteRoutine(db, actor.tenantId, req.params.rid);
       res.redirect(303, `/admin/bots/${req.params.id}`);
     }),
   );
