@@ -6,6 +6,8 @@ export function serve(app: Express): Promise<{ url: string; close(): Promise<voi
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
+      // PGlite blocks the event loop; after a >5s block fetch reused a socket the server's idle timer was closing (ECONNRESET).
+      server.keepAliveTimeout = 0;
       resolve({
         url: `http://127.0.0.1:${port}`,
         close: () =>
