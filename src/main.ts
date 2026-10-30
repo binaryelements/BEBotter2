@@ -20,6 +20,7 @@ const runnerDeps: RunnerDeps = {
   secretsKey: config.secretsKey,
   docker: dockerodeClient(config.dockerSocket),
   computerImage: config.computerImage,
+  filesDir: config.filesDir,
 };
 const app = createTeamsApp({ db, runTurn: (turn) => runTurn(runnerDeps, turn), confirmations, botName: config.botName });
 

@@ -14,6 +14,7 @@ describe("loadConfig", () => {
     expect(c.port).toBe(3978);
     expect(c.computerImage).toBe("bebotter2-computer");
     expect(c.dockerSocket).toBe("/var/run/docker.sock");
+    expect(c.filesDir).toBe("/srv/files");
     expect(c.secretsKey.length).toBe(32);
   });
   it("names a missing variable", () => {

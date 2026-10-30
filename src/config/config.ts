@@ -15,6 +15,7 @@ const schema = z.object({
   clientSecret: z.string().min(1),
   COMPUTER_IMAGE: z.string().default("bebotter2-computer"),
   DOCKER_SOCKET: z.string().default("/var/run/docker.sock"),
+  FILES_DIR: z.string().default("/srv/files"),
 });
 
 export type Config = {
@@ -27,6 +28,7 @@ export type Config = {
   teams: { clientId: string; tenantId: string; clientSecret: string };
   computerImage: string;
   dockerSocket: string;
+  filesDir: string;
 };
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -41,5 +43,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     teams: { clientId: e.clientId, tenantId: e.tenantId, clientSecret: e.clientSecret },
     computerImage: e.COMPUTER_IMAGE,
     dockerSocket: e.DOCKER_SOCKET,
+    filesDir: e.FILES_DIR,
   };
 }

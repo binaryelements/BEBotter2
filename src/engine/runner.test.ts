@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HookCallback, Options, PostToolUseFailureHookInput, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
 import { listActions } from "../audit/audit.js";
@@ -62,9 +65,11 @@ async function setup(db: Db, def: Partial<BotDefinitionInput> = {}) {
   return { definition, person };
 }
 
+const filesDir = fs.mkdtempSync(path.join(os.tmpdir(), "bebotter2-files-"));
+
 function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()) {
   const docker = fakeDockerClient();
-  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img" };
+  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -89,6 +94,7 @@ describe("runTurn", () => {
     expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
     expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
+    expect(q.seen[0]!.cwd).toBe(filesDir);
 
     const rows = await listActions(db, { tenantId: "t1" });
     const bash = rows.find((r) => r.toolName === "mcp__computer__bash")!;

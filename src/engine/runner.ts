@@ -1,6 +1,4 @@
 import { mkdirSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import type { CanUseTool, HookCallback, Options, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import { beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
@@ -14,7 +12,7 @@ import type { BotDefinition, Person } from "../db/schema.js";
 import type { Confirmations } from "./confirm.js";
 import { classify } from "./gate.js";
 
-export type RunnerDeps = { db: Db; queryFn: typeof query; confirmations: Confirmations; secretsKey: Buffer; docker: DockerClient; computerImage: string };
+export type RunnerDeps = { db: Db; queryFn: typeof query; confirmations: Confirmations; secretsKey: Buffer; docker: DockerClient; computerImage: string; filesDir: string };
 export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
 export type RunResult = { text: string; costUsd: number; sessionId: string };
 
@@ -99,12 +97,12 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return {};
   };
 
-  const cwd = path.join(os.tmpdir(), "bebotter2", chatId);
-  mkdirSync(cwd, { recursive: true });
+  // the SDK advertises cwd to MCP servers as the client root, so it must be the folder the files server serves
+  mkdirSync(deps.filesDir, { recursive: true });
   const options: Options = {
     model: definition.model,
     systemPrompt: definition.persona,
-    cwd,
+    cwd: deps.filesDir,
     tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
     allowedTools: [], // a tool named here bypasses canUseTool
     permissionMode: "default",
