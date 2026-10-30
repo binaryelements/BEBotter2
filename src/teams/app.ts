@@ -1,4 +1,4 @@
-import { AgentApplication, CardFactory, MessageFactory } from "@microsoft/agents-hosting";
+import { AgentApplication, CardFactory, CloudAdapter, MessageFactory } from "@microsoft/agents-hosting";
 import type { TurnState } from "@microsoft/agents-hosting";
 import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
@@ -16,7 +16,8 @@ export type TeamsAppDeps = {
 
 export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> {
   // longRunningMessages answers the HTTP request at once; a turn can wait minutes on a confirmation card
-  const app = new AgentApplication<TurnState>({ startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true });
+  // startServer reuses app.adapter, so proactive sends go through the same adapter as replies
+  const app = new AgentApplication<TurnState>({ adapter: new CloudAdapter(), startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true });
 
   app.onConversationUpdate("membersAdded", async (ctx) => {
     const botId = ctx.activity.recipient?.id;

@@ -1,0 +1,94 @@
+import { and, eq } from "drizzle-orm";
+import { beginAction, completeAction } from "../audit/audit.js";
+import { definitionsForChat, getDefinition } from "../bots/definitions.js";
+import type { Db } from "../db/client.js";
+import { chats, people } from "../db/schema.js";
+import type { Routine } from "../db/schema.js";
+import type { RunResult, RunTurnInput } from "../engine/runner.js";
+import { confirmationCard, withRoleLabel } from "../teams/cards.js";
+import type { AdaptiveCard } from "../teams/cards.js";
+import { serialize } from "../teams/handlers.js";
+import { claimDue } from "./store.js";
+
+export type SchedulerDeps = {
+  db: Db;
+  runTurn: (turn: RunTurnInput) => Promise<RunResult>;
+  send: (chatId: string, m: string | AdaptiveCard) => Promise<void>;
+};
+
+/** Runs one claimed routine headless and posts to its chat. A run that cannot happen is audited as failed, never thrown. */
+export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise<void> {
+  const { db } = deps;
+  const { tenantId, chatId, definitionId } = routine;
+  const fail = async (reason: string) => {
+    console.error(`routine ${routine.id}: ${reason}`);
+    try {
+      const id = await beginAction(db, { tenantId, chatId, definitionId, personId: routine.createdByPersonId, kind: "message", summary: `Routine not run: ${reason}` });
+      await completeAction(db, id, { status: "failed" });
+    } catch (err) {
+      console.error(`routine ${routine.id}: audit failed`, err);
+    }
+  };
+
+  const definition = await getDefinition(db, tenantId, definitionId);
+  if (!definition) return fail("its bot no longer exists");
+  const [chat] = await db.select().from(chats).where(and(eq(chats.id, chatId), eq(chats.tenantId, tenantId)));
+  if (!chat) return fail("its chat no longer exists");
+  if (!(await definitionsForChat(db, chatId)).some((d) => d.id === definitionId)) return fail("its bot is no longer in its chat");
+  if (!chat.conversationReference) return fail("its chat cannot be reached yet");
+  const [creator] = await db.select().from(people).where(and(eq(people.id, routine.createdByPersonId), eq(people.tenantId, tenantId)));
+  if (!creator) return fail("its creator no longer exists");
+  // the grant holds only while its holder is still an admin; otherwise writes wait for a card like any other
+  const [granter] = routine.grantPersonId
+    ? await db.select({ role: people.role }).from(people).where(and(eq(people.id, routine.grantPersonId), eq(people.tenantId, tenantId)))
+    : [];
+  const grantPersonId = granter?.role === "admin" ? routine.grantPersonId : null;
+
+  const post = (text: string) => deps.send(chatId, chat.conversationType === "personal" ? text : withRoleLabel(definition.label, text));
+  await serialize(`${chatId}:${definitionId}`, async () => {
+    let result: RunResult;
+    try {
+      result = await deps.runTurn({
+        tenantId,
+        chatId,
+        definition,
+        person: creator,
+        text: routine.prompt,
+        askConfirmation: (req) => deps.send(chatId, confirmationCard(req)),
+        routine: { id: routine.id, grantPersonId, post },
+      });
+    } catch (err) {
+      console.error(err);
+      return fail("the run failed");
+    }
+    if (routine.quiet) return;
+    try {
+      await post(result.text);
+    } catch (err) {
+      console.error(err);
+      await fail("its reply could not be posted");
+    }
+  });
+}
+
+/** Every intervalMs claims due routines and runs them one after another; errors are logged and never stop the loop. Returns a stop function. */
+export function startScheduler(deps: SchedulerDeps, intervalMs = 60_000, now = () => new Date()): () => void {
+  const tick = async () => {
+    try {
+      for (const routine of await claimDue(deps.db, now())) {
+        try {
+          await runRoutine(deps, routine);
+        } catch (err) {
+          console.error(`routine ${routine.id} failed`, err);
+        }
+      }
+    } catch (err) {
+      console.error("scheduler tick failed", err);
+    }
+  };
+  // ticks may overlap: a cron routine is due only in its own minute, claimDue hands each run to one tick, and serialize orders turns per chat
+  const timer = setInterval(() => void tick(), intervalMs);
+  timer.unref();
+  console.log("scheduler started");
+  return () => clearInterval(timer);
+}

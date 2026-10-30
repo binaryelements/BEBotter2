@@ -27,4 +27,21 @@ describe("sendToChat", () => {
     );
     expect(continueConversation).not.toHaveBeenCalled();
   });
+
+  it("sends a card as an adaptive card attachment", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    await upsertChat(db, { id: "c1", tenantId: "t1", conversationType: "groupChat" });
+    await saveConversationReference(db, "c1", { conversation: { id: "c1" } });
+    const sendActivity = vi.fn(async (_a: unknown) => undefined);
+    const continueConversation = vi.fn(async (_id: string, _ref: unknown, logic: (ctx: unknown) => Promise<void>) => logic({ sendActivity }));
+    const card = { type: "AdaptiveCard", version: "1.5", body: [] };
+
+    await sendToChat({ db, adapter: { continueConversation } as never, botAppId: "app-1" }, "c1", card);
+
+    expect(sendActivity.mock.calls[0]![0]).toMatchObject({
+      type: "message",
+      attachments: [{ contentType: "application/vnd.microsoft.card.adaptive", content: card }],
+    });
+  });
 });
