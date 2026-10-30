@@ -15,6 +15,9 @@ export type IncomingMessage = {
   conversationReference: unknown;
 };
 
+// turns per chat and bot definition run one after another, so two never resume the same session at once
+const chains = new Map<string, Promise<void>>();
+
 export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string };
 
 export async function handleMessage(
@@ -30,19 +33,29 @@ export async function handleMessage(
   await saveConversationReference(db, msg.chatId, msg.conversationReference);
   const [definition] = await definitionsForChat(db, msg.chatId);
   if (!definition) return send("No bot is set up for this chat yet.");
+  const key = `${msg.chatId}:${definition.id}`;
+  const turn = (chains.get(key) ?? Promise.resolve()).then(async () => {
+    try {
+      const result = await deps.runTurn({
+        tenantId: msg.tenantId,
+        chatId: msg.chatId,
+        definition,
+        person,
+        text: msg.text,
+        askConfirmation: (req) => sendCard(confirmationCard(req)),
+      });
+      await send(msg.conversationType === "personal" ? result.text : withRoleLabel(definition.label, result.text));
+    } catch (err) {
+      console.error(err);
+      await send("Something went wrong on my side.");
+    }
+  });
+  const tail = turn.catch(() => {});
+  chains.set(key, tail);
   try {
-    const result = await deps.runTurn({
-      tenantId: msg.tenantId,
-      chatId: msg.chatId,
-      definition,
-      person,
-      text: msg.text,
-      askConfirmation: (req) => sendCard(confirmationCard(req)),
-    });
-    await send(msg.conversationType === "personal" ? result.text : withRoleLabel(definition.label, result.text));
-  } catch (err) {
-    console.error(err);
-    await send("Something went wrong on my side.");
+    await turn;
+  } finally {
+    if (chains.get(key) === tail) chains.delete(key);
   }
 }
 
