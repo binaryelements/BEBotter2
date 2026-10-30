@@ -108,15 +108,16 @@ describe("handleConfirmClick", () => {
   const click = (answer: "yes" | "no", id: string | undefined, c: Confirmations, actionId: string) =>
     handleConfirmClick(c, { actionId, answer }, id, "Bo");
 
-  it("maps the four outcomes", () => {
+  it("maps the four outcomes", async () => {
     const c = new Confirmations();
-    const a = c.create({ auditId: "x", askerPersonId: "p1" });
-    expect(click("yes", "p2", c, a.actionId)).toBe("Only the person who asked can confirm this.");
-    expect(click("yes", undefined, c, a.actionId)).toBe("Only the person who asked can confirm this.");
-    expect(click("yes", "p1", c, a.actionId)).toBe("Confirmed by Bo");
-    expect(click("yes", "p1", c, a.actionId)).toBe("This request has expired.");
-    const b = c.create({ auditId: "y", askerPersonId: "p1" });
-    expect(click("no", "p1", c, b.actionId)).toBe("Declined by Bo");
+    const mayConfirm = async (p: string) => p === "p1";
+    const a = c.create({ auditId: "x", mayConfirm });
+    await expect(click("yes", "p2", c, a.actionId)).resolves.toBe("You can't confirm this.");
+    await expect(click("yes", undefined, c, a.actionId)).resolves.toBe("You can't confirm this.");
+    await expect(click("yes", "p1", c, a.actionId)).resolves.toBe("Confirmed by Bo");
+    await expect(click("yes", "p1", c, a.actionId)).resolves.toBe("This request has expired.");
+    const b = c.create({ auditId: "y", mayConfirm });
+    await expect(click("no", "p1", c, b.actionId)).resolves.toBe("Declined by Bo");
   });
 });
 

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
-import type { CanUseTool, HookCallback, Options, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
+import { confirmerPolicy } from "../admin/access.js";
 import { beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
 import { ensureComputer } from "../computer/computer.js";
@@ -9,10 +10,20 @@ import { computerMcpServer } from "../computer/mcp.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
 import type { BotDefinition, Person } from "../db/schema.js";
-import type { Confirmations } from "./confirm.js";
+import type { Confirmations, Outcome } from "./confirm.js";
 import { classify } from "./gate.js";
 
-export type RunnerDeps = { db: Db; queryFn: typeof query; confirmations: Confirmations; secretsKey: Buffer; docker: DockerClient; computerImage: string; filesDir: string };
+export type RunnerDeps = {
+  db: Db;
+  queryFn: typeof query;
+  confirmations: Confirmations;
+  secretsKey: Buffer;
+  docker: DockerClient;
+  computerImage: string;
+  filesDir: string;
+  /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
+  builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
+};
 export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
 export type RunResult = { text: string; costUsd: number; sessionId: string };
 
@@ -33,6 +44,8 @@ export type RunTurnInput = {
   person: Person;
   text: string;
   askConfirmation: (req: ConfirmationRequest) => Promise<void>;
+  /** A scheduled run. With a grantPersonId an admin has let it make changes unattended. */
+  routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void> };
 };
 
 export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
@@ -50,6 +63,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   // tool use id → audit row of a call that was allowed and has not finished yet
   const inFlight = new Map<string, string>();
+  // SDK tool handlers never see the confirmation; calls wait on their card, so the latest confirmer owns the running call
+  let lastConfirmer: string | undefined;
+  const confirmedBy = () => lastConfirmer;
 
   const canUseTool: CanUseTool = async (toolName, input, { toolUseID }) => {
     const json = JSON.stringify(input);
@@ -60,7 +76,14 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       toolInput: json.length <= MAX_AUDIT_INPUT ? input : { truncated: true, preview: json.slice(0, MAX_AUDIT_INPUT) },
       summary: summarise(toolName, input),
     });
-    if (classify(toolName, definition) === "read") {
+    const kind = classify(toolName, definition);
+    if (kind === "read") {
+      inFlight.set(toolUseID, auditId);
+      return { behavior: "allow", updatedInput: input };
+    }
+    const grant = turn.routine?.grantPersonId;
+    if (kind === "write" && grant) {
+      await recordAuthority(db, auditId, { type: "grant", personId: grant, routineId: turn.routine!.id });
       inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
     }
@@ -70,22 +93,23 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       await completeAction(db, auditId, { status: "denied" });
       return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
     }
-    const { actionId, outcome } = deps.confirmations.create({ auditId, askerPersonId: person.id });
-    let o: "confirmed" | "denied" | "expired" | "failed";
+    const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind) });
+    let o: Outcome | { result: "failed" };
     try {
       await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input), args });
       o = await outcome;
     } catch (err) {
       console.error("confirmation card failed", err);
-      o = "failed"; // the question never reached the asker; the model gets the denial and the turn goes on
+      o = { result: "failed" }; // the question never reached the asker; the model gets the denial and the turn goes on
     }
-    if (o === "confirmed") {
-      await recordAuthority(db, auditId, { type: "confirmation", personId: person.id });
+    if (o.result === "confirmed") {
+      lastConfirmer = o.personId;
+      await recordAuthority(db, auditId, { type: "confirmation", personId: o.personId });
       inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
     }
-    await completeAction(db, auditId, { status: o });
-    return { behavior: "deny", message: NOT_DONE[o] };
+    await completeAction(db, auditId, { status: o.result });
+    return { behavior: "deny", message: NOT_DONE[o.result] };
   };
 
   const afterTool: HookCallback = async (input) => {
@@ -112,7 +136,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     maxTurns: 25,
     // the model's process gets no service secrets, only what it needs to run
     env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-    mcpServers: { ...(computer ? { computer } : {}), ...mcpServerConfigs(definition, deps.secretsKey) },
+    mcpServers: { ...(computer ? { computer } : {}), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey) },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };

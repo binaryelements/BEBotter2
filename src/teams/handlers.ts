@@ -68,20 +68,20 @@ export function clickPayload(action: unknown): { actionId: string; answer: "yes"
   return { actionId: String(src.actionId ?? ""), answer: src.answer === "yes" ? "yes" : "no" };
 }
 
-export function handleConfirmClick(
+export async function handleConfirmClick(
   confirmations: Confirmations,
   data: { actionId: string; answer: "yes" | "no" },
   clickerPersonId: string | undefined,
   clickerName: string,
-): string {
-  const outcome = clickerPersonId ? confirmations.resolve(data.actionId, clickerPersonId, data.answer) : "not_allowed";
+): Promise<string> {
+  const outcome = clickerPersonId ? await confirmations.resolve(data.actionId, clickerPersonId, data.answer) : "not_allowed";
   switch (outcome) {
     case "confirmed":
       return `Confirmed by ${clickerName}`;
     case "denied":
       return `Declined by ${clickerName}`;
     case "not_allowed":
-      return "Only the person who asked can confirm this.";
+      return "You can't confirm this.";
     case "unknown":
       return "This request has expired.";
   }

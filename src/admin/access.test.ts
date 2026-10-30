@@ -6,7 +6,7 @@ import { definitionDepartments } from "../db/schema.js";
 import { upsertDefinition } from "../bots/definitions.js";
 import { DirectoryError, createDepartment, deleteDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { isAdmin, loadActor, mayEditPersona, mayEnter, mayManageDepartment, mayManagePerson, mayUseDefinition } from "./access.js";
+import { confirmerPolicy, isAdmin, loadActor, mayEditPersona, mayEnter, mayManageDepartment, mayManagePerson, mayUseDefinition } from "./access.js";
 import type { Actor } from "./access.js";
 
 describe("access", () => {
@@ -81,5 +81,34 @@ describe("access", () => {
     expect(await mayUseDefinition(db, "t1", inA, restricted)).toBe(true);
     expect(await mayUseDefinition(db, "t1", inB, restricted)).toBe(false);
     expect(await mayUseDefinition(db, "t1", admin.personId, restricted)).toBe(true);
+  });
+
+  it("write: asker, admin and allowed head may confirm; other user may not", async () => {
+    const may = confirmerPolicy(db, "t1", restricted, user.personId, "write");
+    expect(await may(user.personId)).toBe(true);
+    expect(await may(admin.personId)).toBe(true);
+    expect(await may(head.personId)).toBe(true);
+    expect(await may(inA)).toBe(false);
+    expect(await may(inB)).toBe(false);
+  });
+
+  it("approve: a plain-user asker may not; admin and allowed head may", async () => {
+    const may = confirmerPolicy(db, "t1", restricted, user.personId, "approve");
+    expect(await may(user.personId)).toBe(false);
+    expect(await may(admin.personId)).toBe(true);
+    expect(await may(head.personId)).toBe(true);
+    // a head of department B is not allowed to use a definition limited to A
+    const headB = await upsertPerson(db, { tenantId: "t1", aadObjectId: "headB", name: "headB" });
+    await setMembership(db, "t1", depB, headB.id, "head");
+    expect(await may(headB.id)).toBe(false);
+    expect(await confirmerPolicy(db, "t1", restricted, null, "write")(user.personId)).toBe(false);
+  });
+
+  it("clicker from another tenant is refused", async () => {
+    await upsertTenant(db, { id: "t2" });
+    const outsider = await upsertPerson(db, { tenantId: "t2", aadObjectId: "x", name: "x" });
+    await setRole(db, "t2", outsider.id, "admin");
+    expect(await confirmerPolicy(db, "t1", open, null, "write")(outsider.id)).toBe(false);
+    expect(await confirmerPolicy(db, "t1", open, null, "approve")(outsider.id)).toBe(false);
   });
 });

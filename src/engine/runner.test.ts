@@ -9,6 +9,7 @@ import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
+import { setRole } from "../org/directory.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { Confirmations } from "./confirm.js";
@@ -105,6 +106,69 @@ describe("runTurn", () => {
     expect(close.status).toBe("done");
     expect(close.authority).toEqual({ type: "confirmation", personId: person.id });
     expect(message).toMatchObject({ status: "done", summary: "Done.", costUsd: "0.001000", model: definition.model });
+  });
+
+  it("confirmed write records the clicker as authority", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
+    await setRole(db, "t1", boss.id, "admin");
+    const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7 }]] });
+    const d = deps(db, q.fn);
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => void (await d.confirmations.resolve(r.actionId, boss.id, "yes")) });
+    const row = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "tool")!;
+    expect(row.authority).toEqual({ type: "confirmation", personId: boss.id });
+  });
+
+  it("routine with a grant runs a write tool without a card and records grant authority", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7 }]] });
+    const asked: ConfirmationRequest[] = [];
+    await runTurn(deps(db, q.fn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => void asked.push(r),
+      routine: { id: "r1", grantPersonId: person.id, post: async () => {} },
+    });
+    expect(asked).toEqual([]);
+    const row = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "tool")!;
+    expect(row).toMatchObject({ status: "done", authority: { type: "grant", personId: person.id, routineId: "r1" } });
+  });
+
+  it("approve-class tool asks for a card even with a grant", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
+    await setRole(db, "t1", boss.id, "admin");
+    const q = fakeQuery({ calls: [["mcp__connections__approve", { name: "x" }]] });
+    const asked: ConfirmationRequest[] = [];
+    const d = deps(db, q.fn);
+    await runTurn(d, {
+      tenantId: "t1", chatId: "c1", definition, person, text: "x",
+      askConfirmation: async (r) => { asked.push(r); await d.confirmations.resolve(r.actionId, boss.id, "no"); },
+      routine: { id: "r1", grantPersonId: person.id, post: async () => {} },
+    });
+    expect(asked).toHaveLength(1);
+  });
+
+  it("confirmedBy returns the clicker while the approved tool runs", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
+    await setRole(db, "t1", boss.id, "admin");
+    const q = fakeQuery({ calls: [["mcp__connections__approve", { name: "x" }]] });
+    const d = { ...deps(db, q.fn), builtinServers: ({ confirmedBy }: { confirmedBy: () => string | undefined }) => ({ probe: { confirmedBy } as never }) };
+    const seenBefore = { v: "unset" as string | undefined };
+    await runTurn(d, {
+      tenantId: "t1", chatId: "c1", definition, person, text: "x",
+      askConfirmation: async (r) => {
+        seenBefore.v = (q.seen[0]!.mcpServers!.probe as unknown as { confirmedBy: () => string | undefined }).confirmedBy();
+        // the asker is a plain user, so only the admin may confirm an approve
+        expect(await d.confirmations.resolve(r.actionId, person.id, "yes")).toBe("not_allowed");
+        await d.confirmations.resolve(r.actionId, boss.id, "yes");
+      },
+    });
+    expect(seenBefore.v).toBeUndefined();
+    expect((q.seen[0]!.mcpServers!.probe as unknown as { confirmedBy: () => string | undefined }).confirmedBy()).toBe(boss.id);
   });
 
   it("audits two identical parallel calls on their own rows", async () => {

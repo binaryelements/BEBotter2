@@ -52,7 +52,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     const { conversation, from } = ctx.activity;
     const personId =
       conversation?.tenantId && from?.aadObjectId ? await findPersonId(deps.db, conversation.tenantId, from.aadObjectId) : undefined;
-    const text = handleConfirmClick(
+    const text = await handleConfirmClick(
       deps.confirmations,
       clickPayload(data),
       personId,
