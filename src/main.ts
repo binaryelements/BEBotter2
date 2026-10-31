@@ -37,6 +37,7 @@ const runnerDeps: RunnerDeps = {
   filesDir: config.filesDir,
   ssh: systemSsh(),
   publicUrl: config.publicUrl,
+  agentmailUrl: config.agentmail?.url,
   fetchFn: fetch,
   live,
 };

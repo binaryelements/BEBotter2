@@ -21,6 +21,7 @@ export function classify(toolName: string, def: BotDefinition, connectionServers
   if (!m) return "write";
   // Built-ins first: a declared server cannot claim a reserved name (they are rejected on input), and anything else on one is a write.
   if (BUILT_IN[toolName]) return BUILT_IN[toolName]!;
+  if (m[1] === "mail") return m[2] === "send_email" || m[2] === "reply_to_email" ? "write" : "read"; // BE AgentMail's tools: only sending changes the world
   if (m[1]!.startsWith("conn-")) return connectionServers.find((s) => s.name === m[1])?.readOnlyTools.includes(m[2]!) ? "read" : "write";
   if (isReservedMcpName(m[1]!)) return "write";
   const server = def.mcpServers.find((s) => s.name === m[1]);

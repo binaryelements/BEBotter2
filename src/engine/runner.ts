@@ -14,7 +14,8 @@ import { connectionMcpConfigs } from "../connections/store.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
 import type { Db } from "../db/client.js";
-import { chats, sessions } from "../db/schema.js";
+import { chats, mailboxes, sessions } from "../db/schema.js";
+import { decrypt } from "../secrets/cipher.js";
 import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
 
 export type { TurnTimings };
@@ -33,6 +34,8 @@ export type RunnerDeps = {
   ssh: SshRunner;
   /** Base URL of this service, for the one-time secret links. */
   publicUrl: string;
+  /** BE AgentMail base URL; without it bots get no `mail` server. */
+  agentmailUrl?: string;
   /** For http connections and verifying mcp connections. */
   fetchFn: typeof fetch;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
@@ -69,6 +72,9 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
   const { db } = deps;
   const containerId = definition.computer ? await ensureComputer(db, deps.docker, deps.computerImage, definition.id) : undefined;
   const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id);
+  const [mailbox] = deps.agentmailUrl ? await db.select().from(mailboxes).where(eq(mailboxes.definitionId, definition.id)) : [];
+  // the bot's own agent key goes to the SDK subprocess as a header, never to the model or the computer
+  const mail = mailbox?.status === "active" && mailbox.keyCipher && mailbox.address ? { address: mailbox.address, keyId: mailbox.keyId, key: decrypt(deps.secretsKey, mailbox.keyCipher) } : undefined;
   // the SDK advertises cwd to MCP servers as the client root, so it must be the folder the files server serves
   mkdirSync(deps.filesDir, { recursive: true });
   // a process with no turn running (warmed, or between turns) acts for nobody
@@ -98,7 +104,11 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     };
     return {
       model: definition.model,
-      systemPrompt: definition.persona,
+      systemPrompt: `${definition.persona}\n\n${
+        mail
+          ? `Your name is ${definition.displayName ?? definition.label} and your own email address is ${mail.address}.`
+          : "You have no email address and cannot send or receive email; an admin can add one on the admin page."
+      }`,
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
       allowedTools: [], // a tool named here bypasses canUseTool
@@ -115,6 +125,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         knowledge: knowledgeMcpServer(deps, ctx),
         connections: connectionsMcpServer(deps, ctx),
         routine: routineMcpServer(deps, ctx),
+        ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
         ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
         ...conn.servers,
       },
@@ -123,7 +134,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     };
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, containerId ?? null, conn, routine])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, containerId ?? null, conn, routine, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, buildOptions, fingerprint };
 }
 

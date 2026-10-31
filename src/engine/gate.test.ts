@@ -24,6 +24,10 @@ describe("classify", () => {
       ["mcp__routine__remind", "read"],
       ["mcp__routine__post", "read"],
       ["mcp__computer__bash", "read"],
+      ["mcp__mail__send_email", "write"],
+      ["mcp__mail__reply_to_email", "write"],
+      ["mcp__mail__list_messages", "read"],
+      ["mcp__mail__read_thread", "read"],
       ["mcp__connections__other", "write"],
       ["mcp__knowledge__other", "write"],
     ];
