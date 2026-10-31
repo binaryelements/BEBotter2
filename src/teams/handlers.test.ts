@@ -45,7 +45,7 @@ async function setup(assign: boolean) {
       const def = await upsertDefinition(db, Buffer.alloc(32), m.tenantId, { name: "helper", label: "Helper", persona: "p" } as never);
       await assignToChat(db, m.chatId, def.id);
     }
-    await handleMessage({ db, runTurn, botName: "Bot" }, m, async (t) => void sent.push(t), async (c) => void cards.push(c));
+    await handleMessage({ db, runTurn, botName: "Bot" }, m, { send: async (t) => (sent.push(t), undefined), update: async () => {}, sendCard: async (c) => void cards.push(c) });
   };
   return { db, run, runTurn, sent, cards, turns };
 }
@@ -109,6 +109,100 @@ describe("handleMessage", () => {
   });
 });
 
+describe("handleMessage status message", () => {
+  const slowSetup = async (events: (turn: RunTurnInput, wait: (ms: number) => Promise<void>) => Promise<void>) => {
+    const s = await setup(true);
+    await upsertTenant(s.db, { id: "t1" });
+    await upsertChat(s.db, { id: "c1", tenantId: "t1", conversationType: "personal" });
+    await assignToChat(s.db, "c1", (await upsertDefinition(s.db, Buffer.alloc(32), "t1", { name: "helper", label: "Helper", persona: "p" })).id);
+    s.runTurn.mockImplementation(async (turn: RunTurnInput) => {
+      await events(turn, async (ms) => void (await vi.advanceTimersByTimeAsync(ms)));
+      return { text: "final", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
+    });
+    const log: string[] = [];
+    let failUpdate = false;
+    const io = {
+      send: async (t: string) => (log.push(`send:${t}`), "id1"),
+      update: async (id: string, t: string) => {
+        if (failUpdate) throw new Error("gone");
+        log.push(`update:${id}:${t}`);
+      },
+      sendCard: async () => {},
+    };
+    return { s, log, io, failUpdates: () => (failUpdate = true) };
+  };
+  const run = (x: Awaited<ReturnType<typeof slowSetup>>, type = "personal") =>
+    handleMessage({ db: x.s.db, runTurn: x.s.runTurn, botName: "Bot" }, msg(type), x.io);
+
+  it("sends no status message when the turn is fast", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => (t.progress!({ kind: "tool", toolName: "WebSearch" }), wait(2900)));
+      await run(x);
+      expect(x.log).toEqual(["send:final"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the tool name after 3 s, then the model's latest line, throttled, and ends as the reply", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "tool", toolName: "mcp__knowledge__search" });
+        await wait(3000);
+        t.progress!({ kind: "text", text: "first" });
+        t.progress!({ kind: "text", text: `  second\n\nline ${"x".repeat(300)}` });
+        await wait(1999);
+        expect(x.log).toEqual(["send:Working: knowledge__search…"]);
+        await wait(1);
+        await wait(5000);
+      });
+      const timersBefore = vi.getTimerCount();
+      await run(x, "groupChat");
+      expect(x.log).toEqual([
+        "send:Working: knowledge__search…",
+        `update:id1:second line ${"x".repeat(200 - "second line ".length)}`,
+        "update:id1:**Helper**\n\nfinal",
+      ]);
+      expect(vi.getTimerCount()).toBeLessThanOrEqual(timersBefore);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends the reply as a new message when the status message cannot be edited", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "text", text: "thinking" });
+        await wait(3000);
+        x.failUpdates();
+      });
+      await run(x);
+      expect(x.log).toEqual(["send:thinking", "send:final"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replaces the status message when the turn fails", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "text", text: "thinking" });
+        await wait(3000);
+        throw new Error("boom");
+      });
+      await run(x);
+      expect(x.log).toEqual(["send:thinking", "update:id1:Something went wrong on my side."]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("handleMessage ordering", () => {
   it("runs turns in one chat one after another and other chats alongside", async () => {
     const db = await testDb();
@@ -124,7 +218,7 @@ describe("handleMessage ordering", () => {
       return { text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
     });
     const send = (chatId: string) =>
-      handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("groupChat"), chatId }, async () => {}, async () => {});
+      handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("groupChat"), chatId }, { send: async () => undefined, update: async () => {}, sendCard: async () => {} });
 
     const all = [send("c1"), send("c1"), send("c2")];
     await vi.waitFor(() => expect(running.map((r) => r.chatId).sort()).toEqual(["c1", "c2"]));
@@ -194,7 +288,7 @@ describe("handleMessage department access", () => {
     const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } }));
     const as = async (aadObjectId: string) => {
       const sent: string[] = [];
-      await handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, async (t) => void sent.push(t), async () => {});
+      await handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, { send: async (t) => (sent.push(t), undefined), update: async () => {}, sendCard: async () => {} });
       return sent;
     };
     return { db, runTurn, as };

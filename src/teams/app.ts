@@ -46,8 +46,15 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         receivedAt,
         conversationReference: ctx.activity.getConversationReference(),
       },
-      async (text) => void (await ctx.sendActivity(text)),
-      async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
+      {
+        send: async (text) => (await ctx.sendActivity(text))?.id,
+        update: async (id, text) => {
+          const activity = MessageFactory.text(text);
+          activity.id = id; // the spread form loses the Activity class
+          await ctx.updateActivity(activity);
+        },
+        sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
+      },
     );
   });
 
