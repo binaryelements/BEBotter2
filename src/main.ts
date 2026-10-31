@@ -56,6 +56,13 @@ startServer(app, {
   port: config.port,
   beforeListen: (express) => {
     mountMailInbound(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m) });
+    // a refused Teams delivery (auth, rate limit, handler error) is otherwise invisible
+    express.use("/api/messages", (req, res, next) => {
+      res.on("finish", () => {
+        if (res.statusCode >= 300) console.warn(`/api/messages answered ${res.statusCode} (${(req.body as { type?: string } | undefined)?.type ?? "?"})`);
+      });
+      next();
+    });
     express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, fetchUsers, mail,
       // never fails or delays the save; a missed attempt is retried on the next save or start
       onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
