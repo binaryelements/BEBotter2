@@ -5,6 +5,8 @@ import { loadConfig } from "../config/config.js";
 import { loadEnvFile } from "../config/env-file.js";
 import { connect } from "../db/client.js";
 import { botDefinitions, chats } from "../db/schema.js";
+import { agentMailAdmin } from "../mail/agentmail.js";
+import { ensureMailbox } from "../mail/mailboxes.js";
 import { assignToChat, botDefinitionInput, upsertDefinition } from "./definitions.js";
 
 const usage = `Usage:
@@ -34,7 +36,13 @@ async function main(): Promise<void> {
     // An explicit DEFAULT_MODEL wins over the tenant default; otherwise upsertDefinition picks tenant, then built-in.
     const fallback = process.env.DEFAULT_MODEL ? { model: config.defaultModel } : {};
     const input = botDefinitionInput.parse({ ...fallback, ...JSON.parse(readFileSync(values.file, "utf8")) });
-    console.log((await upsertDefinition(db, config.secretsKey, values.tenant, input)).id);
+    const def = await upsertDefinition(db, config.secretsKey, values.tenant, input);
+    console.log(def.id);
+    if (config.agentmail) {
+      const mail = { db, secretsKey: config.secretsKey, admin: agentMailAdmin(config.agentmail, fetch), publicUrl: config.publicUrl };
+      // the save already succeeded; the service finishes a failed mailbox on its next start
+      await ensureMailbox(mail, def.id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"));
+    }
   } else if (command === "assign") {
     if (!values.tenant || !values.chat || !values.name) throw new Error(usage);
     const [def] = await db

@@ -28,8 +28,8 @@ const many = (req: Request, name: string) => {
 const list = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
 
-export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: string }): Router {
-  const { db, secretsKey, defaultModel } = deps;
+export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: string; onSaved?: (definitionId: string) => void }): Router {
+  const { db, secretsKey, defaultModel, onSaved } = deps;
   const router = express.Router();
   const render = (res: Response, title: string, body: SafeHtml) => {
     const { actor, csrf } = adminOf(res);
@@ -77,6 +77,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
       if (!parsed.success) throw new DirectoryError(parsed.error.issues[0].message);
       if ((await listDefinitions(db, actor.tenantId)).some((d) => d.name === parsed.data.name)) throw new DirectoryError(`Bot "${parsed.data.name}" already exists`);
       const def = await upsertDefinition(db, secretsKey, actor.tenantId, parsed.data);
+      onSaved?.(def.id);
       res.redirect(303, `/admin/bots/${def.id}`);
     }),
   );
@@ -152,6 +153,7 @@ ${personaBox}
           webSearch: field(req, "webSearch") === "on", computer: field(req, "computer") === "on",
         });
         await setAllowedDepartments(db, actor.tenantId, id, many(req, "departments"));
+        onSaved?.(id);
       }
       res.redirect(303, `/admin/bots/${id}`);
     }),
