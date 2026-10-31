@@ -43,13 +43,19 @@ export type TeamsIo = {
   send: (text: string) => Promise<string | undefined>; // resolves to the activity id when there is one
   update: (activityId: string, text: string) => Promise<void>;
   sendCard: (card: AdaptiveCard) => Promise<void>;
+  /** A reply typed out as it is written (one-to-one chats); end's text is the whole final message. */
+  stream?: TeamsStream;
 };
+export type TeamsStream = { informative(text: string): void; chunk(text: string): void; end(finalText: string): Promise<void> };
 
 const STATUS_AFTER_MS = 3000;
 const STATUS_EVERY_MS = 2000;
 
-/** One status message for a slow turn: shown after 3 s, edited at most every 2 s (latest wins), then turned into the reply. */
-function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => t) {
+/**
+ * One status message for a slow turn: shown after 3 s, edited at most every 2 s (latest wins), then turned into the reply.
+ * While `onStream` takes the text (true), it is shown there instead of as a message.
+ */
+function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => t, onStream: (text: string) => boolean = () => false) {
   let label = "";
   let sawText = false;
   let shown = "";
@@ -66,6 +72,7 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
     if (done || !label || label === shown) return;
     last = Date.now();
     shown = label;
+    if (onStream(decorate(label))) return;
     try {
       if (id) await io.update(id, decorate(label));
       else if (!sentOnce) {
@@ -82,14 +89,19 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
       if (!line) return;
       label = line;
       sawText = true;
-    } else if (!sawText) label = `Working: ${e.toolName.replace(/^mcp__/, "")}…`;
+    } else if (e.kind === "tool" && !sawText) label = `Working: ${e.toolName.replace(/^mcp__/, "")}…`;
+    else return;
     if (!timer && !done) timer = setTimeout(() => void (ops = ops.then(flush)), Math.max(0, last + STATUS_EVERY_MS - Date.now()));
   };
-  /** Replaces the status message with text; sends a new message when there is none, it cannot be edited, or a card was sent. */
-  const finish = async (text: string) => {
+  /** No more status updates; waits for the one in flight. */
+  const stop = async () => {
     done = true;
     clearTimeout(timer);
     await ops;
+  };
+  /** Replaces the status message with text; sends a new message when there is none, it cannot be edited, or a card was sent. */
+  const finish = async (text: string) => {
+    await stop();
     if (id && !superseded) {
       try {
         return await io.update(id, text);
@@ -103,7 +115,7 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
   const supersede = () => {
     superseded = true;
   };
-  return { progress, finish, supersede };
+  return { progress, stop, finish, supersede };
 }
 
 export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string };
@@ -123,7 +135,61 @@ export async function handleMessage(
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
   await serialize(`${msg.chatId}:${definition.id}`, async () => {
     const personal = msg.conversationType === "personal";
-    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(definition.label, t));
+    // group chats never stream; a stream that fails hands the rest of the turn to the status message
+    let stream = personal ? io.stream : undefined;
+    let streamed = false; // the stream showed something, so it must be ended
+    let flowing = false; // the reply is streaming as text
+    let held = ""; // the current assistant message's text, until it is clear whether a tool call follows
+    let soFar = ""; // what the stream shows now
+    const toStream = (f: (s: TeamsStream) => void, text: string) => {
+      if (!stream) return false;
+      try {
+        f(stream);
+        streamed = true;
+        soFar = text;
+        return true;
+      } catch (err) {
+        console.error("streaming failed", err instanceof Error ? err.message : "unknown");
+        stream = undefined;
+        return false;
+      }
+    };
+    // once the reply flows, progress lines would only interrupt it
+    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(definition.label, t), (t) => !!stream && (flowing || toStream((s) => s.informative(t), t)));
+    const chunk = (text: string) => void toStream((s) => s.chunk(text), (flowing ? soFar : "") + text);
+    const progress = (e: ProgressEvent) => {
+      if (!stream) return status.progress(e);
+      if (e.kind === "delta") {
+        if (flowing) chunk(e.text);
+        else held += e.text;
+      } else if (e.kind === "tool") {
+        // written before a tool call: progress, not the reply
+        if (held.trim()) status.progress({ kind: "text", text: held });
+        held = "";
+        status.progress(e);
+      } else if (e.kind === "message-end" && held) {
+        chunk(held);
+        flowing = true;
+        held = "";
+      }
+    };
+    /** Ends the stream with text as its final message; false when there was nothing to end or it failed. */
+    const endStream = async (text: string) => {
+      const s = stream;
+      stream = undefined;
+      if (!s || !streamed) return false;
+      try {
+        await s.end(text);
+        return true;
+      } catch (err) {
+        console.error("ending the stream failed", err instanceof Error ? err.message : "unknown");
+        return false;
+      }
+    };
+    const deliver = async (text: string) => {
+      await status.stop();
+      if (!(await endStream(text))) await status.finish(text);
+    };
     try {
       const result = await deps.runTurn({
         tenantId: msg.tenantId,
@@ -132,13 +198,15 @@ export async function handleMessage(
         person,
         text: msg.text,
         receivedAt: msg.receivedAt,
-        askConfirmation: (req) => {
+        askConfirmation: async (req) => {
           status.supersede();
+          // a stream must not stay open through a wait of up to 10 minutes; the reply after the card is a new message
+          await endStream(soFar);
           return io.sendCard(confirmationCard(req));
         },
-        progress: status.progress,
+        progress,
       });
-      await status.finish(personal ? result.text : withRoleLabel(definition.label, result.text));
+      await deliver(personal ? result.text : withRoleLabel(definition.label, result.text));
       try {
         await recordSent(db, result.auditId, new Date());
       } catch (err) {
@@ -147,7 +215,7 @@ export async function handleMessage(
       logTurn(msg.chatId, result.timings);
     } catch (err) {
       console.error(err);
-      await status.finish("Something went wrong on my side.");
+      await deliver("Something went wrong on my side.");
     }
   });
 }

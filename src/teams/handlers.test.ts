@@ -314,6 +314,156 @@ describe("handleMessage status message", () => {
   });
 });
 
+describe("handleMessage streaming", () => {
+  const streamSetup = async (events: (turn: RunTurnInput, wait: (ms: number) => Promise<void>) => Promise<void>, text = "final") => {
+    const s = await setup(true);
+    await upsertTenant(s.db, { id: "t1" });
+    await upsertChat(s.db, { id: "c1", tenantId: "t1", conversationType: "personal" });
+    await assignToChat(s.db, "c1", (await upsertDefinition(s.db, Buffer.alloc(32), "t1", { name: "helper", label: "Helper", persona: "p" })).id);
+    s.runTurn.mockImplementation(async (turn: RunTurnInput) => {
+      await events(turn, async (ms) => void (await vi.advanceTimersByTimeAsync(ms)));
+      return { text, costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
+    });
+    const log: string[] = [];
+    const fail = { chunk: false, end: false };
+    const io = {
+      send: async (t: string) => (log.push(`send:${t}`), "id1"),
+      update: async (id: string, t: string) => void log.push(`update:${id}:${t}`),
+      sendCard: async () => void log.push("card"),
+      stream: {
+        informative: (t: string) => void log.push(`info:${t}`),
+        chunk: (t: string) => {
+          if (fail.chunk) throw new Error("gone");
+          log.push(`chunk:${t}`);
+        },
+        end: async (t: string) => {
+          if (fail.end) throw new Error("gone");
+          log.push(`end:${t}`);
+        },
+      },
+    };
+    return { s, log, io, fail };
+  };
+  const run = (x: Awaited<ReturnType<typeof streamSetup>>, type = "personal") =>
+    handleMessage({ db: x.s.db, runTurn: x.s.runTurn, botName: "Bot" }, msg(type), x.io);
+  const timed = async (f: () => Promise<void>) => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await f();
+    } finally {
+      vi.useRealTimers();
+      vi.mocked(console.error).mockRestore();
+    }
+  };
+
+  it("streams a message's text once it ends without a tool call, then each delta as it arrives, and ends with exactly the reply", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t) => {
+        t.progress!({ kind: "delta", text: "Hel" });
+        t.progress!({ kind: "delta", text: "lo" });
+        t.progress!({ kind: "text", text: "Hello there" });
+        expect(x.log).toEqual([]);
+        t.progress!({ kind: "message-end" });
+        expect(x.log).toEqual(["chunk:Hello"]);
+        t.progress!({ kind: "delta", text: " there" });
+        expect(x.log).toEqual(["chunk:Hello", "chunk: there"]);
+      });
+      await run(x);
+      expect(x.log).toEqual(["chunk:Hello", "chunk: there", "end:final"]);
+    }));
+
+  it("shows text written before a tool call as an informative update, never in the reply", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "delta", text: "Let me check." });
+        t.progress!({ kind: "text", text: "Let me check." });
+        t.progress!({ kind: "tool", toolName: "mcp__knowledge__search" });
+        t.progress!({ kind: "message-end" });
+        await wait(3000);
+        t.progress!({ kind: "delta", text: "Answer" });
+        t.progress!({ kind: "message-end" });
+        t.progress!({ kind: "tool", toolName: "WebSearch" }); // the reply is flowing: no more progress lines
+        await wait(3000);
+      });
+      await run(x);
+      expect(x.log).toEqual(["info:Let me check.", "chunk:Answer", "end:final"]);
+    }));
+
+  it("ends the stream with the text so far before a confirmation card and sends the reply after it as a new message", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "delta", text: "Checking" });
+        t.progress!({ kind: "tool", toolName: "WebSearch" });
+        await wait(3000);
+        await t.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
+        t.progress!({ kind: "delta", text: "Done" });
+        t.progress!({ kind: "message-end" });
+      });
+      await run(x);
+      expect(x.log).toEqual(["info:Checking", "end:Checking", "card", "send:final"]);
+    }));
+
+  it("falls back to the status message when a stream call throws and sends one reply", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "delta", text: "Hi" });
+        t.progress!({ kind: "message-end" });
+        t.progress!({ kind: "text", text: "working on it" });
+        await wait(3000);
+      });
+      x.fail.chunk = true;
+      await run(x);
+      expect(x.log).toEqual(["send:working on it", "update:id1:final"]);
+    }));
+
+  it("sends the reply as a message when ending the stream fails", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t) => {
+        t.progress!({ kind: "delta", text: "Hi" });
+        t.progress!({ kind: "message-end" });
+      });
+      x.fail.end = true;
+      await run(x);
+      expect(x.log).toEqual(["chunk:Hi", "send:final"]);
+    }));
+
+  it("never streams in a group chat", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "delta", text: "Hi" });
+        t.progress!({ kind: "message-end" });
+        t.progress!({ kind: "text", text: "Hi" });
+        await wait(3000);
+      });
+      await run(x, "groupChat");
+      expect(x.log).toEqual(["send:**Helper**\n\nHi", "update:id1:**Helper**\n\nfinal"]);
+    }));
+
+  it("records sentAt and logs the timing line on the streamed path", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t) => {
+        t.progress!({ kind: "delta", text: "Hi" });
+        t.progress!({ kind: "message-end" });
+      });
+      x.s.runTurn.mockImplementationOnce(async (turn: RunTurnInput) => {
+        turn.progress!({ kind: "delta", text: "Hi" });
+        turn.progress!({ kind: "message-end" });
+        const auditId = await beginAction(x.s.db, { tenantId: turn.tenantId, chatId: turn.chatId, definitionId: turn.definition.id, kind: "message", summary: "x" });
+        await completeAction(x.s.db, auditId, { status: "done", timings: { receivedAt: new Date().toISOString(), tools: 0 } });
+        return { text: "Hi", costUsd: 0, sessionId: "s", changed: false, auditId, timings: { receivedAt: new Date().toISOString(), tools: 0 } };
+      });
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      await run(x);
+      const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn "));
+      log.mockRestore();
+      expect(x.log).toEqual(["chunk:Hi", "end:Hi"]);
+      const [row] = await x.s.db.select().from(auditEvents).where(eq(auditEvents.kind, "message"));
+      expect(row!.timings!.sentAt).toBeTruthy();
+      expect(lines).toHaveLength(1);
+    }));
+});
+
 describe("handleMessage ordering", () => {
   it("runs turns in one chat one after another and other chats alongside", async () => {
     const db = await testDb();

@@ -1,4 +1,4 @@
-import { AgentApplication, CardFactory, CloudAdapter, MessageFactory } from "@microsoft/agents-hosting";
+import { AgentApplication, CardFactory, CloudAdapter, MessageFactory, StreamingResponseResult } from "@microsoft/agents-hosting";
 import type { TurnState } from "@microsoft/agents-hosting";
 import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
@@ -54,6 +54,21 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
           await ctx.updateActivity(activity);
         },
         sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
+        // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
+        ...(conversationType === "personal"
+          ? {
+              stream: {
+                informative: (text: string) => ctx.streamingResponse.queueInformativeUpdate(text),
+                chunk: (text: string) => ctx.streamingResponse.queueTextChunk(text),
+                end: async (finalText: string) => {
+                  ctx.streamingResponse.setFinalMessage(MessageFactory.text(finalText));
+                  // send failures are swallowed inside the stream and only show here
+                  const result = await ctx.streamingResponse.endStream();
+                  if (result !== StreamingResponseResult.Success) throw new Error(`stream ended: ${result}`);
+                },
+              },
+            }
+          : {}),
       },
     );
   });

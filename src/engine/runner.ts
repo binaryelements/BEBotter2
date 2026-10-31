@@ -43,7 +43,8 @@ export type RunnerDeps = {
 export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
 export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string };
-export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string };
+/** delta: reply text as the model writes it; message-end: an assistant message finished. */
+export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string } | { kind: "delta"; text: string } | { kind: "message-end" };
 
 const TRANSIENT = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "UND_ERR_SOCKET"]);
 const MAX_AUDIT_INPUT = 2000;
@@ -104,6 +105,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       permissionMode: "default",
       settingSources: [],
       persistSession: true,
+      includePartialMessages: true, // text as it is written, for streaming replies
       maxTurns: 25,
       // the model's process gets no service secrets, only what it needs to run
       env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
@@ -168,6 +170,12 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const at = new Date().toISOString();
     if (msg.type === "system" && msg.subtype === "init") timings.engineReadyAt ??= at;
     if (msg.type === "result") timings.resultAt = at;
+    // a subagent's words are not the reply
+    if (msg.type === "stream_event" && msg.parent_tool_use_id === null) {
+      const e = msg.event;
+      if (e.type === "content_block_delta" && e.delta.type === "text_delta") report({ kind: "delta", text: e.delta.text });
+      else if (e.type === "message_stop") report({ kind: "message-end" });
+    }
     if (msg.type !== "assistant") return;
     for (const block of msg.message.content) {
       if (block.type === "text") {

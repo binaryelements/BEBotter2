@@ -130,6 +130,30 @@ describe("runTurn", () => {
     expect(t.engineReadyAt && t.firstOutputAt && t.firstToolAt && t.resultAt).toBeTruthy();
   });
 
+  it("reports the reply's text deltas and message ends, not a subagent's, and asks the engine for them", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const seen: Options[] = [];
+    const ev = (event: unknown, parent: string | null = null) => ({ type: "stream_event", event, parent_tool_use_id: parent, uuid: "u", session_id: "s-1" });
+    const fn = (({ options }: { options: Options }) => {
+      seen.push(options);
+      return (async function* () {
+        yield ev({ type: "message_start", message: {} });
+        yield ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hel" } });
+        yield ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hmm" } });
+        yield ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "sub" } }, "tu-9");
+        yield ev({ type: "message_stop" }, "tu-9");
+        yield ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "lo" } });
+        yield ev({ type: "message_stop" });
+        yield { type: "result", subtype: "success", result: "Hello", session_id: "s-1", total_cost_usd: 0, is_error: false };
+      })();
+    }) as unknown as typeof query;
+    const events: unknown[] = [];
+    await runTurn(deps(db, fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {}, progress: (e) => void events.push(e) });
+    expect(events).toEqual([{ kind: "delta", text: "Hel" }, { kind: "delta", text: "lo" }, { kind: "message-end" }]);
+    expect(seen[0]!.includePartialMessages).toBe(true);
+  });
+
   it("allows the read tool, confirms the write tool with the asker and audits both", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db, { computer: true });
@@ -750,7 +774,7 @@ describe("runTurn", () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       await prewarm(d, { tenantId: "t1", chatId: "c1", definitionId: definition.id });
       log.mockRestore();
-      expect(q.seen.map((o) => o.resume)).toEqual(["s-0"]);
+      expect(q.seen.map((o) => [o.resume, o.includePartialMessages])).toEqual([["s-0", true]]);
       const result = await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: async () => {} });
       expect(q.seen).toHaveLength(1);
       expect(result.timings.live).toBe(true);
