@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { Server } from "node:http";
 import express from "express";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as audit from "../audit/audit.js";
 import { auditEvents, botDefinitions, chatAssignments, chats, mailboxes } from "../db/schema.js";
@@ -149,6 +150,17 @@ describe("mail inbound", () => {
     const noJson = express();
     expect(() => mountMailInbound(noJson, deps)).toThrow(/json/);
     expect(() => mountMailInbound({} as express.Application, deps)).toThrow();
+  });
+
+  it("mounts before json on Express 5, which startServer uses", async () => {
+    const { db } = await setup();
+    const req = createRequire(import.meta.url);
+    const express5 = req(req.resolve("express", { paths: [req.resolve("@microsoft/agents-hosting-express")] })) as typeof express;
+    const app5 = express5();
+    app5.use(express5.json());
+    mountMailInbound(app5, { db, secretsKey, send: async () => {} });
+    const names = (app5 as unknown as { router: { stack: { name: string; route?: { path: string } }[] } }).router.stack.map((l) => l.route?.path ?? l.name);
+    expect(names.indexOf("/mail/inbound")).toBeLessThan(names.indexOf("jsonParser"));
   });
 
   it("does not retry-loop when Teams fails", async () => {

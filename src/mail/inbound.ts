@@ -96,7 +96,10 @@ export function mailInbound(deps: InboundDeps): RequestHandler[] {
 /** startServer installs express.json() before beforeListen; move the route ahead of it so the signed bytes arrive intact. */
 export function mountMailInbound(app: Application, deps: InboundDeps): void {
   app.post("/mail/inbound", ...mailInbound(deps));
-  const stack = (app as unknown as { _router?: { stack?: { route?: { path: string }; name: string }[] } })._router?.stack;
+  // Express 5 (what startServer uses) keeps the router at app.router, Express 4 at app._router
+  type Stack = { stack?: { route?: { path: string }; name: string }[] };
+  const a = app as unknown as { router?: Stack; _router?: Stack };
+  const stack = (a._router ?? a.router)?.stack; // reading app.router throws on Express 4, so _router first
   const mine = stack?.findIndex((l) => l.route?.path === "/mail/inbound") ?? -1;
   const json = stack?.findIndex((l) => l.name === "jsonParser") ?? -1;
   if (!stack || mine < 0 || json < 0) throw new Error("mail inbound: cannot find the Express json layer to mount before");
