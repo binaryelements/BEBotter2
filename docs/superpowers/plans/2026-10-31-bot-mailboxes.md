@@ -86,6 +86,7 @@
 
 **Files:** Modify `src/admin/bots.ts`, `src/admin/router.ts`; Test `src/admin/bots.test.ts`
 
+- Company address (Martin): an optional **Company address** per mailbox (e.g. `iris@binaryelements.com`). Saving calls BE AgentMail `POST /inboxes/{id}/send-as {address}` (check first with `GET /send-as-check?address=`), the page shows `GET /inboxes/{id}/send-as` status, and clearing calls `DELETE`. The page shows the Microsoft 365 step: forward the company address to the bot's eml address with a plain forward, and allow automatic forwarding in the outbound anti-spam policy. Add `requestSendAs`, `getSendAs`, `removeSendAs`, `checkSendAs` to `agentMailAdmin` (check field names in `/openapi.json`).
 - Bot form gains **Name**. Bot page shows the address and status, with **Remove mailbox** (or **Restore mailbox**) behind the usual CSRF form, admins only, audited. No key or secret is ever rendered.
 - [ ] **Step 1: Tests:** name saves and shows; address shows; remove and restore call the mailbox functions and redirect; a head or plain user gets 403; no page contains `bam_` or `amwh_`.
 - [ ] **Step 2: Implement. Step 3:** run the test file, typecheck, commit `feat(admin): bot names and mailboxes`.
