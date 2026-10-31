@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
@@ -189,19 +189,14 @@ export async function verifyConnection(
   if (c.status === "blocked") fail(BLOCKED);
   if (needsSecret(c) && !c.secretCipher) return { status: c.status, output: "Waiting for the secret" };
   if (c.kind !== "ssh") {
-    let output: string;
+    // http and mcp make no network call until a person has seen the target on the approval card
+    if (c.status !== "active") fail(`${name} is not approved yet, so nothing was contacted. Ask an admin or department head to approve it.`);
     if (c.kind === "http") {
       if (!probe?.path) fail("Give a probe path: a read-only GET under the connection's URL");
       const r = await sendHttp(deps.fetchFn, httpConn(deps, c), { method: "GET", path: probe!.path });
-      if (r.status < 200 || r.status > 299) return { status: c.status, output: r.text };
-      output = r.text;
-    } else {
-      output = `Tools: ${(await listMcpTools(deps.fetchFn, mcpConn(deps, c))).join(", ") || "none"}`;
+      return { status: c.status, output: `HTTP ${r.status}` };
     }
-    // http and mcp always need an approval, whatever the mode
-    const status = c.status === "active" ? "active" : "awaiting-approval";
-    if (status !== c.status) await setStatus(deps.db, c, { status });
-    return { status, output: `${output}\n${status === "active" ? "Connected; the connection is active" : "Connected; an admin or department head must approve it"}` };
+    return { status: c.status, output: `Connected; ${(await listMcpTools(deps.fetchFn, mcpConn(deps, c))).length} tools` };
   }
   const r = await exec(deps, c, "exit 0");
   if (r.hostKeyMismatch) {
@@ -215,11 +210,16 @@ export async function verifyConnection(
   return { status, output: status === "active" ? "Connected; the connection is active" : "Connected; an admin or department head must approve it" };
 }
 
-export async function approveConnection(db: Db, tenantId: string, name: string, approverPersonId: string): Promise<void> {
+/** `expected` pins what the approver was shown, so a connection revoked and re-requested meanwhile is not approved. */
+export async function approveConnection(db: Db, tenantId: string, name: string, approverPersonId: string, expected?: { kind: Connection["kind"]; target: string; mode: ConnectionMode }): Promise<void> {
+  const c = await getConnection(db, tenantId, name);
+  if (c && c.kind !== "ssh" && c.status === "pending" && needsSecret(c) && !c.secretCipher) fail(`${name} is waiting for its secret`);
+  // ssh is approved after verify has pinned its host key; http and mcp are approved before anything is sent to them
+  const ready = or(eq(connections.status, "awaiting-approval"), and(eq(connections.status, "pending"), ne(connections.kind, "ssh")));
   const rows = await db
     .update(connections)
     .set({ status: "active", approvedByPersonId: approverPersonId, updatedAt: new Date() })
-    .where(and(byName(tenantId, name), eq(connections.status, "awaiting-approval")))
+    .where(and(byName(tenantId, name), ready, ...(expected ? [eq(connections.kind, expected.kind), eq(connections.target, expected.target), eq(connections.mode, expected.mode)] : [])))
     .returning({ id: connections.id });
   if (!rows.length) fail(`${name} is not awaiting approval`);
 }

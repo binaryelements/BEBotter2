@@ -219,35 +219,43 @@ describe("connections store", () => {
     expect(fetched).toEqual([]);
   });
 
-  it("http verify with a probe path moves to awaiting-approval", async () => {
+  it("http verify is refused before approval and sends nothing; afterwards it returns only the status", async () => {
     await request(http);
     await setSecret("helpdesk", "tok-123");
+    await expect(verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" })).rejects.toThrow(/not approved yet.*approve/);
+    expect(fetched).toEqual([]);
+    expect((await getConnection(db, "t1", "helpdesk"))!.status).toBe("pending");
+    await approveConnection(db, "t1", "helpdesk", personId);
     await expect(verifyConnection(deps, "t1", defId, "helpdesk")).rejects.toThrow(/probe path/);
-    respond = () => new Response("nope tok-123", { status: 401, statusText: "Unauthorized" });
-    const failed = await verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" });
-    expect(failed.status).toBe("pending");
-    expect(failed.output).toContain("401");
-    expect(failed.output).not.toContain("tok-123");
+    respond = () => new Response("secret body tok-123", { status: 401, statusText: "Unauthorized" });
+    expect(await verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" })).toEqual({ status: "active", output: "HTTP 401" });
     respond = () => new Response("{\"id\":1}");
-    const r = await verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" });
-    expect(r.status).toBe("awaiting-approval");
+    expect(await verifyConnection(deps, "t1", defId, "helpdesk", { path: "me" })).toEqual({ status: "active", output: "HTTP 200" });
     expect(fetched.at(-1)!.url).toBe("https://api.example.test/v1/me");
-    expect(fetched.at(-1)!.init.method).toBe("GET");
     expect(new Headers(fetched.at(-1)!.init.headers).get("authorization")).toBe("Bearer tok-123");
-    expect((await getConnection(db, "t1", "helpdesk"))!.status).toBe("awaiting-approval");
-    await expect(runHttp(deps, "t1", defId, "helpdesk", { method: "GET", path: "me" }, "read-only")).rejects.toThrow(/not active/);
   });
 
-  it("mcp verify lists tools", async () => {
+  it("approve needs the secret in first and pins what the approver saw", async () => {
+    await request(http);
+    await expect(approveConnection(db, "t1", "helpdesk", personId)).rejects.toThrow(/secret/);
+    await setSecret("helpdesk", "tok-123");
+    await expect(approveConnection(db, "t1", "helpdesk", personId, { kind: "http", target: "https://evil.example.test/", mode: "read-only" })).rejects.toThrow(/not awaiting approval/);
+    expect((await getConnection(db, "t1", "helpdesk"))!.status).toBe("pending");
+    await approveConnection(db, "t1", "helpdesk", personId, { kind: "http", target: http.target, mode: "read-only" });
+    await expect(approveConnection(db, "t1", "helpdesk", personId)).rejects.toThrow();
+    expect(fetched).toEqual([]);
+  });
+
+  it("mcp verify is refused before approval and then reports the tool count only", async () => {
     await request(mcp);
     await setSecret("tickets", "mcp-tok");
     respond = mcpServer;
-    const r = await verifyConnection(deps, "t1", defId, "tickets");
-    expect(r.status).toBe("awaiting-approval");
-    expect(r.output).toContain("list_tickets, close_ticket");
-    expect(new Headers(fetched[0]!.init.headers).get("x-api-key")).toBe("mcp-tok");
+    await expect(verifyConnection(deps, "t1", defId, "tickets")).rejects.toThrow(/not approved yet/);
+    expect(fetched).toEqual([]);
     expect((await connectionMcpConfigs(db, key, "t1", defId)).servers).toEqual({});
     await approveConnection(db, "t1", "tickets", personId);
+    expect(await verifyConnection(deps, "t1", defId, "tickets")).toEqual({ status: "active", output: "Connected; 2 tools" });
+    expect(new Headers(fetched[0]!.init.headers).get("x-api-key")).toBe("mcp-tok");
     expect(await connectionMcpConfigs(db, key, "t1", defId)).toEqual({
       servers: { "conn-tickets": { type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Api-Key": "mcp-tok" } } },
       readOnly: [{ name: "conn-tickets", readOnlyTools: ["list_tickets"] }],
@@ -261,7 +269,6 @@ describe("connections store", () => {
     await request({ ...http, name: "desk-rw", mode: "change" });
     for (const name of ["helpdesk", "desk-rw"]) {
       await setSecret(name, "tok-123");
-      await verifyConnection(deps, "t1", defId, name, { path: "me" });
       await approveConnection(db, "t1", name, personId);
     }
     fetched.length = 0;

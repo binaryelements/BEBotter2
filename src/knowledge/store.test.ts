@@ -38,6 +38,13 @@ describe("knowledge store", () => {
     expect((await readNote(db, key, "t1", "r"))?.body).toBe("old");
   });
 
+  it("rollback refuses a deleted version", async () => {
+    await writeNote(db, key, "t1", "d", "old", {});
+    await deleteNote(db, key, "t1", "d", {});
+    await expect(rollbackNote(db, key, "t1", "d", 2, {})).rejects.toThrow(/No such version/);
+    expect(await readNote(db, key, "t1", "d")).toBeUndefined();
+  });
+
   it("deleted notes vanish from list, read and search but stay in history", async () => {
     await writeNote(db, key, "t1", "gone", "findme", {});
     await deleteNote(db, key, "t1", "gone", {});

@@ -92,7 +92,7 @@ export async function noteHistory(db: Db, key: Buffer, tenantId: string, path: s
 
 export async function rollbackNote(db: Db, key: Buffer, tenantId: string, path: string, version: number, author: Author): Promise<number> {
   const old = (await noteHistory(db, key, tenantId, path)).find((r) => r.version === version);
-  if (!old) throw new KnowledgeError("No such version");
+  if (!old || old.deleted) throw new KnowledgeError("No such version");
   return writeNote(db, key, tenantId, path, old.body, author);
 }
 

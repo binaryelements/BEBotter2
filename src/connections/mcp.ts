@@ -81,7 +81,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       ),
       tool(
         "verify",
-        "Check that a requested connection works once the person says the access is in place. A changed host key blocks the connection until an admin resets it. For http give probePath, a path for a read-only GET under the connection's URL. Once a connection is active, map the system read-only and record what you learn with the knowledge tools.",
+        "Check that a requested connection works once the person says the access is in place. http and mcp connections are not contacted until approved. A changed host key blocks the connection until an admin resets it. For http give probePath, a path for a read-only GET under the connection's URL. Once a connection is active, map the system read-only and record what you learn with the knowledge tools.",
         { name: z.string(), probePath: z.string().optional() },
         ({ name, probePath }) =>
           run(async () => {
@@ -91,7 +91,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       ),
       tool(
         "approve",
-        "Approve a verified connection that awaits approval; an admin or department head confirms it. Give the connection's kind, target, mode and, for mcp, its read-only tools exactly as stored, so the approver sees what they approve.",
+        "Approve a requested connection (an ssh one after it is verified; http and mcp once their secret is in); an admin or department head confirms it. Give the connection's kind, target, mode and, for mcp, its read-only tools exactly as stored, so the approver sees what they approve.",
         {
           name: z.string(),
           kind: z.enum(["ssh", "http", "mcp"]),
@@ -110,7 +110,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
             // the card shows these arguments, so they must be what is really being approved
             if (c.kind !== a.kind || c.target !== a.target || c.mode !== a.mode || !sameTools)
               throw new ConnectionError(`The details do not match ${a.name}; nothing was approved. Stored: ${c.kind} ${c.target}, ${c.mode}`);
-            await approveConnection(db, tenantId, a.name, approver);
+            await approveConnection(db, tenantId, a.name, approver, { kind: a.kind, target: a.target, mode: a.mode });
             return `${a.name}: active`;
           }),
       ),
