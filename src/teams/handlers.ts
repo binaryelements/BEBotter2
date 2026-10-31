@@ -1,4 +1,6 @@
+import { recordSent } from "../audit/audit.js";
 import type { Db } from "../db/client.js";
+import type { TurnTimings } from "../db/schema.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { definitionsForChat } from "../bots/definitions.js";
@@ -13,6 +15,7 @@ export type IncomingMessage = {
   conversationType: string;
   from: { aadObjectId: string; name: string };
   text: string;
+  receivedAt?: Date;
   conversationReference: unknown;
 };
 
@@ -29,6 +32,11 @@ export async function serialize<T>(key: string, fn: () => Promise<T>): Promise<T
   } finally {
     if (chains.get(key) === tail) chains.delete(key);
   }
+}
+
+const ms = (from: string, to?: string) => (to ? Date.parse(to) - Date.parse(from) : "-");
+function logTurn(chatId: string, t: TurnTimings) {
+  console.log(`turn ${chatId} ${Date.now() - Date.parse(t.receivedAt)}ms ready=${ms(t.receivedAt, t.engineReadyAt)}ms first=${ms(t.receivedAt, t.firstOutputAt)}ms tools=${t.tools}`);
 }
 
 export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string };
@@ -55,9 +63,12 @@ export async function handleMessage(
         definition,
         person,
         text: msg.text,
+        receivedAt: msg.receivedAt,
         askConfirmation: (req) => sendCard(confirmationCard(req)),
       });
       await send(msg.conversationType === "personal" ? result.text : withRoleLabel(definition.label, result.text));
+      await recordSent(db, result.auditId, new Date());
+      logTurn(msg.chatId, result.timings);
     } catch (err) {
       console.error(err);
       await send("Something went wrong on my side.");

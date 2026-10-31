@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
-import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKMessage, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import { confirmerPolicy } from "../admin/access.js";
 import { beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
@@ -14,7 +14,9 @@ import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
-import type { BotDefinition, Person } from "../db/schema.js";
+import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
+
+export type { TurnTimings };
 import type { Confirmations, Outcome } from "./confirm.js";
 import { classify } from "./gate.js";
 
@@ -36,7 +38,8 @@ export type RunnerDeps = {
 };
 export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
-export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean };
+export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string };
+export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string };
 
 const TRANSIENT = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "UND_ERR_SOCKET"]);
 const MAX_AUDIT_INPUT = 2000;
@@ -56,6 +59,9 @@ export type RunTurnInput = {
   text: string;
   askConfirmation: (req: ConfirmationRequest) => Promise<void>;
   /** A scheduled run. With a grantPersonId an admin has let it make changes unattended. */
+  /** When the turn was asked for (the message arrived, the routine was due); defaults to now. */
+  receivedAt?: Date;
+  progress?: (event: ProgressEvent) => void;
   routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void> };
 };
 
@@ -63,6 +69,25 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const { db } = deps;
   const { tenantId, chatId, definition, person } = turn;
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id };
+  const received = turn.receivedAt ?? new Date();
+  const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };
+  // phase bookkeeping for one SDK message; a live-session pool can feed its messages here too
+  const observe = (msg: SDKMessage) => {
+    const at = new Date().toISOString();
+    if (msg.type === "system" && msg.subtype === "init") timings.engineReadyAt ??= at;
+    if (msg.type !== "assistant") return;
+    for (const block of msg.message.content) {
+      if (block.type === "text") {
+        timings.firstOutputAt ??= at;
+        turn.progress?.({ kind: "text", text: block.text });
+      } else if (block.type === "tool_use") {
+        timings.firstOutputAt ??= at;
+        timings.firstToolAt ??= at;
+        timings.tools++;
+        turn.progress?.({ kind: "tool", toolName: block.name });
+      }
+    }
+  };
 
   // a run under an admin grant starts clean: text from the chat must not steer it, and its context stays out of the chat's session
   const ownSession = !!turn.routine?.grantPersonId;
@@ -182,13 +207,15 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };
 
-  const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number) => {
-    const auditId = await beginAction(db, { ...base, kind: "message", summary: summary.slice(0, 200), model: definition.model });
-    await completeAction(db, auditId, { status, ...(costUsd !== undefined ? { costUsd } : {}) });
+  const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
+    const auditId = await beginAction(db, { ...base, kind: "message", summary: summary.slice(0, 200), model: definition.model, startedAt: received });
+    await completeAction(db, auditId, { status, ...(costUsd !== undefined ? { costUsd } : {}), ...(withTimings ? { timings: withTimings } : {}) });
+    return auditId;
   };
 
   const once = async (resume?: string): Promise<SDKResultMessage | undefined> => {
     for await (const msg of deps.queryFn({ prompt: turn.text, options: { ...options, ...(resume ? { resume } : {}) } })) {
+      observe(msg);
       if (msg.type === "result") return msg;
     }
     return undefined;
@@ -239,8 +266,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         .insert(sessions)
         .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
         .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
-    await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd);
-    return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id, changed };
+    timings.resultAt = now.toISOString();
+    const auditId = await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd, timings);
+    return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id, changed, timings, auditId };
   } finally {
     // allowed but never finished (interrupted, maxTurns hit, stream died)
     for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });

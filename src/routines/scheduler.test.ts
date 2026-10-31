@@ -56,7 +56,7 @@ const fakeRunTurn = (fn: (turn: RunTurnInput) => Promise<string> = async () => "
   const turns: RunTurnInput[] = [];
   const run = vi.fn(async (turn: RunTurnInput) => {
     turns.push(turn);
-    return { text: await fn(turn), costUsd: 0, sessionId: "s", changed: false };
+    return { text: await fn(turn), costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
   });
   return { run, turns };
 };

@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { auditEvents, tenants } from "../db/schema.js";
-import type { Authority, AuditEvent } from "../db/schema.js";
+import type { Authority, AuditEvent, TurnTimings } from "../db/schema.js";
 
 export async function beginAction(
   db: Db,
@@ -15,6 +15,7 @@ export async function beginAction(
     toolInput?: unknown;
     summary: string;
     model?: string;
+    startedAt?: Date;
   },
 ): Promise<string> {
   const id = crypto.randomUUID();
@@ -25,7 +26,7 @@ export async function beginAction(
 export async function completeAction(
   db: Db,
   id: string,
-  input: { status: "done" | "denied" | "expired" | "failed"; authority?: Authority; costUsd?: number },
+  input: { status: "done" | "denied" | "expired" | "failed"; authority?: Authority; costUsd?: number; timings?: TurnTimings },
 ): Promise<void> {
   await db
     .update(auditEvents)
@@ -34,7 +35,16 @@ export async function completeAction(
       finishedAt: new Date(),
       ...(input.authority ? { authority: input.authority } : {}),
       ...(input.costUsd !== undefined ? { costUsd: input.costUsd.toString() } : {}),
+      ...(input.timings ? { timings: input.timings } : {}),
     })
+    .where(eq(auditEvents.id, id));
+}
+
+/** Stamps when the reply reached the chat onto the turn's message row. */
+export async function recordSent(db: Db, id: string, sentAt: Date): Promise<void> {
+  await db
+    .update(auditEvents)
+    .set({ timings: sql`${auditEvents.timings} || ${JSON.stringify({ sentAt: sentAt.toISOString() })}::jsonb` })
     .where(eq(auditEvents.id, id));
 }
 

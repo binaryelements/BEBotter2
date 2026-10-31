@@ -80,6 +80,31 @@ function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()
 afterEach(() => vi.useRealTimers());
 
 describe("runTurn", () => {
+  it("records phase timings on the message row and reports progress in order", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const fn = (() =>
+      (async function* () {
+        yield { type: "system", subtype: "init", session_id: "s-1" };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "Looking." }] } };
+        yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "WebSearch", input: {} }] } };
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, is_error: false };
+      })()) as unknown as typeof query;
+    const events: unknown[] = [];
+    const receivedAt = new Date(Date.now() - 5000);
+    const result = await runTurn(deps(db, fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", receivedAt, askConfirmation: async () => {}, progress: (e) => void events.push(e) });
+
+    expect(events).toEqual([{ kind: "text", text: "Looking." }, { kind: "tool", toolName: "WebSearch" }]);
+    const [row] = (await listActions(db, { tenantId: "t1" })).filter((r) => r.id === result.auditId);
+    expect(row!.startedAt).toEqual(receivedAt);
+    const t = row!.timings!;
+    expect(t.receivedAt).toBe(receivedAt.toISOString());
+    expect(t.tools).toBe(1);
+    const order = [t.receivedAt, t.engineReadyAt, t.firstOutputAt, t.firstToolAt, t.resultAt].map((s) => Date.parse(s!));
+    expect(order.every((n, i) => i === 0 || n >= order[i - 1]!)).toBe(true);
+    expect(t.engineReadyAt && t.firstOutputAt && t.firstToolAt && t.resultAt).toBeTruthy();
+  });
+
   it("allows the read tool, confirms the write tool with the asker and audits both", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db, { computer: true });
@@ -94,7 +119,7 @@ describe("runTurn", () => {
       },
     });
 
-    expect(result).toEqual({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
+    expect(result).toMatchObject({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
     expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "routine", "tickets"]);
@@ -345,7 +370,7 @@ describe("runTurn", () => {
     const result = await runTurn(deps(db, queryFn), {
       tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
     });
-    expect(result).toEqual({ text: "Fresh.", costUsd: 0.002, sessionId: "s-new", changed: false });
+    expect(result).toMatchObject({ text: "Fresh.", costUsd: 0.002, sessionId: "s-new", changed: false });
     expect(seen.map((o) => o.resume)).toEqual(["gone", undefined]);
     expect(await db.select().from(sessions)).toMatchObject([{ chatId: "c1", sdkSessionId: "s-new" }]);
     errors.mockRestore();
@@ -410,7 +435,7 @@ describe("runTurn", () => {
     const result = await runTurn(deps(db, queryFn), {
       tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
     });
-    expect(result).toEqual({ text: "I couldn't finish that.", costUsd: 0.5, sessionId: "s-2", changed: false });
+    expect(result).toMatchObject({ text: "I couldn't finish that.", costUsd: 0.5, sessionId: "s-2", changed: false });
     const [row] = await listActions(db, { tenantId: "t1" });
     expect(row).toMatchObject({ kind: "message", status: "failed" });
   });

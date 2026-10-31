@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
+import { eq } from "drizzle-orm";
+import { beginAction, completeAction } from "../audit/audit.js";
 import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
@@ -25,7 +27,7 @@ async function setup(assign: boolean) {
   const runTurn = vi.fn(async (turn: RunTurnInput) => {
     turns.push(turn);
     await turn.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
-    return { text: "reply", costUsd: 0, sessionId: "s", changed: false };
+    return { text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
   });
   const sent: string[] = [];
   const cards: unknown[] = [];
@@ -40,10 +42,29 @@ async function setup(assign: boolean) {
     }
     await handleMessage({ db, runTurn, botName: "Bot" }, m, async (t) => void sent.push(t), async (c) => void cards.push(c));
   };
-  return { run, runTurn, sent, cards, turns };
+  return { db, run, runTurn, sent, cards, turns };
 }
 
 describe("handleMessage", () => {
+  it("writes sentAt to the turn's row and logs one timing line without message text", async () => {
+    const s = await setup(true);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    s.runTurn.mockImplementationOnce(async (turn: RunTurnInput) => {
+      const auditId = await beginAction(s.db, { tenantId: turn.tenantId, chatId: turn.chatId, definitionId: turn.definition.id, kind: "message", summary: "x" });
+      await completeAction(s.db, auditId, { status: "done", timings: { receivedAt: new Date().toISOString(), tools: 2 } });
+      return { text: "secret reply", costUsd: 0, sessionId: "s", changed: false, auditId, timings: { receivedAt: new Date().toISOString(), tools: 2 } };
+    });
+    // the confirmation card in the default mock is skipped by the override above
+    await s.run(msg("personal"));
+    const [row] = await s.db.select().from(auditEvents).where(eq(auditEvents.kind, "message"));
+    expect(row!.timings!.sentAt).toBeTruthy();
+    const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn "));
+    log.mockRestore();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^turn \S+ \d+ms ready=-ms first=-ms tools=2$/);
+    expect(lines[0]).not.toContain("secret");
+  });
+
   it("says so and skips the engine when nothing is assigned", async () => {
     const s = await setup(false);
     await s.run(msg("groupChat"));
@@ -86,7 +107,7 @@ describe("handleMessage ordering", () => {
     const running: { chatId: string; finish: () => void }[] = [];
     const runTurn = vi.fn(async (turn: RunTurnInput) => {
       await new Promise<void>((finish) => running.push({ chatId: turn.chatId, finish }));
-      return { text: "reply", costUsd: 0, sessionId: "s", changed: false };
+      return { text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
     });
     const send = (chatId: string) =>
       handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("groupChat"), chatId }, async () => {}, async () => {});
@@ -156,7 +177,7 @@ describe("handleMessage department access", () => {
     await setMembership(db, "t1", sales.id, mem.id, "member");
     const adm = await upsertPerson(db, { tenantId: "t1", aadObjectId: "admin", name: "Ad" });
     await setRole(db, "t1", adm.id, "admin");
-    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s", changed: false }));
+    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } }));
     const as = async (aadObjectId: string) => {
       const sent: string[] = [];
       await handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, async (t) => void sent.push(t), async () => {});

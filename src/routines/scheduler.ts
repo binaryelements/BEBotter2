@@ -21,6 +21,7 @@ export type SchedulerDeps = {
 export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise<void> {
   const { db } = deps;
   const { tenantId, chatId, definitionId } = routine;
+  const due = new Date(); // shortcut: claim time stands in for the scheduled time, which claimDue does not return
   const fail = async (reason: string) => {
     console.error(`routine ${routine.id}: ${reason}`);
     try {
@@ -56,6 +57,7 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
         definition,
         person: creator,
         text: routine.prompt,
+        receivedAt: due,
         askConfirmation: (req) => deps.send(chatId, confirmationCard(req)),
         routine: { id: routine.id, grantPersonId, post },
       });

@@ -27,6 +27,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
   });
 
   app.onActivity("message", async (ctx) => {
+    const receivedAt = new Date();
     const { conversation, from } = ctx.activity;
     if (!conversation?.tenantId || !from?.aadObjectId) {
       console.warn(`skipped message without tenant or user id in chat ${conversation?.id}`);
@@ -42,6 +43,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         conversationType,
         from: { aadObjectId: from.aadObjectId, name: from.name ?? "" },
         text: (ctx.activity.text ?? "").trim(),
+        receivedAt,
         conversationReference: ctx.activity.getConversationReference(),
       },
       async (text) => void (await ctx.sendActivity(text)),
