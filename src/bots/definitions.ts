@@ -8,6 +8,11 @@ import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
+export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine"] as const;
+
+/** MCP connections attach as `conn-<name>`, so that prefix is reserved too. */
+export const isReservedMcpName = (name: string): boolean => (RESERVED_MCP_NAMES as readonly string[]).includes(name.toLowerCase()) || name.toLowerCase().startsWith("conn-");
+
 export const mcpServerInput = z.object({
   name: z.string().min(1),
   transport: z.enum(["http", "stdio"]),
@@ -18,7 +23,7 @@ export const mcpServerInput = z.object({
   readOnlyTools: z.array(z.string()).default([]),
 }).superRefine((s, ctx) => {
   const need = s.transport === "http" ? "url" : "command";
-  if (s.name === "computer") ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "computer" is a reserved name` });
+  if (isReservedMcpName(s.name)) ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "${s.name}" is a reserved name` });
   if (s.name.includes("__")) ctx.addIssue({ code: "custom", path: ["name"], message: `MCP server "${s.name}" must not contain "__"` });
   if (!s[need]) ctx.addIssue({ code: "custom", path: [need], message: `${s.transport} MCP server "${s.name}" requires ${need}` });
 });
@@ -89,6 +94,11 @@ const stdioEnv = () => ({ PATH: process.env.PATH ?? "", HOME: process.env.HOME ?
 export function mcpServerConfigs(def: BotDefinition, secretsKey: Buffer): Record<string, McpServerConfig> {
   const out: Record<string, McpServerConfig> = {};
   for (const s of def.mcpServers) {
+    // saved before the name was reserved: skipped so it never shadows a built-in
+    if (isReservedMcpName(s.name)) {
+      console.error(`bot ${def.id}: MCP server "${s.name}" skipped, the name is reserved`);
+      continue;
+    }
     if (s.transport === "http" && !s.url) throw new Error(`MCP server ${s.name} has no url`);
     if (s.transport === "stdio" && !s.command) throw new Error(`MCP server ${s.name} has no command`);
     out[s.name] =

@@ -31,7 +31,7 @@ describe("settings screen", () => {
   afterAll(() => close());
 
   const get = (who: string) => fetch(url + "/admin/settings", { redirect: "manual", headers: { cookie: sessionCookie(secretsKey, T, id[who]) } });
-  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string }) =>
+  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string; timezone?: string }) =>
     fetch(url + "/admin/settings", {
       method: "POST",
       redirect: "manual",
@@ -40,19 +40,19 @@ describe("settings screen", () => {
     });
 
   it("defaults for a missing tenant", async () => {
-    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null });
+    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC" });
   });
 
   it("saves, trims, and stores an empty bot name as null", async () => {
     const r = await post("Ann", { botName: "  Helper  ", retentionDays: "30", defaultModel: " claude-sonnet-5 " });
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/admin/settings");
-    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "claude-sonnet-5" });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "claude-sonnet-5", timezone: "UTC" });
     const page = await (await get("Ann")).text();
     expect(page).toContain('value="Helper"');
     expect(page).toContain('value="30"');
     await post("Ann", { botName: "  ", retentionDays: "30" });
-    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null, timezone: "UTC" });
   });
 
   it("rejects bad values and keeps the old ones", async () => {
@@ -60,6 +60,14 @@ describe("settings screen", () => {
       expect((await post("Ann", f)).status).toBe(400);
     }
     expect((await getTenantSettings(db, T)).retentionDays).toBe(30);
+  });
+
+  it("settings save a valid time zone and refuse an unknown one", async () => {
+    expect((await post("Ann", { retentionDays: "30", timezone: "Australia/Sydney" })).status).toBe(303);
+    expect((await getTenantSettings(db, T)).timezone).toBe("Australia/Sydney");
+    expect((await post("Ann", { retentionDays: "30", timezone: "Mars/Base" })).status).toBe(400);
+    expect((await getTenantSettings(db, T)).timezone).toBe("Australia/Sydney");
+    expect((await post("Ann", { retentionDays: "30", timezone: "UTC" })).status).toBe(303);
   });
 
   it("a head gets 403", async () => {

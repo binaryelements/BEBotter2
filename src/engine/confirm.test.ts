@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Confirmations } from "./confirm.js";
 
-const make = () => {
+const make = (allowed = ["alice"]) => {
   const c = new Confirmations(setTimeout);
-  const { actionId, outcome } = c.create({ auditId: "a1", askerPersonId: "alice" });
+  const { actionId, outcome } = c.create({ auditId: "a1", mayConfirm: async (p) => allowed.includes(p) });
   return { c, actionId, outcome };
 };
 
@@ -11,33 +11,33 @@ describe("Confirmations", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("confirms when the asker says yes, once", async () => {
-    const { c, actionId, outcome } = make();
-    expect(c.resolve(actionId, "alice", "yes")).toBe("confirmed");
-    await expect(outcome).resolves.toBe("confirmed");
-    expect(c.resolve(actionId, "alice", "yes")).toBe("unknown");
+  it("an allowed clicker confirms and the outcome names them", async () => {
+    const { c, actionId, outcome } = make(["alice", "boss"]);
+    await expect(c.resolve(actionId, "boss", "yes")).resolves.toBe("confirmed");
+    await expect(outcome).resolves.toEqual({ result: "confirmed", personId: "boss" });
+    await expect(c.resolve(actionId, "boss", "yes")).resolves.toBe("unknown");
   });
 
-  it("rejects another person and stays pending", async () => {
+  it("a clicker the policy refuses gets not_allowed and the action stays pending", async () => {
     const { c, actionId, outcome } = make();
     let settled = false;
     void outcome.then(() => (settled = true));
-    expect(c.resolve(actionId, "bob", "yes")).toBe("not_allowed");
+    await expect(c.resolve(actionId, "bob", "yes")).resolves.toBe("not_allowed");
     await Promise.resolve();
     expect(settled).toBe(false);
-    expect(c.resolve(actionId, "alice", "no")).toBe("denied");
+    await expect(c.resolve(actionId, "alice", "no")).resolves.toBe("denied");
   });
 
-  it("denies when the asker says no", async () => {
+  it("denies when an allowed clicker says no", async () => {
     const { c, actionId, outcome } = make();
-    expect(c.resolve(actionId, "alice", "no")).toBe("denied");
-    await expect(outcome).resolves.toBe("denied");
+    await expect(c.resolve(actionId, "alice", "no")).resolves.toBe("denied");
+    await expect(outcome).resolves.toEqual({ result: "denied" });
   });
 
   it("expires after the ttl", async () => {
     const { c, actionId, outcome } = make();
     vi.advanceTimersByTime(600_000);
-    await expect(outcome).resolves.toBe("expired");
-    expect(c.resolve(actionId, "alice", "yes")).toBe("unknown");
+    await expect(outcome).resolves.toEqual({ result: "expired" });
+    await expect(c.resolve(actionId, "alice", "yes")).resolves.toBe("unknown");
   });
 });

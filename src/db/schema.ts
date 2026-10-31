@@ -10,6 +10,13 @@ export type McpServerRecord = {
   readOnlyTools: string[];
 };
 
+export type Authority = { type: "confirmation"; personId: string } | { type: "grant"; personId: string; routineId: string };
+
+export type ConnectionConfig =
+  | { port: number; username: string }
+  | { auth?: { in: "header" | "query"; name: string; prefix?: string } }
+  | { headerName?: string; readOnlyTools: string[] };
+
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
 export const tenants = pgTable("tenants", {
@@ -18,6 +25,7 @@ export const tenants = pgTable("tenants", {
   retentionDays: integer("retention_days").notNull().default(90),
   botName: text("bot_name"),
   defaultModel: text("default_model"),
+  timezone: text("timezone").notNull().default("UTC"),
   createdAt: createdAt(),
 });
 
@@ -131,11 +139,86 @@ export const auditEvents = pgTable("audit_events", {
   toolInput: jsonb("tool_input"),
   summary: text("summary").notNull(),
   status: text("status").notNull(), // pending | done | denied | expired | failed
-  authority: jsonb("authority").$type<{ type: "confirmation"; personId: string }>(),
+  authority: jsonb("authority").$type<Authority>(),
   model: text("model"),
   costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
+});
+
+export const connections = pgTable(
+  "connections",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    name: text("name").notNull(),
+    kind: text("kind").notNull(), // ssh | http | mcp
+    target: text("target").notNull(), // ssh host, http base URL, mcp server URL
+    config: jsonb("config").$type<ConnectionConfig>().notNull(),
+    mode: text("mode").notNull(), // read-only | change
+    status: text("status").notNull(), // pending | awaiting-approval | active | blocked | revoked
+    secretCipher: text("secret_cipher"),
+    publicKey: text("public_key"),
+    hostKey: text("host_key"),
+    requestedByPersonId: text("requested_by_person_id").references(() => people.id),
+    approvedByPersonId: text("approved_by_person_id").references(() => people.id),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique().on(t.tenantId, t.name)],
+);
+
+export const secretLinks = pgTable("secret_links", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  connectionId: text("connection_id").notNull().references(() => connections.id, { onDelete: "cascade" }),
+  personId: text("person_id").notNull().references(() => people.id),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: createdAt(),
+});
+
+export const definitionConnections = pgTable(
+  "definition_connections",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    connectionId: text("connection_id").notNull().references(() => connections.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.connectionId] })],
+);
+
+export const knowledgeVersions = pgTable(
+  "knowledge_versions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    path: text("path").notNull(),
+    version: integer("version").notNull(),
+    bodyCipher: text("body_cipher").notNull(),
+    deleted: boolean("deleted").notNull().default(false),
+    authorPersonId: text("author_person_id").references(() => people.id),
+    authorDefinitionId: text("author_definition_id").references(() => botDefinitions.id),
+    chatId: text("chat_id"),
+    createdAt: createdAt(),
+  },
+  (t) => [unique().on(t.tenantId, t.path, t.version)],
+);
+
+export const routines = pgTable("routines", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+  chatId: text("chat_id").notNull().references(() => chats.id),
+  prompt: text("prompt").notNull(),
+  schedule: text("schedule"), // 5-field cron
+  runAt: timestamp("run_at", { withTimezone: true }),
+  quiet: boolean("quiet").notNull().default(false),
+  enabled: boolean("enabled").notNull().default(true),
+  grantPersonId: text("grant_person_id").references(() => people.id),
+  createdByPersonId: text("created_by_person_id").notNull().references(() => people.id),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+  createdAt: createdAt(),
 });
 
 export type Tenant = typeof tenants.$inferSelect;
@@ -146,3 +229,6 @@ export type BotDefinition = typeof botDefinitions.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Computer = typeof computers.$inferSelect;
+export type Connection = typeof connections.$inferSelect;
+export type KnowledgeVersion = typeof knowledgeVersions.$inferSelect;
+export type Routine = typeof routines.$inferSelect;

@@ -5,6 +5,10 @@ import type { Db } from "../db/client.js";
 import { getDefinition, listDefinitions, setAllowedDepartments } from "../bots/definitions.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
+import { connections, chatAssignments, chats } from "../db/schema.js";
+import { listConnectionsFor } from "../connections/store.js";
+import { listRoutines } from "../routines/store.js";
+import { eq } from "drizzle-orm";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -125,5 +129,83 @@ describe("bots screen", () => {
     expect((await post(`/admin/bots/${d.id}/servers/tickets/delete`, "Ann", [])).status).toBe(303);
     expect((await getDefinition(db, T, d.id))!.mcpServers).toEqual([]);
     await setAllowedDepartments(db, T, d.id, []);
+  });
+
+  describe("connections and routines", () => {
+    const conn = async (name: string, over: Partial<typeof connections.$inferInsert> = {}) => {
+      const cid = crypto.randomUUID();
+      await db.insert(connections).values({ id: cid, tenantId: T, name, kind: "ssh", target: "host.example.test", config: { port: 22, username: "ops" }, mode: "read-only", status: "active", secretCipher: "CIPHER-SECRET", publicKey: `ssh-ed25519 AAAAPUB ${name}`, ...over });
+      return cid;
+    };
+    it("admin links and unlinks a connection for a bot", async () => {
+      const d = await def("helper");
+      const c = await conn("lnk");
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
+      expect((await listConnectionsFor(db, T, d.id)).map((x) => x.id)).toContain(c);
+      const page = await (await get(`/admin/bots/${d.id}`, "Ann")).text();
+      expect(page).toContain("lnk");
+      expect(page).not.toContain("CIPHER-SECRET");
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
+      expect(await listConnectionsFor(db, T, d.id)).toHaveLength(0);
+    });
+    it("revoke shows the public key and the connection can no longer run", async () => {
+      const c = await conn("rev");
+      const res = await post(`/admin/connections/${c}/revoke`, "Ann", []);
+      const text = await res.text();
+      expect(text).toContain("ssh-ed25519 AAAAPUB rev");
+      const [row] = await db.select().from(connections).where(eq(connections.id, c));
+      expect([row.status, row.secretCipher]).toEqual(["revoked", null]);
+      const h = await conn("revhttp", { kind: "http", target: "https://x.example.test", config: {}, publicKey: null });
+      expect(await (await post(`/admin/connections/${h}/revoke`, "Ann", [])).text()).toContain("Revoke the token at its source");
+    });
+    it("reset host key moves a blocked connection back to pending", async () => {
+      const c = await conn("blk", { status: "blocked", hostKey: "k" });
+      expect((await post(`/admin/connections/${c}/reset-host-key`, "Ann", [])).status).toBe(303);
+      const [row] = await db.select().from(connections).where(eq(connections.id, c));
+      expect([row.status, row.hostKey]).toEqual(["pending", null]);
+    });
+    it("admin creates a routine with a grant held by that admin; a bad cron is refused with 400", async () => {
+      const d = await def("helper");
+      const chatId = "chat-r1";
+      await db.insert(chats).values({ id: chatId, tenantId: T, conversationType: "personal", label: "Ops room" } as typeof chats.$inferInsert);
+      await db.insert(chatAssignments).values({ chatId, definitionId: d.id } as typeof chatAssignments.$inferInsert);
+      expect(await (await get(`/admin/bots/${d.id}`, "Ann")).text()).toContain("Ops room");
+      const res = await post(`/admin/bots/${d.id}/routines`, "Ann", [["chatId", chatId], ["prompt", "Check disk"], ["schedule", "0 9 * * 1-5"], ["grant", "on"]]);
+      expect(res.status).toBe(303);
+      const [r] = await listRoutines(db, T, d.id);
+      expect([r.schedule, r.grantPersonId]).toEqual(["0 9 * * 1-5", id.Ann]);
+      expect((await post(`/admin/bots/${d.id}/routines`, "Ann", [["chatId", chatId], ["prompt", "x"], ["schedule", "bogus"]])).status).toBe(400);
+      await post(`/admin/bots/${d.id}/routines/${r.id}/enabled`, "Ann", [["enabled", "off"]]);
+      expect((await listRoutines(db, T, d.id))[0].enabled).toBe(false);
+      await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", []);
+      expect(await listRoutines(db, T, d.id)).toHaveLength(0);
+    });
+    it("a foreign-tenant or unknown connection id gives 400 and changes nothing", async () => {
+      await upsertTenant(db, { id: "other" });
+      const c = await conn("foreign", { tenantId: "other" });
+      const d = await def("helper");
+      for (const p of [`/admin/connections/${c}/revoke`, `/admin/connections/${c}/reset-host-key`, `/admin/connections/nope/revoke`, `/admin/bots/${d.id}/connections/${c}/link`]) {
+        expect((await post(p, "Ann", [["linked", "on"]])).status).toBe(400);
+      }
+      const [row] = await db.select().from(connections).where(eq(connections.id, c));
+      expect([row.status, row.secretCipher]).toEqual(["active", "CIPHER-SECRET"]);
+    });
+    it("head gets 403 on every connection and routine post, and sees neither section", async () => {
+      const d = await def("helper");
+      const c = await conn("hd");
+      for (const p of [`/admin/bots/${d.id}/connections/${c}/link`, `/admin/connections/${c}/revoke`, `/admin/connections/${c}/reset-host-key`, `/admin/bots/${d.id}/routines`, `/admin/bots/${d.id}/routines/x/enabled`, `/admin/bots/${d.id}/routines/x/delete`]) {
+        expect((await post(p, "Hal", [])).status).toBe(403);
+      }
+      const page = await (await get(`/admin/bots/${d.id}`, "Hal")).text();
+      expect(page).not.toContain("Connections");
+      expect(page).not.toContain("Routines");
+    });
+    it("no admin page contains BEGIN OPENSSH", async () => {
+      const d = await def("helper");
+      await conn("pk", { secretCipher: "-----BEGIN OPENSSH PRIVATE KEY-----" });
+      const c = await conn("pk2", { secretCipher: "-----BEGIN OPENSSH PRIVATE KEY-----" });
+      expect(await (await post(`/admin/connections/${c}/revoke`, "Ann", [])).text()).not.toContain("BEGIN OPENSSH");
+      for (const p of ["/admin/bots", `/admin/bots/${d.id}`, "/admin/settings"]) expect(await (await get(p, "Ann")).text()).not.toContain("BEGIN OPENSSH");
+    });
   });
 });

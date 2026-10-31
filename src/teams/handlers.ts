@@ -17,7 +17,19 @@ export type IncomingMessage = {
 };
 
 // turns per chat and bot definition run one after another, so two never resume the same session at once
-const chains = new Map<string, Promise<void>>();
+const chains = new Map<string, Promise<unknown>>();
+
+/** Runs fn after every earlier fn with the same key has settled; key is `${chatId}:${definitionId}`. */
+export async function serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const turn = (chains.get(key) ?? Promise.resolve()).then(fn);
+  const tail = turn.catch(() => {});
+  chains.set(key, tail);
+  try {
+    return await turn;
+  } finally {
+    if (chains.get(key) === tail) chains.delete(key);
+  }
+}
 
 export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string };
 
@@ -35,8 +47,7 @@ export async function handleMessage(
   const [definition] = await definitionsForChat(db, msg.chatId);
   if (!definition) return send("No bot is set up for this chat yet.");
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return send("You don't have access to this bot.");
-  const key = `${msg.chatId}:${definition.id}`;
-  const turn = (chains.get(key) ?? Promise.resolve()).then(async () => {
+  await serialize(`${msg.chatId}:${definition.id}`, async () => {
     try {
       const result = await deps.runTurn({
         tenantId: msg.tenantId,
@@ -52,13 +63,6 @@ export async function handleMessage(
       await send("Something went wrong on my side.");
     }
   });
-  const tail = turn.catch(() => {});
-  chains.set(key, tail);
-  try {
-    await turn;
-  } finally {
-    if (chains.get(key) === tail) chains.delete(key);
-  }
 }
 
 // agents-hosting hands the handler the whole invoke action ({ verb, data }), not the card's data alone
@@ -68,20 +72,20 @@ export function clickPayload(action: unknown): { actionId: string; answer: "yes"
   return { actionId: String(src.actionId ?? ""), answer: src.answer === "yes" ? "yes" : "no" };
 }
 
-export function handleConfirmClick(
+export async function handleConfirmClick(
   confirmations: Confirmations,
   data: { actionId: string; answer: "yes" | "no" },
   clickerPersonId: string | undefined,
   clickerName: string,
-): string {
-  const outcome = clickerPersonId ? confirmations.resolve(data.actionId, clickerPersonId, data.answer) : "not_allowed";
+): Promise<string> {
+  const outcome = clickerPersonId ? await confirmations.resolve(data.actionId, clickerPersonId, data.answer) : "not_allowed";
   switch (outcome) {
     case "confirmed":
       return `Confirmed by ${clickerName}`;
     case "denied":
       return `Declined by ${clickerName}`;
     case "not_allowed":
-      return "Only the person who asked can confirm this.";
+      return "You can't confirm this.";
     case "unknown":
       return "This request has expired.";
   }

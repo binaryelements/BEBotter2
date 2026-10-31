@@ -28,6 +28,7 @@ const screens = [
   { label: "Departments", path: "departments", head: true },
   { label: "Assignments", path: "assignments", head: false },
   { label: "Activity", path: "activity", head: true },
+  { label: "Knowledge", path: "knowledge", head: true },
   { label: "Settings", path: "settings", head: false },
 ];
 

@@ -94,13 +94,15 @@ A bot definition is the unit an admin creates and edits. **[M]** Fields:
 - Connections: SSH hosts with keys, Windows hosts over SSH or WinRM, Proxmox API tokens, and new
   kinds over time. Each connection has a mode, `read-only` or `change`. **[M]** Enforcement **[C]**:
   a `read-only` connection's credential must itself be read-only on the target (a read-only
-  account, a Proxmox token with an audit role); the admin page says so when the connection is
-  created, and that credential is placed in the computer so the shell can use it freely. A
-  `change` connection's credential is never placed in the computer; it is used only by a
-  connection tool in the service process, and every call to that tool is gated by confirmation.
-  So the shell can look anywhere it has been given read access and can change nothing on its own.
-- Computer: on or off. A computer is a Linux container with the bot's read-only connection
-  credentials placed as files or environment and no host mounts. **[M]** One container per bot
+  account, a Proxmox token with an audit role); the admin page says so. No connection credential
+  is ever placed in the computer, because the model can read anything there. Both modes run
+  through connection tools in the service process: the `read-only` tool runs without asking, the
+  `change` tool is gated by confirmation. **[C, revised 2026-10-30]**
+- Connections cover any method a job needs: `ssh`, `http` APIs and `mcp` servers in version one,
+  further transports later (section 4.9). **[M, 2026-10-30]**
+- Connections are set up from the chat, led by the bot (section 4.9). Nobody pastes a private key
+  anywhere. **[M, 2026-10-30]**
+- Computer: on or off. A computer is a Linux container with no credentials and no host mounts. **[M]** One container per bot
   definition for service-account bots, and one per person for bots whose identity is `person`, so
   no two people's sessions share a computer. **[C]**
 - Web search and fetch: on or off.
@@ -145,7 +147,7 @@ computer on) and an empty template. **[C]**
 - Tools given to the session: Graph tools (our own small MCP server backed by the person's or
   service account's token), the definition's MCP servers, web search and fetch, and the computer's
   shell and file tools which run inside the bot's container. **[C]**
-- The model never sees secrets: SSH keys and tokens are placed in the container; the Graph MCP
+- The model never sees secrets: SSH keys stay in the service's connection tools; the Graph MCP
   server holds the delegated token in the service process. **[C]**
 - Confirmation: any tool call that changes something (mail send, calendar write, file write,
   `change`-mode connections, MCP tools marked as writing) is gated: the bot posts what it is about
@@ -190,9 +192,77 @@ else: **[C]**
   departments' members. **[M]**
 - **Assignments**: which definitions live in which chats; chats appear once the app is in them.
 - **Activity**: the audit trail.
+- **Knowledge**: the tenant's notes, their history and rollback (4.10). Added 2026-10-30.
 - **Settings**: brand name, retention, default model, Anthropic spend cap.
 
 Minimal copy. No explainer text.
+
+### 4.9 Connection setup led by the bot
+
+Added 2026-10-30. **[M]** Any connectivity a job needs, by any method, is set up by the bot when
+asked: staff follow the bot's instructions in the chat. Version one handles three transports that
+between them reach almost anything **[C]**:
+
+- `ssh`: Linux, Windows (OpenSSH), Proxmox and network devices; the service generates the key.
+- `http`: any HTTP API (Proxmox API, SaaS, internal services); a base URL plus an optional secret
+  the service adds to every request (a header or a query parameter, as the bot asks).
+- `mcp`: any MCP server over HTTP; a URL plus an optional secret header. Once active it is attached
+  to the bots it is linked to, like an MCP server an admin added by hand.
+
+New transports are later additions of the same shape. Flow **[C]**:
+
+1. Someone asks a bot for access ("get access to pve1, read-only", "connect to our helpdesk API").
+2. The bot requests a connection: kind, name, target, mode, and for `mcp` which tools only read.
+   - `ssh`: the service generates a key pair (ed25519); the private key is stored encrypted and
+     never leaves the service. The bot gets the public key.
+   - `http`/`mcp` with a secret: the service creates a one-time secret link (valid 30 minutes, for
+     the person who asked, behind Microsoft sign-in). The person opens it and pastes the API key or
+     token there. Secrets are never typed into the chat.
+3. The bot posts the instructions for whatever the target is (create an account and add this key;
+   create an API token with these rights; where to find the MCP token). The bot writes them; the
+   service hands it only facts.
+4. The person says it is done. The bot verifies: `ssh` connects and pins the host key (a later
+   change blocks the connection until an admin resets it); `http` makes a read-only request the bot
+   chooses; `mcp` lists the server's tools.
+5. Activation: an `ssh` `read-only` connection is active once verified, because the target account
+   itself is the limit. Every other connection (`change`, any `http`, any `mcp`) needs an admin or a
+   head of a department allowed to use the bot to approve it on a card that shows the target, mode
+   and, for `mcp`, the tools marked read-only.
+6. Use: `ssh` and `http` through connection tools in the service (`read-only` tools run freely,
+   `http` read is GET/HEAD only; `change` tools are confirmed per call); `mcp` tools are classified
+   by the approved read-only list, everything else is confirmed per call. Credentials never reach
+   the model, the computer or the audit trail.
+7. Admins see, link to other bots and revoke connections on the admin page. Revoke deletes our
+   secret; the page says what to remove on the target.
+
+Network reach: targets are reached from the host's network, which for BE's stack includes the
+tailnet. **[C]**
+
+### 4.10 Shared knowledge
+
+Added 2026-10-30. **[M]** Bots build up knowledge about the company's systems and share it: one
+knowledge base per tenant, read and written by all its bots. Knowledge must be kept safely. **[M]**
+
+- Notes: short Markdown documents with a path-like name (`hosts/pve1`, `runbooks/backup-failed`,
+  `known-issues`). **[C]**
+- Bots read, search and write notes only through knowledge tools in the service process; notes are
+  never loose files in a bot's container. Before working on a system the bot reads its notes;
+  after learning something it updates them. **[C]**
+- Stored in Postgres, encrypted at rest with the secrets key, keyed by tenant. **[C]**
+- Every write is a new version: who or which bot wrote it, in which chat, when. Admins can view the
+  history and roll back. Every write is an audit record. **[C]**
+- Writes that look like a secret (private keys, tokens, passwords) are refused. **[C]**
+- Admins read, edit and delete notes on the admin page (a Knowledge screen); heads read. **[C]**
+- Notes are data, not instructions: text a bot copied from a server or a document cannot change
+  its persona or its rules. The confirm-before-write gate still applies to anything a note says
+  to do. **[C]**
+- Bootstrap: when a connection becomes active, the bot maps the system read-only and writes its
+  first note; what it records is the bot's judgement, not a fixed checklist. Refreshing notes is
+  an ordinary routine an admin creates. **[C]**
+- Nothing hard coded: behaviour comes from the model and from admin-editable data (personas,
+  routines, notes, settings), not from per-system scripts or checklists in code.
+  **[M, 2026-10-30]**
+- Backed up with the database. **[C]**
 
 ## 5. Architecture
 
@@ -219,7 +289,9 @@ Teams ──▶ Azure Bot ──▶ https://<host>/api/messages
 Modules, each its own folder, no shared "utils" bag: `teams` (gateway, proactive send, SSO),
 `engine` (SDK calls, hooks, session map), `graph` (Graph MCP server), `computer` (container per
 definition, exec, secret placement), `org` (tenants, people, departments, assignments), `routines`
-(scheduler), `audit`, `admin` (web), `db` (schema, migrations). **[C]**
+(scheduler), `audit`, `admin` (web), `db` (schema, migrations), `connections` (key generation,
+setup flow, host-key pinning, the `change` tool), `knowledge` (notes, versions, knowledge tools).
+**[C]**
 
 Deployment: `docker compose up` with the service, Postgres and a Docker socket for bot containers.
 Migrations run at start. One `.env` with the Anthropic key, Microsoft app credentials and the
@@ -241,8 +313,8 @@ secrets key. **[C]**
 
 - Delegated Graph tokens and service-account tokens live only in the service process and the
   database (encrypted); the model never sees them.
-- Connection secrets are placed in the bot's container, never in the model's context or the audit
-  trail; the audit trail records the command, not the key.
+- Connection secrets stay in the service process, never in the bot's container, the model's
+  context or the audit trail; the audit trail records the command, not the key.
 - Bot containers: no host mounts, unprivileged user, CPU, memory and pid limits, network reach only
   what the tenant's connections need (BE's own stack: the container joins the tailnet) **[C]**.
 - The endpoint validates Bot Framework tokens; the admin page validates Entra tokens and tenant
@@ -251,6 +323,11 @@ secrets key. **[C]**
   grants an admin gave them.
 - Prompt injection from mail, files and web pages is expected: the confirm-before-write gate and
   read-only defaults are the defence, not prompt wording.
+- Connection private keys are generated by the service and never shown to anyone; only public keys
+  appear in chat. Host-key fingerprints are pinned; a change blocks the connection. **[C]**
+- Knowledge notes are encrypted at rest, versioned, tenant-scoped, written only through audited
+  tools, and refuse secret-looking content. A poisoned note can mislead a bot but cannot bypass
+  the confirmation gate. **[C]**
 
 ## 8. Left to the builder
 
@@ -270,5 +347,7 @@ secrets key. **[C]**
 3. Brand name of the bot as it appears in Teams ("BE Bot" is the placeholder).
 4. Which Claude model for roles with infrastructure connections (cost versus care).
 
-Answered: routines with a `change` grant act unattended (Martin, 2026-10-29). Tracker project:
+Answered: routines with a `change` grant act unattended (Martin, 2026-10-29). Knowledge is shared
+across a tenant's bots and kept safely; staff grant access by following the bot's instructions
+(Martin, 2026-10-30). Tracker project:
 "BEBotter2" under Binary Elements.

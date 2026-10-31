@@ -30,6 +30,7 @@ export function settingsRoutes(db: Db): Router {
 <p><label>Bot name <input name="botName" value="${s.botName ?? ""}" maxlength="40"></label></p>
 <p><label>Keep activity (days) <input name="retentionDays" type="number" min="1" max="3650" value="${s.retentionDays}" required></label></p>
 <p><label>Default model <input name="defaultModel" value="${s.defaultModel ?? ""}"></label></p>
+<p><label>Time zone <input name="timezone" value="${s.timezone}" required placeholder="Australia/Sydney"></label></p>
 <button>Save</button></form>`,
           actor,
           csrf,
@@ -50,7 +51,7 @@ export function settingsRoutes(db: Db): Router {
       if (!(retentionDays >= 1 && retentionDays <= 3650)) throw new DirectoryError("Keep activity must be a whole number of days from 1 to 3650");
       const defaultModel = field(req, "defaultModel") || null;
       if (defaultModel && !/^claude-[a-z0-9-]+$/.test(defaultModel)) throw new DirectoryError("Default model is not a valid model id");
-      await setTenantSettings(db, actor.tenantId, { botName, retentionDays, defaultModel });
+      await setTenantSettings(db, actor.tenantId, { botName, retentionDays, defaultModel, timezone: field(req, "timezone") || (await getTenantSettings(db, actor.tenantId)).timezone });
       res.redirect(303, "/admin/settings");
     }),
   );

@@ -25,7 +25,7 @@ async function setup(assign: boolean) {
   const runTurn = vi.fn(async (turn: RunTurnInput) => {
     turns.push(turn);
     await turn.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
-    return { text: "reply", costUsd: 0, sessionId: "s" };
+    return { text: "reply", costUsd: 0, sessionId: "s", changed: false };
   });
   const sent: string[] = [];
   const cards: unknown[] = [];
@@ -86,7 +86,7 @@ describe("handleMessage ordering", () => {
     const running: { chatId: string; finish: () => void }[] = [];
     const runTurn = vi.fn(async (turn: RunTurnInput) => {
       await new Promise<void>((finish) => running.push({ chatId: turn.chatId, finish }));
-      return { text: "reply", costUsd: 0, sessionId: "s" };
+      return { text: "reply", costUsd: 0, sessionId: "s", changed: false };
     });
     const send = (chatId: string) =>
       handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("groupChat"), chatId }, async () => {}, async () => {});
@@ -108,15 +108,16 @@ describe("handleConfirmClick", () => {
   const click = (answer: "yes" | "no", id: string | undefined, c: Confirmations, actionId: string) =>
     handleConfirmClick(c, { actionId, answer }, id, "Bo");
 
-  it("maps the four outcomes", () => {
+  it("maps the four outcomes", async () => {
     const c = new Confirmations();
-    const a = c.create({ auditId: "x", askerPersonId: "p1" });
-    expect(click("yes", "p2", c, a.actionId)).toBe("Only the person who asked can confirm this.");
-    expect(click("yes", undefined, c, a.actionId)).toBe("Only the person who asked can confirm this.");
-    expect(click("yes", "p1", c, a.actionId)).toBe("Confirmed by Bo");
-    expect(click("yes", "p1", c, a.actionId)).toBe("This request has expired.");
-    const b = c.create({ auditId: "y", askerPersonId: "p1" });
-    expect(click("no", "p1", c, b.actionId)).toBe("Declined by Bo");
+    const mayConfirm = async (p: string) => p === "p1";
+    const a = c.create({ auditId: "x", mayConfirm });
+    await expect(click("yes", "p2", c, a.actionId)).resolves.toBe("You can't confirm this.");
+    await expect(click("yes", undefined, c, a.actionId)).resolves.toBe("You can't confirm this.");
+    await expect(click("yes", "p1", c, a.actionId)).resolves.toBe("Confirmed by Bo");
+    await expect(click("yes", "p1", c, a.actionId)).resolves.toBe("This request has expired.");
+    const b = c.create({ auditId: "y", mayConfirm });
+    await expect(click("no", "p1", c, b.actionId)).resolves.toBe("Declined by Bo");
   });
 });
 
@@ -133,7 +134,7 @@ it("greets with the tenant bot name when set", async () => {
   const db = await testDb();
   await upsertTenant(db, { id: "t1" });
   expect(membersAddedGreeting(await tenantBotName(db, "t1", "Bot"))).toContain("I'm Bot.");
-  await setTenantSettings(db, "t1", { botName: "Helper", retentionDays: 90, defaultModel: null });
+  await setTenantSettings(db, "t1", { botName: "Helper", retentionDays: 90, defaultModel: null, timezone: "UTC" });
   expect(membersAddedGreeting(await tenantBotName(db, "t1", "Bot"))).toBe("Hi, I'm Helper. Mention me with a question or a job.");
 });
 
@@ -155,7 +156,7 @@ describe("handleMessage department access", () => {
     await setMembership(db, "t1", sales.id, mem.id, "member");
     const adm = await upsertPerson(db, { tenantId: "t1", aadObjectId: "admin", name: "Ad" });
     await setRole(db, "t1", adm.id, "admin");
-    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s" }));
+    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s", changed: false }));
     const as = async (aadObjectId: string) => {
       const sent: string[] = [];
       await handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, async (t) => void sent.push(t), async () => {});

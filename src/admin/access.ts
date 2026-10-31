@@ -66,3 +66,27 @@ export async function mayUseDefinition(db: Db, tenantId: string, personId: strin
     .where(and(eq(departmentMembers.personId, personId), inArray(departmentMembers.departmentId, linked)));
   return mine.length > 0;
 }
+
+/** Who may click yes on a card: the asker (writes only), an admin, or a head of a department allowed to use the definition. */
+export function confirmerPolicy(
+  db: Db,
+  tenantId: string,
+  definitionId: string,
+  askerPersonId: string | null,
+  kind: "write" | "approve",
+): (clickerPersonId: string) => Promise<boolean> {
+  return async (clickerPersonId) => {
+    const actor = await loadActor(db, tenantId, clickerPersonId);
+    if (!actor) return false;
+    if (kind === "write" && clickerPersonId === askerPersonId) return true;
+    if (isAdmin(actor)) return true;
+    if (actor.headOf.length === 0) return false;
+    const links = await db
+      .select({ id: definitionDepartments.departmentId })
+      .from(botDefinitions)
+      .leftJoin(definitionDepartments, eq(definitionDepartments.definitionId, botDefinitions.id))
+      .where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, tenantId)));
+    const linked = links.flatMap((l) => (l.id ? [l.id] : []));
+    return links.length > 0 && (linked.length === 0 || linked.some((d) => actor.headOf.includes(d)));
+  };
+}
