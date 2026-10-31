@@ -5,10 +5,11 @@ import type { Db } from "../db/client.js";
 import { getDefinition, listDefinitions, setAllowedDepartments } from "../bots/definitions.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { connections, chatAssignments, chats } from "../db/schema.js";
+import { connections, chatAssignments, chats, mailboxes } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
 import { listRoutines } from "../routines/store.js";
 import { eq } from "drizzle-orm";
+import type { MailDeps } from "../mail/mailboxes.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -207,5 +208,129 @@ describe("bots screen", () => {
       expect(await (await post(`/admin/connections/${c}/revoke`, "Ann", [])).text()).not.toContain("BEGIN OPENSSH");
       for (const p of ["/admin/bots", `/admin/bots/${d.id}`, "/admin/settings"]) expect(await (await get(p, "Ann")).text()).not.toContain("BEGIN OPENSSH");
     });
+  });
+});
+
+describe("bot names and email addresses", () => {
+  let db: Db;
+  let url: string;
+  let close: () => Promise<void>;
+  const id: Record<string, string> = {};
+  const calls: string[] = [];
+  const taken = new Set(["busy"]);
+  let n = 0;
+  // BE AgentMail stand-in; the secrets it hands out are fake
+  const admin = {
+    mailDomain: async () => "mail.test",
+    inboxTaken: async (l: string) => taken.has(l),
+    findInbox: async (l: string) => (taken.has(l) ? { id: "x", address: `${l}@mail.test`, ownerAgent: "other" } : undefined),
+    createInbox: async (l: string) => ({ id: `inbox-${++n}`, address: `${l}@mail.test` }),
+    setInboxActive: async (i: string, on: boolean) => void calls.push(`active ${i} ${on}`),
+    setDisplayName: async () => undefined,
+    listKeys: async () => [],
+    listWebhooks: async () => [],
+    issueKey: async () => ({ id: `key-${++n}`, key: "bam_fake" }),
+    revokeKey: async (k: string) => void calls.push(`revoke ${k}`),
+    addWebhook: async () => ({ id: `hook-${++n}`, secret: "amwh_fake" }),
+    removeWebhook: async (h: string) => void calls.push(`unhook ${h}`),
+    checkSendAs: async (a: string) => (calls.push(`check ${a}`), {}),
+    requestSendAs: async (i: string, a: string) => (calls.push(`send-as ${i} ${a}`), {}),
+    getSendAs: async () => ({ status: "pending forward", key: "bam_leak" }),
+    removeSendAs: async (i: string) => void calls.push(`clear ${i}`),
+  };
+
+  beforeAll(async () => {
+    db = await testDb();
+    await upsertTenant(db, { id: T });
+    await upsertTenant(db, { id: "tenant-2" });
+    for (const name of ["Ann", "Hal"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
+    id.Zed = (await upsertPerson(db, { tenantId: "tenant-2", aadObjectId: "aad-Zed", name: "Zed" })).id;
+    await setRole(db, T, id.Ann, "admin");
+    await setRole(db, "tenant-2", id.Zed, "admin");
+    const sales = (await createDepartment(db, T, "Sales")).id;
+    await setMembership(db, T, sales, id.Hal, "head");
+    const mail = { db, secretsKey, admin: admin as unknown as MailDeps["admin"], publicUrl: "https://bot.example.test" };
+    const app = express();
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [], mail }));
+    ({ url, close } = await serve(app));
+  });
+  afterAll(() => close());
+
+  const get = (path: string, who: string) => fetch(url + path, { redirect: "manual", headers: { cookie: sessionCookie(secretsKey, id[who] === id.Zed ? "tenant-2" : T, id[who]) } });
+  const post = (path: string, who: string, body: [string, string][]) =>
+    fetch(url + path, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, id[who] === id.Zed ? "tenant-2" : T, id[who]) },
+      body: new URLSearchParams([["csrf", "csrf-1"], ...body]).toString(),
+    });
+  const box = async (definitionId: string) => (await db.select().from(mailboxes).where(eq(mailboxes.definitionId, definitionId)))[0];
+  const create = async (name: string, extra: [string, string][] = []) => {
+    const res = await post("/admin/bots", "Ann", [["name", name], ["displayName", "Iris"], ["label", name], ["persona", "p"], ...extra]);
+    return { res, def: (await listDefinitions(db, T)).find((d) => d.name === name)! };
+  };
+
+  it("the name saves, shows, and a blank address creates no mailbox", async () => {
+    const { res, def } = await create("plain");
+    expect(res.status).toBe(303);
+    expect(def.displayName).toBe("Iris");
+    expect(await box(def.id)).toBeUndefined();
+    expect(await (await get("/admin/bots", "Ann")).text()).toContain('name="localPart"');
+    await post(`/admin/bots/${def.id}`, "Ann", [["displayName", "Ines"], ["label", "plain"], ["model", "m"], ["persona", "p"]]);
+    expect((await getDefinition(db, T, def.id))!.displayName).toBe("Ines");
+    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    expect(page).toContain('value="Ines"');
+    expect(page).toContain("Create email address");
+  });
+
+  it("a typed address creates the mailbox and the page shows it without any key", async () => {
+    const { res, def } = await create("withmail", [["localPart", "Iris"]]);
+    expect(res.status).toBe(303);
+    expect((await box(def.id))?.address).toBe("iris@mail.test");
+    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    expect(page).toContain("iris@mail.test");
+    expect(page).toContain("Remove email address");
+    for (const secret of ["bam_", "amwh_"]) expect(page).not.toContain(secret);
+  });
+
+  it("a taken address says so, the bot stays saved and no mailbox exists", async () => {
+    const { res, def } = await create("clash", [["localPart", "busy"]]);
+    expect(await res.text()).toContain("That address is taken");
+    expect(def).toBeTruthy();
+    expect(await box(def.id)).toBeUndefined();
+    const page = await post(`/admin/bots/${def.id}/mailbox`, "Ann", [["localPart", "busy"]]);
+    expect(page.status).toBe(400);
+    expect(await page.text()).toContain("That address is taken");
+  });
+
+  it("remove and restore call the mailbox functions; removed offers restore", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("removed");
+    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Restore email address");
+    expect((await post(`/admin/bots/${def.id}/mailbox/restore`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("active");
+  });
+
+  it("the company address is checked, requested, shown without secrets, and cleared", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    expect((await post(`/admin/bots/${def.id}/send-as`, "Ann", [["address", "iris@company.test"]])).status).toBe(303);
+    expect(calls).toContain("check iris@company.test");
+    expect(calls.some((c) => c.startsWith("send-as ") && c.endsWith(" iris@company.test"))).toBe(true);
+    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    expect(page).toContain("pending forward");
+    expect(page).toContain("automatic forwarding");
+    expect(page).not.toContain("bam_");
+    expect((await post(`/admin/bots/${def.id}/send-as/remove`, "Ann", [])).status).toBe(303);
+    expect(calls.some((c) => c.startsWith("clear "))).toBe(true);
+  });
+
+  it("heads and another tenant's admin are refused", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    for (const path of ["mailbox", "mailbox/remove", "mailbox/restore", "send-as", "send-as/remove"]) {
+      expect((await post(`/admin/bots/${def.id}/${path}`, "Hal", [["localPart", "x"], ["address", "a@b.test"]])).status).toBe(403);
+      expect((await post(`/admin/bots/${def.id}/${path}`, "Zed", [["localPart", "x"], ["address", "a@b.test"]])).status).toBe(400);
+    }
+    expect((await box(def.id))?.status).toBe("active");
   });
 });

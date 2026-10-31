@@ -64,6 +64,23 @@ export function agentMailAdmin(cfg: { url: string; adminKey: string }, fetchFn: 
     async inboxTaken(localPart: string): Promise<boolean> {
       return !!(await this.findInbox(localPart));
     },
+    /** The domain inboxes live on, from the status page. */
+    async mailDomain(): Promise<string> {
+      return field(await call("GET", "/status"), "mail_domain");
+    },
+    // send-as answers are free-form objects; the admin page shows their plain fields
+    async checkSendAs(address: string): Promise<Record<string, unknown>> {
+      return (await call("GET", `/send-as-check?address=${seg(address)}`)) as Record<string, unknown>;
+    },
+    async requestSendAs(inboxId: string, address: string): Promise<Record<string, unknown>> {
+      return (await call("POST", `/inboxes/${seg(inboxId)}/send-as`, { address })) as Record<string, unknown>;
+    },
+    async getSendAs(inboxId: string): Promise<Record<string, unknown>> {
+      return (await call("GET", `/inboxes/${seg(inboxId)}/send-as`)) as Record<string, unknown>;
+    },
+    async removeSendAs(inboxId: string): Promise<void> {
+      await call("DELETE", `/inboxes/${seg(inboxId)}/send-as`);
+    },
     /** Ids of the agent's keys that are not revoked. */
     async listKeys(agent: string): Promise<string[]> {
       const r = await call("GET", `/agents/${seg(agent)}/keys`);

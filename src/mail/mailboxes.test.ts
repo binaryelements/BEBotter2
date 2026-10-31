@@ -50,7 +50,7 @@ async function setup(opts: { taken?: string[]; failKeyOnce?: boolean } = {}) {
     },
     removeWebhook: async (id: string) => (calls.push(`unhook ${id}`), void hooks.delete(id)),
   };
-  const deps: MailDeps = { db, secretsKey, admin, publicUrl: "https://bot.test" };
+  const deps: MailDeps = { db, secretsKey, admin: admin as unknown as MailDeps["admin"], publicUrl: "https://bot.test" };
   const def = async (name: string, displayName: string | null = null) => {
     const id = crypto.randomUUID();
     await db.insert(botDefinitions).values({ id, tenantId: "t1", name, displayName, label: `${name} label`, persona: "", model: "m", webSearch: false, computer: false, mcpServers: [] });

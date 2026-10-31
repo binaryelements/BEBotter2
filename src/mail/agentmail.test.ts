@@ -83,4 +83,20 @@ describe("agentMailAdmin", () => {
     expect(await mail.listWebhooks("bot-1")).toEqual(["w1"]);
     expect(calls.map((c) => c.url)).toEqual(["https://mail.example/inboxes", "https://mail.example/agents/bot-1/keys", "https://mail.example/agents/bot-1/webhooks"]);
   });
+
+  it("reads the mail domain and manages send-as", async () => {
+    const { calls, mail } = setup([{ body: { mail_domain: "eml.example" } }, { body: {} }, { body: {} }, { body: { status: "ok" } }, { body: {} }]);
+    expect(await mail.mailDomain()).toBe("eml.example");
+    await mail.checkSendAs("a@co.example");
+    await mail.requestSendAs("i1", "a@co.example");
+    expect(await mail.getSendAs("i1")).toEqual({ status: "ok" });
+    await mail.removeSendAs("i1");
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([
+      ["GET", "https://mail.example/status", undefined],
+      ["GET", "https://mail.example/send-as-check?address=a%40co.example", undefined],
+      ["POST", "https://mail.example/inboxes/i1/send-as", { address: "a@co.example" }],
+      ["GET", "https://mail.example/inboxes/i1/send-as", undefined],
+      ["DELETE", "https://mail.example/inboxes/i1/send-as", undefined],
+    ]);
+  });
 });

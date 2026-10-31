@@ -7,6 +7,7 @@ import type { FetchUsers } from "../org/directory-sync.js";
 import { isAdmin, loadActor, mayEnter } from "./access.js";
 import { activityRoutes } from "./activity.js";
 import { assignmentRoutes } from "./assignments.js";
+import type { MailDeps } from "../mail/mailboxes.js";
 import { botRoutes } from "./bots.js";
 import { adminOf, wrap } from "./http.js";
 import { knowledgeRoutes } from "./knowledge.js";
@@ -17,7 +18,7 @@ import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 
-export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void };
+export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps };
 
 export function adminRouter(deps: AdminDeps): Router {
   const { db } = deps;
@@ -49,7 +50,7 @@ export function adminRouter(deps: AdminDeps): Router {
 
   router.get("/", (_req, res) => res.redirect(303, isAdmin(adminOf(res).actor) ? "/admin/people" : "/admin/departments"));
   router.use(peopleRoutes(db, deps.fetchUsers));
-  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved }));
+  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
