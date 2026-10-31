@@ -98,12 +98,12 @@ export function agentMailAdmin(cfg: { url: string; adminKey: string }, fetchFn: 
       }
     },
     // send-as answers are free-form objects; the admin page shows their plain fields
-    /** Verdict of the domain checks (SPF, DKIM, ...): ok unless the answer or one of its checks (DMARC is only reported) says no. */
+    /** Verdict of the domain checks: BE AgentMail answers `ready`; anything but `ready: true` refuses. Failed checks (DMARC aside, it is only reported) give the reasons. */
     async checkSendAs(address: string): Promise<{ ok: boolean; reasons: string[] }> {
-      const r = (await call("GET", `/send-as-check?address=${seg(address)}`)) as { ok?: unknown; checks?: unknown };
+      const r = (await call("GET", `/send-as-check?address=${seg(address)}`)) as { ready?: unknown; checks?: unknown };
       const failed = (Array.isArray(r.checks) ? r.checks : []).filter((c: { ok?: unknown; name?: unknown }) => c.ok === false && !/dmarc/i.test(String(c.name ?? "")));
       const reasons = failed.map((c: { name?: unknown; detail?: unknown }) => cleanDetail(`${String(c.name ?? "")}: ${String(c.detail ?? "")}`)).filter((x): x is string => !!x);
-      return { ok: r.ok !== false && failed.length === 0, reasons };
+      return { ok: r.ready === true && failed.length === 0, reasons };
     },
     async requestSendAs(inboxId: string, address: string): Promise<Record<string, unknown>> {
       return (await call("POST", `/inboxes/${seg(inboxId)}/send-as`, { address })) as Record<string, unknown>;
