@@ -4,7 +4,7 @@ import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, setTenantSettings } from "../org/org.js";
 import { isAdmin } from "./access.js";
-import { html, layout } from "./html.js";
+import { html, layout, pageHead } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 
@@ -25,13 +25,13 @@ export function settingsRoutes(db: Db): Router {
       res.type("html").send(
         layout({
           title: "Settings",
-          body: html`<h1>Settings</h1>
+          body: html`${pageHead("Settings")}
 <form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="${csrf}">
-<p><label>Bot name <input name="botName" value="${s.botName ?? ""}" maxlength="40"></label></p>
-<p><label>Keep activity (days) <input name="retentionDays" type="number" min="1" max="3650" value="${s.retentionDays}" required></label></p>
-<p><label>Default model <input name="defaultModel" value="${s.defaultModel ?? ""}"></label></p>
-<p><label>Time zone <input name="timezone" value="${s.timezone}" required placeholder="Australia/Sydney"></label></p>
-<button>Save</button></form>`,
+<p><label class="be-label">Bot name <input class="be-input" name="botName" value="${s.botName ?? ""}" maxlength="40"></label></p>
+<p><label class="be-label">Keep activity (days) <input class="be-input" name="retentionDays" type="number" min="1" max="3650" value="${s.retentionDays}" required></label></p>
+<p><label class="be-label">Default model <input class="be-input" name="defaultModel" value="${s.defaultModel ?? ""}"></label></p>
+<p><label class="be-label">Time zone <input class="be-input" name="timezone" value="${s.timezone}" required placeholder="Australia/Sydney"></label></p>
+<button class="be-btn primary">save</button></form>`,
           actor,
           csrf,
         }),

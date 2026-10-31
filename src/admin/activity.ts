@@ -6,7 +6,8 @@ import type { Db } from "../db/client.js";
 import { botDefinitions, definitionDepartments, departmentMembers, people } from "../db/schema.js";
 import type { AuditEvent } from "../db/schema.js";
 import { isAdmin } from "./access.js";
-import { html, layout } from "./html.js";
+import { chip, html, layout, pageHead, scroll } from "./html.js";
+import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 
@@ -37,13 +38,27 @@ const cells = (e: AuditEvent, n: Awaited<ReturnType<typeof names>>) => [
   e.authority ? (n.person.get(e.authority.personId) ?? "") : "",
 ];
 
-const secs = (from: string, to?: string) => (to ? `${((Date.parse(to) - Date.parse(from)) / 1000).toFixed(1)}s` : "-");
-/** Message rows with timings: total received to sent, then ready / first output / tools / reply. */
-function timingText(e: AuditEvent): string {
+const seconds = (from: string, to: string) => Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000);
+/**
+ * Message rows: received to sent as one bar. Only what is recorded is measured: the engine getting ready, the model
+ * and its tools together (tool time alone is not recorded per turn), and delivery. Without a sent time the bar ends at the reply.
+ */
+export function timingParts(e: AuditEvent): { total: number; parts: { name: string; secs: number }[] } | undefined {
   const t = e.timings;
-  if (!t) return "";
-  const total = t.sentAt ? `${secs(t.receivedAt, t.sentAt)} total: ` : "";
-  return `${total}ready ${secs(t.receivedAt, t.engineReadyAt)} / first ${secs(t.receivedAt, t.firstOutputAt)} / tools ${t.firstToolAt ? secs(t.receivedAt, t.firstToolAt) : "-"} (${t.tools}) / reply ${secs(t.receivedAt, t.resultAt)}`;
+  if (!t?.engineReadyAt || !t.resultAt) return undefined;
+  const parts = [
+    { name: "engine ready", secs: seconds(t.receivedAt, t.engineReadyAt) },
+    { name: "model and tools", secs: seconds(t.engineReadyAt, t.resultAt) },
+    ...(t.sentAt ? [{ name: "delivery", secs: seconds(t.resultAt, t.sentAt) }] : []),
+  ];
+  return { total: parts.reduce((n, p) => n + p.secs, 0), parts };
+}
+function timingBar(e: AuditEvent): SafeHtml {
+  const m = timingParts(e);
+  if (!m) return html``;
+  const fmt = (n: number) => `${n.toFixed(1)} s`;
+  const label = `total ${fmt(m.total)}: ${m.parts.map((p) => `${p.name} ${fmt(p.secs)}`).join(", ")}`;
+  return html`<div class="be-timing" role="img" aria-label="${label}">${m.parts.map((p, i) => html`<span class="t${i + 1}" style="width:${m.total ? ((p.secs / m.total) * 100).toFixed(1) : 0}%"></span>`)}</div><ul class="be-timing-key">${m.parts.map((p, i) => html`<li class="t${i + 1}">${p.name} ${fmt(p.secs)}</li>`)}</ul><span class="be-muted">${fmt(m.total)} total</span>`;
 }
 
 // A leading = + - @ tab or CR would run as a formula in a spreadsheet.
@@ -97,14 +112,14 @@ export function activityRoutes(db: Db): Router {
       const csv = keep.toString();
       const tr = rows.map((e) => {
         const c = cells(e, n);
-        return html`<tr>${c.slice(0, 6).map((v) => html`<td>${v}</td>`)}<td>${timingText(e)}</td><td>${c[6] ? `confirmed by ${c[6]}` : ""}</td></tr>`;
+        return html`<tr>${c.slice(0, 4).map((v) => html`<td>${v}</td>`)}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[5]}</td><td>${timingBar(e)}</td><td>${c[6] ? `confirmed by ${c[6]}` : ""}</td></tr>`;
       });
       res.type("html").send(
         layout({
           title: "Activity",
-          body: html`<h1>Activity</h1>
-<form method="get" action="/admin/activity"><input name="bot" value="${q(req, "bot") ?? ""}" placeholder="Bot id" aria-label="Bot"> <input name="person" value="${q(req, "person") ?? ""}" placeholder="Person id" aria-label="Person"> <input name="chat" value="${q(req, "chat") ?? ""}" placeholder="Chat id" aria-label="Chat"> <select name="status" aria-label="Status"><option value="">Any</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button>Filter</button> <a href="/admin/activity.csv${csv ? `?${csv}` : ""}">Export CSV</a></form>
-<table><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>
+          body: html`${pageHead("Activity", html`<a class="be-btn" href="/admin/activity.csv${csv ? `?${csv}` : ""}">export csv</a>`)}
+<form class="row" method="get" action="/admin/activity"><input class="be-input" name="bot" value="${q(req, "bot") ?? ""}" placeholder="bot id" aria-label="Bot"> <input class="be-input" name="person" value="${q(req, "person") ?? ""}" placeholder="person id" aria-label="Person"> <input class="be-input" name="chat" value="${q(req, "chat") ?? ""}" placeholder="chat id" aria-label="Chat"> <select class="be-select" name="status" aria-label="Status"><option value="">Any</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
+${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
 ${older ? html`<p><a href="/admin/activity?${older}">Older</a></p>` : ""}`,
           actor,
           csrf,

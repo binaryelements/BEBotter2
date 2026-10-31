@@ -88,6 +88,15 @@ describe("admin router", () => {
     expect(await (await get("/admin/people", as(head))).text()).toContain("Hal</b> · head");
   });
 
+  it("every screen renders inside the shell with its title and an active menu item", async () => {
+    for (const [path, title] of [["people", "People"], ["departments", "Departments"], ["assignments", "Assignments"], ["activity", "Activity"], ["knowledge", "Shared notes"], ["settings", "Settings"], ["bots", "Bots"]]) {
+      const page = await (await get(`/admin/${path}`, as(admin))).text();
+      expect(page).toContain('<body class="be">');
+      expect(page).toContain(`<h1>${title}</h1>`);
+      expect(page).toContain(`href="/admin/${path}" class="active"`);
+    }
+  });
+
   it("a GET without a session redirects to sign-in", async () => {
     for (const path of ["/admin", "/admin/people", "/admin/departments"]) {
       const res = await get(path);

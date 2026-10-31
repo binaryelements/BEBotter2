@@ -27,8 +27,8 @@ export function secretRoutes(db: Db, secretsKey: Buffer): Router {
 
       if (req.method === "GET") {
         const c = await secretLinkConnection(db, session.tenantId, hash, session.personId);
-        const body = html`<h1>${c.name}</h1><p class="muted">${c.kind} ${c.target}</p>
-<form method="post"><input type="hidden" name="csrf" value="${session.csrf}"><input type="password" name="secret" aria-label="Secret" autocomplete="off" required maxlength="8000"> <button>Save</button></form>`;
+        const body = html`<header class="be-pagehead"><div class="pt"><h1>${c.name}</h1><p class="meta">${c.kind} ${c.target}</p></div></header>
+<form method="post"><input type="hidden" name="csrf" value="${session.csrf}"><input class="be-input" type="password" name="secret" aria-label="Secret" autocomplete="off" required maxlength="8000"> <button class="be-btn primary">save</button></form>`;
         return res.type("html").send(layout({ title: "BE Botter", body }));
       }
       if (req.method !== "POST") return page(res, 405, "Not allowed.");

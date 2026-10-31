@@ -112,7 +112,11 @@ describe("people and departments screens", () => {
     expect((await listDepartments(db, T)).find((d) => d.id === ops.id)!.name).toBe("Operations");
     await post(`/admin/departments/${ops.id}/members`, "Ann", { personId: id.Ola, state: "head" });
     expect(await members(ops.id)).toEqual([{ personId: id.Ola, name: "Ola", isHead: true }]);
-    await post(`/admin/departments/${ops.id}/delete`, "Ann", {});
+    const armed = await post(`/admin/departments/${ops.id}/delete`, "Ann", {});
+    expect(armed.status).toBe(200);
+    expect(await armed.text()).toContain("confirm delete?");
+    expect((await listDepartments(db, T)).map((d) => d.id)).toContain(ops.id); // the first press changes nothing
+    await post(`/admin/departments/${ops.id}/delete`, "Ann", { confirm: "yes" });
     expect((await listDepartments(db, T)).some((d) => d.id === ops.id)).toBe(false);
   });
 

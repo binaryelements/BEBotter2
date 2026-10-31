@@ -24,6 +24,7 @@ import { html, layout, raw } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
+import { armedPage } from "./arm.js";
 import { botsTable, visibleBots } from "./overview.js";
 
 const field = (req: Request, name: string) => {
@@ -49,9 +50,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
   const csrfField = (res: Response, tab?: Tab) => html`<input type="hidden" name="csrf" value="${adminOf(res).csrf}">${tab ? html`<input type="hidden" name="tab" value="${tab}">` : ""}`;
   // actions return to the tab they were made on
   const back = (req: Request, id: string) => `/admin/bots/${id}${(TABS as readonly string[]).includes(field(req, "tab")) ? `?tab=${field(req, "tab")}` : ""}`;
-  // a destructive action arms on the first press (this page) and acts on the second (confirm=yes)
-  const armed = (res: Response, req: Request, title: string, what: string, backHref: string) =>
-    render(res, title, html`<h1>${title}</h1><form method="post" action="${req.originalUrl}">${csrfField(res)}<input type="hidden" name="tab" value="${field(req, "tab")}"><input type="hidden" name="confirm" value="yes"><button class="be-btn armed">${what}</button> <a href="${backHref}">cancel</a></form>`);
+  const armed = (res: Response, req: Request, title: string, what: string, backHref: string) => armedPage(req, res, { title, button: what, back: backHref });
   const yesNo = (b: boolean) => (b ? "Yes" : "No");
   const mailDomain = async () => {
     try {

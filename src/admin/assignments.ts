@@ -5,7 +5,7 @@ import { listDefinitions, setChatDefinition, setChatLabel } from "../bots/defini
 import type { Db } from "../db/client.js";
 import { chatAssignments, chats } from "../db/schema.js";
 import { isAdmin } from "./access.js";
-import { html, layout } from "./html.js";
+import { html, layout, pageHead, scroll } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 
@@ -34,12 +34,13 @@ export function assignmentRoutes(db: Db): Router {
       const csrfField = html`<input type="hidden" name="csrf" value="${csrf}">`;
       const body = rows.map((c) => {
         const url = `/admin/assignments/${encodeURIComponent(c.id)}`;
-        return html`<tr><td><form method="post" action="${url}/label">${csrfField}<input name="label" value="${c.label ?? ""}" placeholder="${c.id.slice(-12)}" maxlength="80" aria-label="Label"> <button class="secondary">Save</button></form></td>
+        return html`<tr><td><form class="inline-edit" method="post" action="${url}/label">${csrfField}<input class="be-input" name="label" value="${c.label ?? ""}" placeholder="${c.id.slice(-12)}" maxlength="80" aria-label="Label"> <button class="be-btn sm">save</button></form></td>
 <td>${c.type}</td><td>${c.lastSeenAt?.toISOString() ?? ""}</td>
-<td><form method="post" action="${url}">${csrfField}<select name="definitionId" aria-label="Bot"><option value="">None</option>${defs.map((d) => html`<option value="${d.id}" ${d.id === c.definitionId ? "selected" : ""}>${d.label}</option>`)}</select> <button>Save</button></form></td></tr>`;
+<td><form class="inline-edit" method="post" action="${url}">${csrfField}<select class="be-select" name="definitionId" aria-label="Bot"><option value="">None</option>${defs.map((d) => html`<option value="${d.id}" ${d.id === c.definitionId ? "selected" : ""}>${d.label}</option>`)}</select> <button class="be-btn sm">save</button></form></td></tr>`;
       });
-      res.type("html").send(layout({ title: "Assignments", body: html`<h1>Assignments</h1>
-<table><thead><tr><th>Chat</th><th>Type</th><th>Last seen</th><th>Bot</th></tr></thead><tbody>${body}</tbody></table>`, actor, csrf }));
+      res.type("html").send(layout({ title: "Assignments", body: html`${pageHead("Assignments")}${
+        rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Chat</th><th>Type</th><th>Last seen</th><th>Bot</th></tr></thead><tbody>${body}</tbody></table>`) : html`<div class="be-empty">No chats yet.</div>`
+      }`, actor, csrf }));
     }),
   );
 

@@ -7,7 +7,8 @@ import {
 import { syncPeople } from "../org/directory-sync.js";
 import type { FetchUsers } from "../org/directory-sync.js";
 import { isAdmin, loadActor, mayManageDepartment, mayManagePerson } from "./access.js";
-import { html, layout } from "./html.js";
+import { armedPage, isArmed } from "./arm.js";
+import { html, layout, pageHead, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
@@ -52,22 +53,24 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
       render(
         res,
         "People",
-        html`<h1>People</h1>${synced ? html`<p>Added ${synced[1]}, updated ${synced[2]}.</p>` : ""}${
-          admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button>Sync from Microsoft 365</button></form>` : ""
-        }
-<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Personal bot</th><th>Departments</th></tr></thead><tbody>${rows.map((p) => {
+        html`${pageHead("People", admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button class="be-btn primary">sync from microsoft 365</button></form>` : undefined)}${
+          synced ? html`<div class="be-notice"><span>Added ${synced[1]}, updated ${synced[2]}.</span></div>` : ""
+        }${
+          rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Personal bot</th><th>Departments</th></tr></thead><tbody>${rows.map((p) => {
           // Heads see only their own departments' people; none may edit their own row.
           const editable = admin || p.id !== actor.personId;
           return html`<tr><td>${p.name}</td><td>${p.email ?? ""}</td><td>${
             admin
-              ? html`<form method="post" action="/admin/people/${p.id}/role">${csrf}<select name="role" aria-label="Role">${options(ROLES, p.role)}</select> <button>Save</button></form>`
+              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/role">${csrf}<select class="be-select" name="role" aria-label="Role">${options(ROLES, p.role)}</select> <button class="be-btn sm">save</button></form>`
               : p.role
           }</td><td>${
             editable
-              ? html`<form method="post" action="/admin/people/${p.id}/personal-bot">${csrf}<input type="checkbox" name="personalBot" aria-label="Personal bot" ${p.personalBot ? "checked" : ""}> <button>Save</button></form>`
+              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/personal-bot">${csrf}<input type="checkbox" name="personalBot" aria-label="Personal bot" ${p.personalBot ? "checked" : ""}> <button class="be-btn sm">save</button></form>`
               : p.personalBot ? "On" : "Off"
           }</td><td>${p.memberships.filter((m) => admin || actor.headOf.includes(m.departmentId)).map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
-        })}</tbody></table>`,
+        })}</tbody></table>`)
+          : html`<div class="be-empty">No people yet.</div>`
+        }`,
       );
     }),
   );
@@ -120,19 +123,22 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
       render(
         res,
         "Departments",
-        html`<h1>Departments</h1>
-<table><thead><tr><th>Name</th><th>Members</th><th></th></tr></thead><tbody>${depts.map(
+        html`${pageHead("Departments")}${
+          depts.length
+            ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Members</th><th></th></tr></thead><tbody>${depts.map(
           (d) => html`<tr><td>${
             admin
-              ? html`<form method="post" action="/admin/departments/${d.id}/rename">${csrf}<input name="name" aria-label="Name" value="${d.name}" required> <button>Rename</button></form>
-<form method="post" action="/admin/departments/${d.id}/delete">${csrf}<button class="secondary">Delete</button></form>`
+              ? html`<form class="inline-edit" method="post" action="/admin/departments/${d.id}/rename">${csrf}<input class="be-input" name="name" aria-label="Name" value="${d.name}" required> <button class="be-btn sm">rename</button></form>
+<form class="inline-edit" method="post" action="/admin/departments/${d.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form>`
               : d.name
-          }</td><td>${d.members.map((m) => `${m.name}${m.isHead ? " (head)" : ""}`).join(", ")}</td><td><form method="post" action="/admin/departments/${d.id}/members">${csrf}<select name="personId" aria-label="Person">${everyone.map(
+          }</td><td>${d.members.map((m) => `${m.name}${m.isHead ? " (head)" : ""}`).join(", ")}</td><td><form class="inline-edit" method="post" action="/admin/departments/${d.id}/members">${csrf}<select class="be-select" name="personId" aria-label="Person">${everyone.map(
             (p) => html`<option value="${p.id}">${p.name}</option>`,
-          )}</select> <select name="state" aria-label="Membership">${options(states, "member")}</select> <button>Save</button></form></td></tr>`,
-        )}</tbody></table>${
+          )}</select> <select class="be-select" name="state" aria-label="Membership">${options(states, "member")}</select> <button class="be-btn sm">save</button></form></td></tr>`,
+        )}</tbody></table>`)
+            : html`<div class="be-empty">No departments yet.</div>`
+        }${
           admin
-            ? html`<form method="post" action="/admin/departments">${csrf}<input name="name" aria-label="Name" required> <button>Create</button></form>`
+            ? html`<form class="row" method="post" action="/admin/departments">${csrf}<input class="be-input" name="name" aria-label="Name" placeholder="department name" required> <button class="be-btn primary">create</button></form>`
             : ""
         }`,
       );
@@ -164,6 +170,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
+      if (!isArmed(req)) return armedPage(req, res, { title: "Delete department?", button: "confirm delete?", back: "/admin/departments" });
       await deleteDepartment(db, actor.tenantId, req.params.id);
       res.redirect(303, "/admin/departments");
     }),

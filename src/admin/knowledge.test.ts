@@ -89,7 +89,10 @@ describe("knowledge screen", () => {
   });
 
   it("delete removes the note from the list", async () => {
-    expect((await post("/admin/knowledge/delete", "Ann", { path: "xss" })).status).toBe(303);
+    const armed = await post("/admin/knowledge/delete", "Ann", { path: "xss" });
+    expect(armed.status).toBe(200);
+    expect(await armed.text()).toContain('name="path" value="xss"');
+    expect((await post("/admin/knowledge/delete", "Ann", { path: "xss", confirm: "yes" })).status).toBe(303);
     expect(await (await get("/admin/knowledge", "Ann")).text()).not.toContain(">xss<");
   });
 });

@@ -80,3 +80,13 @@ export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csr
 </body>
 </html>`.value;
 }
+
+const chipClass: Record<string, string> = { done: "g", pending: "w", denied: "b", failed: "b", changed: "c" };
+/** A status always shows its word; colour only adds to it. */
+export const chip = (status: string) => html`<span class="be-chip ${chipClass[status] ?? ""}">${status}</span>`;
+
+export const pageHead = (title: string, act?: SafeHtml) =>
+  html`<header class="be-pagehead"><div class="pt"><h1>${title}</h1></div>${act ? html`<div class="act">${act}</div>` : ""}</header>`;
+
+/** A table in a box that scrolls sideways on a phone instead of the page. */
+export const scroll = (table: SafeHtml) => html`<div class="scroll">${table}</div>`;

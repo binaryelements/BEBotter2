@@ -6,6 +6,7 @@ import { auditEvents } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
+import { localStart } from "./overview.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -71,5 +72,15 @@ describe("overview", () => {
     expect(page).toContain('<div class="be-eyebrow">bots</div><div class="v">1</div>');
     expect(page).toContain('waiting approvals</div><div class="v">1</div>');
     expect(page).not.toMatch(/bam_|amwh_/);
+  });
+});
+
+describe("local day and month", () => {
+  it("start at local midnight in the tenant's zone, not UTC", () => {
+    const now = new Date("2026-10-31T20:00:00Z"); // 07:00 on 1 November in Sydney
+    expect(localStart(now, "Australia/Sydney", "day").toISOString()).toBe("2026-10-31T13:00:00.000Z");
+    expect(localStart(now, "Australia/Sydney", "month").toISOString()).toBe("2026-10-31T13:00:00.000Z");
+    expect(localStart(now, "UTC", "month").toISOString()).toBe("2026-10-01T00:00:00.000Z");
+    expect(localStart(now, "America/Los_Angeles", "day").toISOString()).toBe("2026-10-31T07:00:00.000Z");
   });
 });

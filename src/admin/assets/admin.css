@@ -17,7 +17,7 @@ body.be { margin: 0; min-height: 100vh; }
 /* Un-migrated markup inside main already looks like the design system. */
 main h1 { margin: 0 0 var(--space-16); font: 600 20px/1.25 var(--font-sans); color: var(--bright); }
 main h2, main h3 { margin: var(--space-18) 0 var(--space-8); font: 600 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-main table { border-collapse: collapse; width: 100%; display: block; max-width: 100%; overflow-x: auto; }
+main table:not(.be-table) { border-collapse: collapse; width: 100%; display: block; max-width: 100%; overflow-x: auto; }
 main th, main td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--hover); vertical-align: top; }
 main th { font: 600 11px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line2); }
 main tr:hover td { background: var(--hover); }
@@ -31,3 +31,7 @@ main button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px;
 main form.inline { display: inline; }
 main .muted { color: var(--muted); }
 main .error { border: 1px solid var(--bad-edge); border-left: 3px solid var(--bad); background: var(--bad-bg); padding: var(--space-10) var(--space-12); border-radius: var(--radius-md); margin-bottom: var(--space-16); }
+.scroll { overflow-x: auto; max-width: 100%; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); margin: var(--space-12) 0; }
+.row form { display: contents; }
+main form.inline-edit { display: flex; gap: var(--space-6); align-items: center; margin: 0; }

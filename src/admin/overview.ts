@@ -11,6 +11,7 @@ import { isAdmin } from "./access.js";
 import { html, layout } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
+import { getTenantSettings } from "../org/org.js";
 
 /** Bots the actor may see: all for an admin, those linked to their departments for a head. */
 export async function visibleBots(db: Db, actor: Actor): Promise<{ defs: BotDefinition[]; allowed: Map<string, string[]> }> {
@@ -42,6 +43,19 @@ export async function botsTable(db: Db, tenantId: string, defs: BotDefinition[])
   )}</tbody></table>`;
 }
 
+/** Midnight (start of the local day, or of the local month) in the time zone, as an instant. */
+export function localStart(now: Date, timeZone: string, unit: "day" | "month"): Date {
+  const wall = (d: Date) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(d).map((x) => [x.type, Number(x.value)]));
+    return { y: p.year, m: p.month, d: p.day, offset: Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(d.getTime() / 1000) * 1000 };
+  };
+  const w = wall(now);
+  const local = Date.UTC(w.y, w.m - 1, unit === "month" ? 1 : w.d);
+  // two passes so a daylight-saving change between now and midnight is followed
+  const first = local - wall(new Date(local)).offset;
+  return new Date(local - wall(new Date(first)).offset);
+}
+
 const median = (xs: number[]) => {
   if (!xs.length) return undefined;
   const s = [...xs].sort((a, b) => a - b);
@@ -63,9 +77,10 @@ export function overviewRoutes(db: Db): Router {
       const scope = { tenantId: actor.tenantId, personIds, definitionIds };
       const empty = !!personIds && !personIds.length || !definitionIds.length;
       const now = new Date();
-      const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-      const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      // shortcut: days and months are UTC and the month's rows are summed in memory; use the tenant timezone and SQL sums when volumes grow.
+      const { timezone } = await getTenantSettings(db, actor.tenantId);
+      const day = localStart(now, timezone, "day");
+      const month = localStart(now, timezone, "month");
+      // shortcut: the month's rows are summed in memory; use SQL sums when volumes grow.
       const [pending, recent, monthRows, chatRows] = empty
         ? [[], [], [], []]
         : await Promise.all([
