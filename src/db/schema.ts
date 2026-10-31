@@ -93,6 +93,12 @@ export const mailboxes = pgTable("mailboxes", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// delivery ids already handled, so a retry or replay of a webhook posts nothing twice; pruned after a day
+export const mailDeliveries = pgTable("mail_deliveries", {
+  id: text("id").primaryKey(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const departments = pgTable(
   "departments",
   {
