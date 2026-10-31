@@ -43,6 +43,13 @@
       "when": 1793427513065,
       "tag": "0005_amusing_warhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793428299246,
+      "tag": "0006_jazzy_senator_kelly",
+      "breakpoints": true
     }
   ]
 }

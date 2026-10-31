@@ -8,17 +8,14 @@ import { MailError } from "./agentmail.js";
 export type MailDeps = { db: Db; secretsKey: Buffer; admin: ReturnType<typeof agentMailAdmin>; publicUrl: string };
 export type Mailbox = typeof mailboxes.$inferSelect;
 
-const MAX_LOCAL = 36;
-const MAX_ATTEMPTS = 50;
-const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9._-]/g, "-");
+const LOCAL_PART = /^[a-z0-9._-]{1,36}$/;
 const agentOf = (definitionId: string) => `bb2-${definitionId.slice(0, 12)}`;
 
-/** Candidate local parts: the name, then name-<definition name>, then name-2, name-3... */
-function* candidates(name: string, defName: string): Generator<string> {
-  const base = slug(name).slice(0, MAX_LOCAL);
-  yield base;
-  yield `${base.slice(0, MAX_LOCAL - defName.length - 1)}-${slug(defName)}`.slice(0, MAX_LOCAL);
-  for (let n = 2; ; n++) yield `${base.slice(0, MAX_LOCAL - String(n).length - 1)}-${n}`;
+export class MailboxError extends Error {
+  constructor(readonly reason: "invalid" | "taken", message: string) {
+    super(message);
+    this.name = "MailboxError";
+  }
 }
 
 // one create at a time per bot, so a save and the startup backfill never make two inboxes
@@ -36,7 +33,40 @@ const patch = async (db: Db, id: string, set: Partial<Mailbox>): Promise<Mailbox
 
 const complete = (m: Mailbox) => !!(m.inboxId && m.keyId && m.keyCipher && m.webhookId && m.webhookSecretCipher);
 
-/** Creates whatever is missing, storing each piece as soon as it exists so a retry resumes. A removed mailbox stays removed. */
+/**
+ * Opt-in: records the request as `pending`, then creates whatever is missing. Returns the address, or undefined when BE AgentMail
+ * failed or took longer than `timeoutMs` (the row stays pending and a later ensure finishes it).
+ */
+export async function requestMailbox(deps: MailDeps, definitionId: string, localPart: string, timeoutMs = 15_000): Promise<string | undefined> {
+  const { db, admin } = deps;
+  const [def] = await db.select().from(botDefinitions).where(eq(botDefinitions.id, definitionId));
+  if (!def) return undefined;
+  const wanted = localPart.trim().toLowerCase();
+  if (!LOCAL_PART.test(wanted)) throw new MailboxError("invalid", "Use 1 to 36 letters, digits, dots, dashes or underscores");
+  const existing = await getRow(db, definitionId);
+  if (existing?.status === "removed") return undefined;
+  // a pending row keeps the address it was first asked for
+  if (!existing) {
+    const [clash] = await db.select({ id: mailboxes.definitionId }).from(mailboxes).where(eq(mailboxes.localPart, wanted));
+    if (clash || (await admin.inboxTaken(wanted))) throw new MailboxError("taken", `The address ${wanted} is already taken`);
+    await db.insert(mailboxes).values({ definitionId, tenantId: def.tenantId, agent: agentOf(definitionId), localPart: wanted, status: "pending" });
+  }
+  const work = ensureMailbox(deps, definitionId).then(
+    (m) => m?.address ?? undefined,
+    async (e) => {
+      if (!(e instanceof MailboxError)) return undefined;
+      await db.delete(mailboxes).where(eq(mailboxes.definitionId, definitionId)); // nothing was created
+      throw e;
+    },
+  );
+  let timer: number | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+/** Finishes an existing mailbox row (never creates one) and refreshes its display name. A removed mailbox stays removed. */
 export function ensureMailbox(deps: MailDeps, definitionId: string): Promise<Mailbox | undefined> {
   return once(definitionId, () => ensure(deps, definitionId));
 }
@@ -46,27 +76,17 @@ async function ensure({ db, secretsKey, admin, publicUrl }: MailDeps, id: string
   if (!def) return undefined;
   const displayName = def.displayName ? `${def.displayName} (${def.label})` : def.label;
   let row = await getRow(db, id);
-  if (!row) {
-    await db.insert(mailboxes).values({ definitionId: id, tenantId: def.tenantId, agent: agentOf(id), status: "active" }).onConflictDoNothing();
-    row = (await getRow(db, id))!;
-  }
-  if (row.status === "removed") return row;
+  if (!row || row.status === "removed") return row;
 
   if (!row.inboxId) {
-    const taken = new Set((await db.select({ a: mailboxes.address }).from(mailboxes)).map((r) => r.a?.split("@")[0]?.toLowerCase()));
-    let made: { id: string; address: string } | undefined;
-    let tried = 0;
-    for (const local of candidates(def.displayName ?? def.name, def.name)) {
-      if (++tried > MAX_ATTEMPTS) throw new MailError("No free mail address found");
-      if (taken.has(local) || (await admin.inboxTaken(local))) continue;
-      try {
-        made = await admin.createInbox(local, displayName, row.agent);
-        break;
-      } catch (e) {
-        if (!(e instanceof MailError && e.status === 409)) throw e;
-      }
+    if (!row.localPart) throw new MailError("Mailbox has no requested address");
+    try {
+      const made = await admin.createInbox(row.localPart, displayName, row.agent);
+      row = await patch(db, id, { inboxId: made.id, address: made.address });
+    } catch (e) {
+      if (e instanceof MailError && e.status === 409) throw new MailboxError("taken", `The address ${row.localPart} is already taken`);
+      throw e;
     }
-    row = await patch(db, id, { inboxId: made!.id, address: made!.address });
   } else if (complete(row)) {
     await admin.setDisplayName(row.inboxId, displayName); // a rename changes the display name, never the address
   }
@@ -78,7 +98,7 @@ async function ensure({ db, secretsKey, admin, publicUrl }: MailDeps, id: string
     const w = await admin.addWebhook(row.agent, `${publicUrl}/mail/inbound`, row.inboxId!);
     row = await patch(db, id, { webhookId: w.id, webhookSecretCipher: encrypt(secretsKey, w.secret) });
   }
-  return row;
+  return row.status === "pending" ? patch(db, id, { status: "active" }) : row;
 }
 
 /** Revokes the key, deletes the webhook and deactivates the inbox; the address is kept for a later restore. */
@@ -103,13 +123,11 @@ export async function restoreMailbox(deps: MailDeps, definitionId: string): Prom
   });
 }
 
-/** Startup backfill: bots without a finished mailbox, one at a time, errors logged by name only. */
+/** Startup: finishes requested mailboxes that are incomplete (pending or missing a piece), one at a time, errors logged by name only. Never creates a row. */
 export async function ensureAllMailboxes(deps: MailDeps): Promise<void> {
-  const defs = await deps.db.select({ id: botDefinitions.id }).from(botDefinitions);
-  const rows = new Map((await deps.db.select().from(mailboxes)).map((m) => [m.definitionId, m]));
-  for (const { id } of defs) {
-    const m = rows.get(id);
-    if (m && (m.status === "removed" || complete(m))) continue;
+  for (const m of await deps.db.select().from(mailboxes)) {
+    if (m.status === "removed" || (m.status === "active" && complete(m))) continue;
+    const id = m.definitionId;
     try {
       await ensureMailbox(deps, id);
     } catch (e) {

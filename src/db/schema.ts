@@ -81,13 +81,14 @@ export const mailboxes = pgTable("mailboxes", {
   tenantId: text("tenant_id").notNull().references(() => tenants.id),
   agent: text("agent").notNull(),
   // ids and ciphers stay null until each step succeeds, so a half-finished create can resume
+  localPart: text("local_part").unique(), // the address name the admin asked for, kept so a retry uses the same one
   inboxId: text("inbox_id"),
   address: text("address"),
   keyId: text("key_id"),
   keyCipher: text("key_cipher"),
   webhookId: text("webhook_id"),
   webhookSecretCipher: text("webhook_secret_cipher"),
-  status: text("status").notNull(), // active | removed
+  status: text("status").notNull(), // pending | active | removed
   createdAt: createdAt(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
