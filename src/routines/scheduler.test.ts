@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HookCallback, Options, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
-import { listActions } from "../audit/audit.js";
+import { beginAction, completeAction, listActions } from "../audit/audit.js";
 import { assignToChat, setAllowedDepartments, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
@@ -71,6 +71,23 @@ describe("scheduler", () => {
     expect(r.run).toHaveBeenCalledTimes(1);
     expect(r.turns[0]).toMatchObject({ text: "check backups", chatId: "c1", person: { id: annId }, routine: { grantPersonId: null } });
     expect(sent).toEqual([["c1", "**Ops**\n\nAll good."]]);
+  });
+
+  it("records sentAt on the run's row and logs one timing line", async () => {
+    await routine();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const r = fakeRunTurn();
+    r.run.mockImplementationOnce(async (turn: RunTurnInput) => {
+      const auditId = await beginAction(db, { tenantId: "t1", chatId: "c1", definitionId: defId, kind: "message", summary: "x" });
+      await completeAction(db, auditId, { status: "done", timings: { receivedAt: new Date().toISOString(), tools: 0 } });
+      return { text: "All good.", costUsd: 0, sessionId: "s", changed: false, auditId, timings: { receivedAt: new Date().toISOString(), tools: 0 } };
+    });
+    stop = startScheduler({ db, runTurn: r.run, send }, 5, due);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    await vi.waitFor(() => expect(log.mock.calls.some((c) => String(c[0]).startsWith("turn c1 "))).toBe(true));
+    const [row] = (await listActions(db, { tenantId: "t1" })).filter((a) => a.kind === "message");
+    log.mockRestore();
+    expect(row!.timings).toHaveProperty("sentAt");
   });
 
   it("a quiet routine posts only what the bot posts through the post tool", async () => {
