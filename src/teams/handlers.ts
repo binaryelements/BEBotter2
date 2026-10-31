@@ -138,8 +138,8 @@ export async function handleMessage(
     // group chats never stream; a stream that fails hands the rest of the turn to the status message
     let stream = personal ? io.stream : undefined;
     let streamed = false; // the stream showed something, so it must be ended
-    let flowing = false; // the reply is streaming as text
-    let held = ""; // the current assistant message's text, until it is clear whether a tool call follows
+    let flowing = false; // text is streaming; from here on there are no progress lines
+    let newMessage = false; // the next delta starts a later assistant message
     let soFar = ""; // what the stream shows now
     const toStream = (f: (s: TeamsStream) => void, text: string) => {
       if (!stream) return false;
@@ -156,22 +156,15 @@ export async function handleMessage(
     };
     // once the reply flows, progress lines would only interrupt it
     const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(definition.label, t), (t) => !!stream && (flowing || toStream((s) => s.informative(t), t)));
-    const chunk = (text: string) => void toStream((s) => s.chunk(text), (flowing ? soFar : "") + text);
     const progress = (e: ProgressEvent) => {
       if (!stream) return status.progress(e);
       if (e.kind === "delta") {
-        if (flowing) chunk(e.text);
-        else held += e.text;
-      } else if (e.kind === "tool") {
-        // written before a tool call: progress, not the reply
-        if (held.trim()) status.progress({ kind: "text", text: held });
-        held = "";
-        status.progress(e);
-      } else if (e.kind === "message-end" && held) {
-        chunk(held);
-        flowing = true;
-        held = "";
-      }
+        // interim text may stream too; the final message is exactly the reply
+        const text = (newMessage && flowing ? "\n\n" : "") + e.text;
+        newMessage = false;
+        if (toStream((s) => s.chunk(text), (flowing ? soFar : "") + text)) flowing = true;
+      } else if (e.kind === "tool") status.progress(e);
+      else if (e.kind === "message-end") newMessage = true;
     };
     /** Ends the stream with text as its final message; false when there was nothing to end or it failed. */
     const endStream = async (text: string) => {

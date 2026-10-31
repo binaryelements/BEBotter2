@@ -357,51 +357,48 @@ describe("handleMessage streaming", () => {
     }
   };
 
-  it("streams a message's text once it ends without a tool call, then each delta as it arrives, and ends with exactly the reply", () =>
+  it("streams each delta as it arrives and ends with exactly the reply", () =>
     timed(async () => {
       const x = await streamSetup(async (t) => {
         t.progress!({ kind: "delta", text: "Hel" });
+        expect(x.log).toEqual(["chunk:Hel"]);
         t.progress!({ kind: "delta", text: "lo" });
-        t.progress!({ kind: "text", text: "Hello there" });
-        expect(x.log).toEqual([]);
+        t.progress!({ kind: "text", text: "Hello" });
         t.progress!({ kind: "message-end" });
-        expect(x.log).toEqual(["chunk:Hello"]);
-        t.progress!({ kind: "delta", text: " there" });
-        expect(x.log).toEqual(["chunk:Hello", "chunk: there"]);
+        expect(x.log).toEqual(["chunk:Hel", "chunk:lo"]);
       });
       await run(x);
-      expect(x.log).toEqual(["chunk:Hello", "chunk: there", "end:final"]);
+      expect(x.log).toEqual(["chunk:Hel", "chunk:lo", "end:final"]);
     }));
 
-  it("shows text written before a tool call as an informative update, never in the reply", () =>
+  it("shows tools as informative updates until text starts, then none; a later message follows a blank line and the final message is exactly the reply", () =>
     timed(async () => {
       const x = await streamSetup(async (t, wait) => {
-        t.progress!({ kind: "delta", text: "Let me check." });
-        t.progress!({ kind: "text", text: "Let me check." });
         t.progress!({ kind: "tool", toolName: "mcp__knowledge__search" });
+        await wait(3000);
+        t.progress!({ kind: "delta", text: "Let me check." });
+        t.progress!({ kind: "tool", toolName: "WebSearch" });
         t.progress!({ kind: "message-end" });
         await wait(3000);
         t.progress!({ kind: "delta", text: "Answer" });
         t.progress!({ kind: "message-end" });
-        t.progress!({ kind: "tool", toolName: "WebSearch" }); // the reply is flowing: no more progress lines
-        await wait(3000);
       });
       await run(x);
-      expect(x.log).toEqual(["info:Let me check.", "chunk:Answer", "end:final"]);
+      expect(x.log).toEqual(["info:Working: knowledge__search…", "chunk:Let me check.", "chunk:\n\nAnswer", "end:final"]);
     }));
 
   it("ends the stream with the text so far before a confirmation card and sends the reply after it as a new message", () =>
     timed(async () => {
       const x = await streamSetup(async (t, wait) => {
-        t.progress!({ kind: "delta", text: "Checking" });
         t.progress!({ kind: "tool", toolName: "WebSearch" });
         await wait(3000);
+        t.progress!({ kind: "delta", text: "Checking" });
         await t.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
         t.progress!({ kind: "delta", text: "Done" });
         t.progress!({ kind: "message-end" });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Checking", "end:Checking", "card", "send:final"]);
+      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking", "card", "send:final"]);
     }));
 
   it("falls back to the status message when a stream call throws and sends one reply", () =>
