@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { upsertDefinition } from "../bots/definitions.js";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
-import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { beginAction, completeAction, listActions, recordAuthority, summarise } from "./audit.js";
+import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { eq } from "drizzle-orm";
+import { auditEvents } from "../db/schema.js";
+import { beginAction, completeAction, listActions, pruneAudit, recordAuthority, startAuditPruning, summarise } from "./audit.js";
 
 async function setup(db: Db) {
   await upsertTenant(db, { id: "t1" });
@@ -62,5 +64,55 @@ describe("audit", () => {
     expect(summarise("mcp__tickets__close_ticket", { id: 7 })).toBe('close_ticket {"id":7}');
     expect(summarise("mcp__computer__bash", "not an object")).toBe("mcp__computer__bash");
     expect(summarise("WebSearch", { query: "x" })).toBe("WebSearch");
+  });
+});
+
+describe("audit filters and prune", () => {
+  it("filters by personIds, status and before; pending rows and other tenants survive prune", async () => {
+    const db = await testDb();
+    const ids = await setup(db);
+    await upsertTenant(db, { id: "t2" });
+    await upsertChat(db, { id: "c9", tenantId: "t2", conversationType: "groupChat" });
+    const other = await upsertDefinition(db, Buffer.alloc(32, 5), "t2", { name: "o", label: "O", persona: "" });
+    const old = new Date(Date.now() - 40 * 86_400_000);
+    const mk = async (tenantId: string, chatId: string, definitionId: string, status: "done" | "failed" | "pending", at: Date) => {
+      const id = await beginAction(db, { tenantId, chatId, definitionId, personId: ids.personId, kind: "message", summary: status });
+      if (status !== "pending") await completeAction(db, id, { status });
+      await db.update(auditEvents).set({ startedAt: at, ...(status === "pending" ? {} : { finishedAt: at }) }).where(eq(auditEvents.id, id));
+      return id;
+    };
+    await mk("t1", "c1", ids.definitionId, "done", old);
+    await mk("t1", "c1", ids.definitionId, "pending", old);
+    await mk("t1", "c1", ids.definitionId, "failed", new Date());
+    await mk("t2", "c9", other.id, "done", old);
+    expect(await listActions(db, { tenantId: "t1", personIds: [] })).toEqual([]);
+    expect(await listActions(db, { tenantId: "t1", personIds: [ids.personId], status: "failed" })).toHaveLength(1);
+    const newest = (await listActions(db, { tenantId: "t1" }))[0];
+    expect(await listActions(db, { tenantId: "t1", before: newest.id })).toHaveLength(2);
+    expect(await listActions(db, { tenantId: "t1", before: "nope" })).toHaveLength(3);
+    expect(await pruneAudit(db, "t1", 30)).toBe(1);
+    expect(await listActions(db, { tenantId: "t1" })).toHaveLength(2);
+    expect(await listActions(db, { tenantId: "t2" })).toHaveLength(1);
+  });
+});
+
+describe("startAuditPruning", () => {
+  it("prunes every tenant by its retention at once and on each tick, and logs", async () => {
+    const db = await testDb();
+    const ids = await setup(db);
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 1, defaultModel: null });
+    const old = async () => {
+      const id = await beginAction(db, { tenantId: "t1", ...ids, kind: "message", summary: "x" });
+      await completeAction(db, id, { status: "done" });
+      await db.update(auditEvents).set({ finishedAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(auditEvents.id, id));
+    };
+    await old();
+    const log = vi.fn();
+    const stop = startAuditPruning(db, 200, log);
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith("audit prune: t1=1"));
+    await old();
+    await vi.waitFor(() => expect(log.mock.calls.filter(([l]) => l === "audit prune: t1=1")).toHaveLength(2), { timeout: 5000 });
+    stop();
+    expect(await listActions(db, { tenantId: "t1" })).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-import { boolean, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { boolean, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 
 export type McpServerRecord = {
   name: string;
@@ -15,6 +15,9 @@ const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull(
 export const tenants = pgTable("tenants", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  retentionDays: integer("retention_days").notNull().default(90),
+  botName: text("bot_name"),
+  defaultModel: text("default_model"),
   createdAt: createdAt(),
 });
 
@@ -25,6 +28,9 @@ export const people = pgTable(
     tenantId: text("tenant_id").notNull().references(() => tenants.id),
     aadObjectId: text("aad_object_id").notNull(),
     name: text("name").notNull(),
+    role: text("role").notNull().default("user"),
+    personalBot: boolean("personal_bot").notNull().default(false),
+    email: text("email"),
     createdAt: createdAt(),
   },
   (t) => [unique().on(t.tenantId, t.aadObjectId)],
@@ -35,6 +41,8 @@ export const chats = pgTable("chats", {
   tenantId: text("tenant_id").notNull().references(() => tenants.id),
   conversationType: text("conversation_type").notNull(), // personal | groupChat | channel
   conversationReference: jsonb("conversation_reference"),
+  label: text("label"),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
   createdAt: createdAt(),
 });
 
@@ -54,6 +62,36 @@ export const botDefinitions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [unique().on(t.tenantId, t.name)],
+);
+
+export const departments = pgTable(
+  "departments",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    name: text("name").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [unique().on(t.tenantId, t.name)],
+);
+
+export const departmentMembers = pgTable(
+  "department_members",
+  {
+    departmentId: text("department_id").notNull().references(() => departments.id, { onDelete: "cascade" }),
+    personId: text("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+    isHead: boolean("is_head").notNull().default(false),
+  },
+  (t) => [primaryKey({ columns: [t.departmentId, t.personId] })],
+);
+
+export const definitionDepartments = pgTable(
+  "definition_departments",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    departmentId: text("department_id").notNull().references(() => departments.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.departmentId] })],
 );
 
 export const chatAssignments = pgTable(
@@ -102,6 +140,7 @@ export const auditEvents = pgTable("audit_events", {
 
 export type Tenant = typeof tenants.$inferSelect;
 export type Person = typeof people.$inferSelect;
+export type Department = typeof departments.$inferSelect;
 export type Chat = typeof chats.$inferSelect;
 export type BotDefinition = typeof botDefinitions.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;

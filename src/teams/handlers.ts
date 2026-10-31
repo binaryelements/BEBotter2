@@ -2,7 +2,8 @@ import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { definitionsForChat } from "../bots/definitions.js";
-import { saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { mayUseDefinition } from "../admin/access.js";
+import { getTenantSettings, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { confirmationCard, withRoleLabel } from "./cards.js";
 import type { AdaptiveCard } from "./cards.js";
 
@@ -33,6 +34,7 @@ export async function handleMessage(
   await saveConversationReference(db, msg.chatId, msg.conversationReference);
   const [definition] = await definitionsForChat(db, msg.chatId);
   if (!definition) return send("No bot is set up for this chat yet.");
+  if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return send("You don't have access to this bot.");
   const key = `${msg.chatId}:${definition.id}`;
   const turn = (chains.get(key) ?? Promise.resolve()).then(async () => {
     try {
@@ -86,3 +88,7 @@ export function handleConfirmClick(
 }
 
 export const membersAddedGreeting = (botName: string): string => `Hi, I'm ${botName}. Mention me with a question or a job.`;
+
+/** A failed settings lookup must not cost the greeting; it falls back to the environment name. */
+export const tenantBotName = (db: Db, tenantId: string, fallback: string): Promise<string> =>
+  getTenantSettings(db, tenantId).then((s) => s.botName ?? fallback, () => fallback);
