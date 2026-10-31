@@ -1,12 +1,20 @@
 import { createHmac } from "node:crypto";
 import type { Server } from "node:http";
 import express from "express";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as audit from "../audit/audit.js";
 import { auditEvents, botDefinitions, chatAssignments, chats, mailboxes } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertTenant } from "../org/org.js";
 import { encrypt } from "../secrets/cipher.js";
 import { mountMailInbound } from "./inbound.js";
+
+const auditBroken = { chat: "" };
+vi.mock("../audit/audit.js", async (orig) => {
+  const real = await orig<typeof import("../audit/audit.js")>();
+  return { ...real, beginAction: (db: never, i: { chatId: string }) => (i.chatId === auditBroken.chat ? Promise.reject(new Error("audit down")) : real.beginAction(db, i as never)) };
+});
+void audit;
 
 const secretsKey = Buffer.alloc(32, 7);
 const SECRET = "amwh_test";
@@ -52,7 +60,7 @@ describe("mail inbound", () => {
     const { sent, post, db } = await setup();
     expect(await post(event())).toBe(200);
     expect(sent.map((s) => s[0]).sort()).toEqual(["c1", "c2"]);
-    expect(sent[0]![1]).toBe("New email to ada@mail.test from bob@example.com: Invoice attached");
+    expect(sent[0]![1]).toBe("New email to ada@mail.test from bob\\@example.com: Invoice attached");
     expect(sent.join()).not.toContain("SECRET BODY");
     const rows = await db.select().from(auditEvents);
     expect(rows).toHaveLength(2);
@@ -80,6 +88,67 @@ describe("mail inbound", () => {
     const { sent, post } = await setup();
     expect(await post(event({ agent: "nobody" }))).toBe(200);
     expect(sent).toEqual([]);
+  });
+
+  it("answers 200 and posts nothing when the mailbox was removed", async () => {
+    const { db, sent, post } = await setup();
+    await db.update(mailboxes).set({ status: "removed" });
+    expect(await post(event())).toBe(200);
+    expect(sent).toEqual([]);
+  });
+
+  it("ignores other event types, and rejects malformed signatures", async () => {
+    const { sent, post } = await setup();
+    expect(await post({ ...event({ id: "e5" }), type: "message.sent" })).toBe(200);
+    expect(sent).toEqual([]);
+    const body = JSON.stringify(event({ id: "e6" }));
+    for (const signature of ["zz-not-hex", "abcd", ""]) {
+      const r = await fetch(`http://127.0.0.1:${(server!.address() as { port: number }).port}/mail/inbound`, { method: "POST", headers: { "x-agentmail-timestamp": String(NOW.getTime() / 1000), "x-agentmail-signature": signature }, body });
+      expect(r.status).toBe(401);
+    }
+    expect(sent).toEqual([]);
+  });
+
+  it("accepts a timestamp exactly five minutes old and refuses one a second older", async () => {
+    const { sent, post } = await setup();
+    const s = NOW.getTime() / 1000;
+    expect(await post(event({ id: "b1" }), { ts: String(s - 300) })).toBe(200);
+    expect(sent).toHaveLength(2);
+    expect(await post(event({ id: "b2" }), { ts: String(s - 301) })).toBe(200);
+    expect(sent).toHaveLength(2);
+  });
+
+  it("escapes markdown in the sender and subject", async () => {
+    const { sent, post } = await setup();
+    await post(event({ from: "a@b.com", subject: "[click](http://x.test) *hi* <b>" }));
+    expect(sent[0]![1]).toBe("New email to ada@mail.test from a\\@b.com: \\[click\\]\\(http://x.test\\) \\*hi\\* \\<b\\>");
+  });
+
+  it("an audit failure for one chat does not stop the notice to the others", async () => {
+    const { sent, post } = await setup();
+    auditBroken.chat = "c1";
+    try {
+      expect(await post(event({ id: "a1" }))).toBe(200);
+    } finally {
+      auditBroken.chat = "";
+    }
+    expect(sent.map((x) => x[0]).sort()).toEqual(["c1", "c2"]);
+  });
+
+  it("keeps other routes working and fails loudly when it cannot mount before json", async () => {
+    const { db } = await setup();
+    const deps = { db, secretsKey, send: async () => {} };
+    const ok = express();
+    ok.use(express.json());
+    mountMailInbound(ok, deps);
+    ok.get("/health", (_q, r) => void r.json({ ok: true }));
+    server?.close();
+    server = ok.listen(0);
+    const r = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/health`);
+    expect(await r.json()).toEqual({ ok: true });
+    const noJson = express();
+    expect(() => mountMailInbound(noJson, deps)).toThrow(/json/);
+    expect(() => mountMailInbound({} as express.Application, deps)).toThrow();
   });
 
   it("does not retry-loop when Teams fails", async () => {
