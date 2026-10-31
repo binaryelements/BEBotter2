@@ -24,7 +24,7 @@ import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { Confirmations } from "./confirm.js";
 import { LiveSessions } from "./live.js";
 import { listRoutines } from "../routines/store.js";
-import { runTurn } from "./runner.js";
+import { prewarm, prewarmRecent, runTurn } from "./runner.js";
 import type { ConfirmationRequest } from "./runner.js";
 
 const key = Buffer.alloc(32, 9);
@@ -738,6 +738,72 @@ describe("runTurn", () => {
       await revokeConnection(db, "t1", connection.id);
       await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "c", askConfirmation: ask });
       expect(q.seen.map((o) => Object.keys(o.mcpServers!).includes("conn-desk"))).toEqual([false, true, false]);
+    });
+
+    it("prewarm starts the process a turn would use, resuming the stored session", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      await assignToChat(db, "c1", definition.id);
+      await db.insert(sessions).values({ chatId: "c1", definitionId: definition.id, sdkSessionId: "s-0" });
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      await prewarm(d, { tenantId: "t1", chatId: "c1", definitionId: definition.id });
+      log.mockRestore();
+      expect(q.seen.map((o) => o.resume)).toEqual(["s-0"]);
+      const result = await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: async () => {} });
+      expect(q.seen).toHaveLength(1);
+      expect(result.timings.live).toBe(true);
+    });
+
+    it("a tool call on a warmed process before any turn is denied and audited as failed", async () => {
+      const db = await testDb();
+      const { definition } = await setup(db);
+      await assignToChat(db, "c1", definition.id);
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      await prewarm(d, { tenantId: "t1", chatId: "c1", definitionId: definition.id });
+      log.mockRestore();
+      const r = await q.seen[0]!.canUseTool!("mcp__tickets__close_ticket", { id: 7 }, { signal: new AbortController().signal, toolUseID: "x" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+      expect(r?.behavior).toBe("deny");
+      const rows = (await listActions(db, { tenantId: "t1" })).filter((row) => row.kind === "tool");
+      expect(rows.map((row) => [row.toolName, row.status, row.personId])).toEqual([["mcp__tickets__close_ticket", "failed", null]]);
+    });
+
+    it("prewarm skips a bot no longer assigned or another tenant's chat, and logs failures without throwing", async () => {
+      const db = await testDb();
+      const { definition } = await setup(db);
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      await prewarm(d, { tenantId: "t1", chatId: "c1", definitionId: definition.id }); // not assigned
+      await assignToChat(db, "c1", definition.id);
+      await prewarm(d, { tenantId: "t2", chatId: "c1", definitionId: definition.id });
+      expect(q.seen).toHaveLength(0);
+      const broken = { ...d, live: new LiveSessions((() => { throw new Error("spawn failed"); }) as unknown as typeof query, { idleMs: 60_000, max: 5 }) };
+      await expect(prewarm(broken, { tenantId: "t1", chatId: "c1", definitionId: definition.id })).resolves.toBeUndefined();
+      expect(err).toHaveBeenCalledWith("prewarm failed", "c1", "spawn failed");
+      log.mockRestore();
+      err.mockRestore();
+    });
+
+    it("prewarmRecent warms the chats used recently, most recent first, at most max", async () => {
+      const db = await testDb();
+      const { definition } = await setup(db);
+      for (const id of ["c2", "c3", "c4"]) await upsertChat(db, { id, tenantId: "t1", conversationType: "groupChat" });
+      const ago = (min: number) => new Date(Date.now() - min * 60_000);
+      for (const [chatId, min] of [["c1", 30], ["c2", 5], ["c3", 90], ["c4", 10]] as const) {
+        await assignToChat(db, chatId, definition.id);
+        await db.insert(sessions).values({ chatId, definitionId: definition.id, sdkSessionId: `s-${chatId}`, updatedAt: ago(min) });
+      }
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      await prewarmRecent(d, { withinMs: 60 * 60_000, max: 2 });
+      log.mockRestore();
+      expect(q.seen.map((o) => o.resume)).toEqual(["s-c2", "s-c4"]);
     });
 
     it("a granted routine run never uses the live process", async () => {

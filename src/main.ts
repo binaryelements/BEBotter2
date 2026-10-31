@@ -11,7 +11,7 @@ import { connect } from "./db/client.js";
 import { Confirmations } from "./engine/confirm.js";
 import { LiveSessions } from "./engine/live.js";
 import { systemSsh } from "./connections/ssh.js";
-import { runTurn } from "./engine/runner.js";
+import { prewarmRecent, runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startScheduler } from "./routines/scheduler.js";
 import { createTeamsApp } from "./teams/app.js";
@@ -21,8 +21,9 @@ loadEnvFile();
 const config = loadConfig(process.env);
 const db = await connect(config.databaseUrl);
 const confirmations = new Confirmations();
-// operational limits: an idle chat's engine stops after 10 minutes, and at most 20 stay warm
-const live = new LiveSessions(query, { idleMs: 10 * 60_000, max: 20 });
+// operational limits: an idle chat's engine stops after 60 minutes, and at most 20 stay warm
+const warm = { idleMs: 60 * 60_000, max: 20 };
+const live = new LiveSessions(query, warm);
 const runnerDeps: RunnerDeps = {
   db,
   queryFn: query,
@@ -49,6 +50,8 @@ startServer(app, {
   },
 });
 
+// chats used within the idle window would still be warm had the service not restarted
+void prewarmRecent(runnerDeps, { withinMs: warm.idleMs, max: warm.max });
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };

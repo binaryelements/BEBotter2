@@ -43,12 +43,7 @@ export class LiveSessions {
       this.close(key);
       s = undefined;
     }
-    if (!s) {
-      const box = inbox();
-      const q = this.queryFn({ prompt: box.iterable, options: start() });
-      s = { q, it: q[Symbol.asyncIterator](), push: box.push, end: box.end, fingerprint, busy: false };
-    }
-    const live = s;
+    const live = s ?? this.open(fingerprint, start);
     clearTimeout(live.timer);
     this.live.delete(key);
     this.live.set(key, live);
@@ -72,6 +67,15 @@ export class LiveSessions {
     }
   }
 
+  /** Starts a process for key before its first message, unless one is live already; it idles out like any other. */
+  warm(key: string, fingerprint: string, start: () => Options): void {
+    if (this.live.has(key)) return;
+    const s = this.open(fingerprint, start);
+    this.live.set(key, s);
+    s.timer = setTimeout(() => this.drop(key, s), this.opts.idleMs).unref();
+    this.evict();
+  }
+
   close(key: string): void {
     const s = this.live.get(key);
     if (s) this.drop(key, s);
@@ -79,6 +83,12 @@ export class LiveSessions {
 
   async closeAll(): Promise<void> {
     for (const key of [...this.live.keys()]) this.close(key);
+  }
+
+  private open(fingerprint: string, start: () => Options): Live {
+    const box = inbox();
+    const q = this.queryFn({ prompt: box.iterable, options: start() });
+    return { q, it: q[Symbol.asyncIterator](), push: box.push, end: box.end, fingerprint, busy: false };
   }
 
   private drop(key: string, s: Live): void {

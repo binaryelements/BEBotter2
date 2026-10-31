@@ -110,6 +110,36 @@ describe("LiveSessions", () => {
     expect(e.closed).toEqual([0, 1]);
   });
 
+  it("warm starts a process that the next send on its key and fingerprint uses", async () => {
+    const e = fakeEngine();
+    const live = new LiveSessions(e.fn, { idleMs: 60_000, max: 5 });
+    live.warm("k", "f", start("m"));
+    expect(e.started).toHaveLength(1);
+    expect(await said(live.send("k", "f", start("m"), "one", quiet))).toBe("one on 0");
+    expect(e.started).toHaveLength(1);
+  });
+
+  it("warm on a key that is already live does nothing", async () => {
+    const e = fakeEngine();
+    const live = new LiveSessions(e.fn, { idleMs: 60_000, max: 5 });
+    await live.send("k", "f", start("m"), "one", quiet);
+    live.warm("k", "f2", start("other"));
+    live.warm("k", "f", start("m"));
+    expect(e.started).toHaveLength(1);
+    expect(e.closed).toEqual([]);
+  });
+
+  it("a warmed process idles out and counts toward max", async () => {
+    vi.useFakeTimers();
+    const e = fakeEngine();
+    const live = new LiveSessions(e.fn, { idleMs: 1000, max: 1 });
+    live.warm("a", "f", start("m"));
+    live.warm("b", "f", start("m"));
+    expect(e.closed).toEqual([0]);
+    vi.advanceTimersByTime(1000);
+    expect(e.closed).toEqual([0, 1]);
+  });
+
   it.each([["throws", { crash: "boom" }], ["ends", { endOn: "boom" }]])("a stream that %s mid-turn rejects and the next send starts fresh", async (_, opts) => {
     const e = fakeEngine(opts);
     const live = new LiveSessions(e.fn, { idleMs: 60_000, max: 5 });
