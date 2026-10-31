@@ -86,3 +86,41 @@ Measured baseline (2026-10-31, one personal-chat turn): message received → fir
 ### Task 4: Deploy and live check (controller)
 
 - [ ] `docker compose up -d --build app`; in the 1:1 chat send two messages a minute apart: the second turn's `ready` time in Activity is well under the first's; a slow question shows a status line that turns into the answer; Activity shows timings for both turns.
+
+---
+
+## Part 2 (Martin, 2026-10-31, after the baseline): "yes streaming and the other fixes as well"
+
+Baseline (Teams, warm engine, loaded VM): cold first message 22.7 s (engine ready 14.7 s); warm 10.7 s; trivial warm 4.1 s; web search 22.9 s. Reply delivery after the answer was ready: 1.1–5.3 s. Goal: first words on screen in about 3–5 s in 1:1 chats, the first message after idle no longer pays the engine start, and the reply goes out as soon as it is ready.
+
+### Task 5: Reply goes out at once
+
+**Files:** Modify `src/teams/handlers.ts`; Test `src/teams/handlers.test.ts`
+
+- [ ] **Step 1: Tests:** when the turn ends while a throttled status update is queued, the queued update is dropped and the final reply is sent with no 2 s wait; when a status `send`/`update` is still in flight, the reply waits only for that one call (never for a queued one); the `turn …` log line gains `deliver=<ms>` (result → sent).
+- [ ] **Step 2: Implement** in the status-message code from Task 3. **Step 3:** run the file, typecheck, commit `fix(teams): send the reply as soon as it is ready`.
+
+### Task 6: Engine already warm
+
+**Files:** Modify `src/engine/live.ts`, `src/main.ts` (or where LiveSessions is built), `src/engine/runner.ts` if a warm-up entry point is needed; Tests `src/engine/live.test.ts`, `src/engine/runner.test.ts`
+
+**Interfaces:** `export function prewarm(deps: RunnerDeps, key: { tenantId: string; chatId: string; definitionId: string }): Promise<void>` in `src/engine/runner.ts` — starts the live process for that chat+bot with the same options a turn would use (resuming the stored session), without sending a message. LiveSessions gets `warm(key, fingerprint, start)` which starts a process without a turn.
+
+- [ ] **Step 1: Tests:** `warm` starts `queryFn` once and a following `send` on the same key and fingerprint reuses it; `warm` on a key that is already live does nothing; a warm process counts toward `max` and idles out like any other; prewarm failures are logged and never throw.
+- [ ] **Step 2: Implement.** Idle time becomes 60 minutes (was 10). On service start, prewarm chats whose session was updated in the last 60 minutes, most recent first, at most `max`. A prewarmed process uses the same per-turn identity rules as Task 2 (no person until a turn sets one; a tool call outside a turn is denied).
+- [ ] **Step 3:** run the touched files one at a time, typecheck, commit `feat(engine): warm the engine before the first message`.
+
+### Task 7: Streaming replies in 1:1 chats
+
+**Files:** Modify `src/engine/runner.ts` (`includePartialMessages`, a `ProgressEvent` for text deltas), `src/engine/live.ts` if messages need passing through, `src/teams/handlers.ts`, `src/teams/app.ts`; Tests `src/engine/runner.test.ts`, `src/teams/handlers.test.ts`
+
+**Interfaces:** `ProgressEvent` gains `{ kind: "delta"; text: string }` (text as the model writes it) and `{ kind: "message-end" }` (an assistant message finished). The Teams `io` gains an optional `stream?: { informative(text: string): void; chunk(text: string): void; end(finalText: string): Promise<void> }`, built in `app.ts` from `ctx.streamingResponse` (`queueInformativeUpdate`, `queueTextChunk`, `setFinalMessage` + `endStream`), offered only for personal chats.
+
+- [ ] **Step 1: Check the SDKs first** (`node_modules/@microsoft/agents-hosting/dist/src/app/streaming/streamingResponse.d.ts` and `.js`, `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` near `includePartialMessages`): whether `streamingResponse` works with `longRunningMessages: true`, whether `setFinalMessage` replaces the streamed text, any stream time limit, and how often it sends. Write what you find in the report; if streaming cannot work with long-running messages, stop and report BLOCKED with the evidence.
+- [ ] **Step 2: Tests:** in a personal chat, deltas reach `stream.chunk` as they arrive and the final message is exactly the reply text (`setFinalMessage`); text the model writes before a tool call is shown as an informative update, not left in the reply; a confirmation card ends the stream with the text so far and the reply after the card goes out as a new message (Task 3 ruling); if any stream call throws, the turn falls back to the Task 3 status message and the user still gets exactly one reply; group chats never stream and keep the status message; `sentAt` and the `turn …` log line are recorded on the streamed path too.
+- [ ] **Step 3: Implement.** Text deltas of an assistant message are held until it is clear whether a tool call follows in that message; once the message ends without a tool call, its held text and later deltas stream as chunks. Keep the typing indicator until the first chunk.
+- [ ] **Step 4:** run the touched files one at a time, typecheck, commit `feat(teams): stream replies in one-to-one chats`.
+
+### Task 8: Deploy and measure again (controller)
+
+- [ ] Rebuild; in the 1:1 chat repeat the four baseline messages after a restart (the first should be prewarmed only if the chat was active in the last hour, so send one message, restart, wait 30 s, then run the set); record first-words time from the Teams message timestamps and the `turn …` lines; check the engine processes close after 60 minutes idle and none are left behind.
