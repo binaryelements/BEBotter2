@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { beginAction, completeAction } from "../audit/audit.js";
+import { beginAction, completeAction, recordSent } from "../audit/audit.js";
 import { mayUseDefinition } from "../admin/access.js";
 import { definitionsForChat, getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
@@ -8,7 +8,7 @@ import type { Routine } from "../db/schema.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { confirmationCard, withRoleLabel } from "../teams/cards.js";
 import type { AdaptiveCard } from "../teams/cards.js";
-import { serialize } from "../teams/handlers.js";
+import { logTurn, serialize } from "../teams/handlers.js";
 import { claimDue } from "./store.js";
 
 export type SchedulerDeps = {
@@ -21,6 +21,7 @@ export type SchedulerDeps = {
 export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise<void> {
   const { db } = deps;
   const { tenantId, chatId, definitionId } = routine;
+  const due = new Date(); // shortcut: claim time stands in for the scheduled time, which claimDue does not return
   const fail = async (reason: string) => {
     console.error(`routine ${routine.id}: ${reason}`);
     try {
@@ -56,6 +57,7 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
         definition,
         person: creator,
         text: routine.prompt,
+        receivedAt: due,
         askConfirmation: (req) => deps.send(chatId, confirmationCard(req)),
         routine: { id: routine.id, grantPersonId, post },
       });
@@ -69,8 +71,14 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
       await post(result.text);
     } catch (err) {
       console.error(err);
-      await fail("its reply could not be posted");
+      return fail("its reply could not be posted");
     }
+    try {
+      await recordSent(db, result.auditId, new Date());
+    } catch (err) {
+      console.error("recording turn timing failed", err); // the reply is already posted
+    }
+    logTurn(chatId, result.timings);
   });
 }
 

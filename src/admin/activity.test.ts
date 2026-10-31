@@ -70,6 +70,15 @@ describe("activity screen", () => {
     expect(t).not.toContain(">Older<");
   });
 
+  it("shows timings for message rows that have them", async () => {
+    const r = new Date("2026-01-01T00:00:00Z").getTime();
+    const iso = (s: number) => new Date(r + s * 1000).toISOString();
+    const a = await beginAction(db, { tenantId: T, chatId: "chat-1", definitionId: bot, personId: id.Sam, kind: "message", summary: "timed-row" });
+    await completeAction(db, a, { status: "done", timings: { receivedAt: iso(0), engineReadyAt: iso(3), firstOutputAt: iso(16), firstToolAt: iso(17), resultAt: iso(22), sentAt: iso(23), tools: 2 } });
+    const t = await (await get("/admin/activity", "Ann")).text();
+    expect(t).toContain("23.0s total: ready 3.0s / first 16.0s / tools 17.0s (2) / reply 22.0s");
+  });
+
   it("filters combine", async () => {
     const t = await (await get(`/admin/activity?person=${id.Eve}&status=failed&chat=chat-2&bot=${bot}`, "Ann")).text();
     expect(t).toContain("Eve");

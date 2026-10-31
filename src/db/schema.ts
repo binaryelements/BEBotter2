@@ -12,6 +12,9 @@ export type McpServerRecord = {
 
 export type Authority = { type: "confirmation"; personId: string } | { type: "grant"; personId: string; routineId: string };
 
+/** Per-turn phase times as ISO strings; rows from before timings existed have none. */
+export type TurnTimings = { receivedAt: string; engineReadyAt?: string; firstOutputAt?: string; firstToolAt?: string; resultAt?: string; sentAt?: string; tools: number; live?: boolean };
+
 export type ConnectionConfig =
   | { port: number; username: string }
   | { auth?: { in: "header" | "query"; name: string; prefix?: string } }
@@ -117,6 +120,8 @@ export const sessions = pgTable(
     chatId: text("chat_id").notNull().references(() => chats.id),
     definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
     sdkSessionId: text("sdk_session_id").notNull(),
+    /** The last total_cost_usd the engine reported for this session; a turn's cost is the growth since. */
+    lastCostUsd: numeric("last_cost_usd", { precision: 12, scale: 6 }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.chatId, t.definitionId] })],
@@ -142,6 +147,7 @@ export const auditEvents = pgTable("audit_events", {
   authority: jsonb("authority").$type<Authority>(),
   model: text("model"),
   costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
+  timings: jsonb("timings").$type<TurnTimings>(), // message rows only
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
 });

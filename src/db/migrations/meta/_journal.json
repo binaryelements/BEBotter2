@@ -22,6 +22,20 @@
       "when": 1793364380010,
       "tag": "0002_striped_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793410348915,
+      "tag": "0003_damp_maginty",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793416009414,
+      "tag": "0004_crazy_saracen",
+      "breakpoints": true
     }
   ]
 }

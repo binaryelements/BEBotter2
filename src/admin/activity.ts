@@ -37,6 +37,15 @@ const cells = (e: AuditEvent, n: Awaited<ReturnType<typeof names>>) => [
   e.authority ? (n.person.get(e.authority.personId) ?? "") : "",
 ];
 
+const secs = (from: string, to?: string) => (to ? `${((Date.parse(to) - Date.parse(from)) / 1000).toFixed(1)}s` : "-");
+/** Message rows with timings: total received to sent, then ready / first output / tools / reply. */
+function timingText(e: AuditEvent): string {
+  const t = e.timings;
+  if (!t) return "";
+  const total = t.sentAt ? `${secs(t.receivedAt, t.sentAt)} total: ` : "";
+  return `${total}ready ${secs(t.receivedAt, t.engineReadyAt)} / first ${secs(t.receivedAt, t.firstOutputAt)} / tools ${t.firstToolAt ? secs(t.receivedAt, t.firstToolAt) : "-"} (${t.tools}) / reply ${secs(t.receivedAt, t.resultAt)}`;
+}
+
 // A leading = + - @ tab or CR would run as a formula in a spreadsheet.
 const csvCell = (v: string) => `"${(/^[=+\-@\t\r]/.test(v) ? `'${v}` : v).replace(/"/g, '""')}"`;
 
@@ -88,14 +97,14 @@ export function activityRoutes(db: Db): Router {
       const csv = keep.toString();
       const tr = rows.map((e) => {
         const c = cells(e, n);
-        return html`<tr>${c.slice(0, 6).map((v) => html`<td>${v}</td>`)}<td>${c[6] ? `confirmed by ${c[6]}` : ""}</td></tr>`;
+        return html`<tr>${c.slice(0, 6).map((v) => html`<td>${v}</td>`)}<td>${timingText(e)}</td><td>${c[6] ? `confirmed by ${c[6]}` : ""}</td></tr>`;
       });
       res.type("html").send(
         layout({
           title: "Activity",
           body: html`<h1>Activity</h1>
 <form method="get" action="/admin/activity"><input name="bot" value="${q(req, "bot") ?? ""}" placeholder="Bot id" aria-label="Bot"> <input name="person" value="${q(req, "person") ?? ""}" placeholder="Person id" aria-label="Person"> <input name="chat" value="${q(req, "chat") ?? ""}" placeholder="Chat id" aria-label="Chat"> <select name="status" aria-label="Status"><option value="">Any</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button>Filter</button> <a href="/admin/activity.csv${csv ? `?${csv}` : ""}">Export CSV</a></form>
-<table><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Tool</th><th>Status</th><th>Summary</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>
+<table><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>
 ${older ? html`<p><a href="/admin/activity?${older}">Older</a></p>` : ""}`,
           actor,
           csrf,
