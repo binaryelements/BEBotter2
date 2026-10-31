@@ -445,7 +445,7 @@ export async function prewarm(deps: RunnerDeps, key: { tenantId: string; chatId:
     live.warm(liveKey, setup.fingerprint, () => liveOptions(live, liveKey, setup, session));
     console.log("prewarmed", key.chatId);
   } catch (err) {
-    console.error("prewarm failed", key.chatId, err instanceof Error ? err.message : "unknown");
+    console.error("prewarm failed", key.chatId, err instanceof Error ? err.name : "unknown");
   }
 }
 
@@ -463,6 +463,6 @@ export async function prewarmRecent(deps: RunnerDeps, opts: { withinMs: number; 
     for (const key of recent) await prewarm(deps, key);
     console.log(`prewarm done: ${recent.length} chats in ${Date.now() - started} ms`);
   } catch (err) {
-    console.error("prewarm failed", err instanceof Error ? err.message : "unknown");
+    console.error("prewarm failed", err instanceof Error ? err.name : "unknown");
   }
 }

@@ -141,6 +141,7 @@ export async function handleMessage(
     let flowing = false; // text is streaming; from here on there are no progress lines
     let newMessage = false; // the next delta starts a later assistant message
     let soFar = ""; // what the stream shows now
+    let fellBack = false; // the stream failed: the status message takes over
     const toStream = (f: (s: TeamsStream) => void, text: string) => {
       if (!stream) return false;
       try {
@@ -151,11 +152,16 @@ export async function handleMessage(
       } catch (err) {
         console.error("streaming failed", err instanceof Error ? err.message : "unknown");
         stream = undefined;
+        fellBack = true;
         return false;
       }
     };
-    // once the reply flows, progress lines would only interrupt it
-    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(definition.label, t), (t) => !!stream && (flowing || toStream((s) => s.informative(t), t)));
+    // a chat that streams never gets a status message unless the stream failed; once text flows, progress lines would only interrupt it
+    const onStream = (t: string) => {
+      if (!personal || !io.stream || fellBack) return false;
+      return !stream || flowing || toStream((s) => s.informative(t), t);
+    };
+    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(definition.label, t), onStream);
     const progress = (e: ProgressEvent) => {
       if (!stream) return status.progress(e);
       if (e.kind === "delta") {
@@ -176,6 +182,7 @@ export async function handleMessage(
         return true;
       } catch (err) {
         console.error("ending the stream failed", err instanceof Error ? err.message : "unknown");
+        fellBack = true;
         return false;
       }
     };

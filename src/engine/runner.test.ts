@@ -808,7 +808,7 @@ describe("runTurn", () => {
       expect(q.seen).toHaveLength(0);
       const broken = { ...d, live: new LiveSessions((() => { throw new Error("spawn failed"); }) as unknown as typeof query, { idleMs: 60_000, max: 5 }) };
       await expect(prewarm(broken, { tenantId: "t1", chatId: "c1", definitionId: definition.id })).resolves.toBeUndefined();
-      expect(err).toHaveBeenCalledWith("prewarm failed", "c1", "spawn failed");
+      expect(err).toHaveBeenCalledWith("prewarm failed", "c1", "Error");
       log.mockRestore();
       err.mockRestore();
     });

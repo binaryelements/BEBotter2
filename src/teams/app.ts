@@ -1,11 +1,12 @@
 import { AgentApplication, CardFactory, CloudAdapter, MessageFactory, StreamingResponseResult } from "@microsoft/agents-hosting";
-import type { TurnState } from "@microsoft/agents-hosting";
+import type { TurnContext, TurnState } from "@microsoft/agents-hosting";
 import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { findPersonId } from "../org/org.js";
 import { resultCard } from "./cards.js";
 import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting, tenantBotName } from "./handlers.js";
+import type { TeamsStream } from "./handlers.js";
 
 export type TeamsAppDeps = {
   db: Db;
@@ -13,6 +14,28 @@ export type TeamsAppDeps = {
   confirmations: Confirmations;
   botName: string;
 };
+
+/** The turn's Teams stream. end throws unless the final message reached the chat, so the caller can send it another way. */
+export function teamsStream(ctx: TurnContext): TeamsStream {
+  return {
+    informative: (text) => ctx.streamingResponse.queueInformativeUpdate(text),
+    chunk: (text) => ctx.streamingResponse.queueTextChunk(text),
+    end: async (finalText) => {
+      // the stream swallows send failures, even the final message's, and still reports success; watch that send ourselves
+      let landed = false;
+      const watch = async <T>(activities: { type?: string; text?: string }[], next: () => Promise<T>) => {
+        const r = await next();
+        if (activities.some((a) => a.type === "message" && a.text === finalText)) landed = true;
+        return r;
+      };
+      ctx.onSendActivities((_c, activities, next) => watch(activities, next));
+      ctx.onUpdateActivity((_c, activity, next) => watch([activity], next)); // a stream past Teams' time limit ends with an edit
+      ctx.streamingResponse.setFinalMessage(MessageFactory.text(finalText));
+      const result = await ctx.streamingResponse.endStream();
+      if (result !== StreamingResponseResult.Success || !landed) throw new Error(`stream ended: ${landed ? result : "final message not sent"}`);
+    },
+  };
+}
 
 export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> {
   // longRunningMessages answers the HTTP request at once; a turn can wait minutes on a confirmation card
@@ -55,20 +78,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         },
         sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
         // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
-        ...(conversationType === "personal"
-          ? {
-              stream: {
-                informative: (text: string) => ctx.streamingResponse.queueInformativeUpdate(text),
-                chunk: (text: string) => ctx.streamingResponse.queueTextChunk(text),
-                end: async (finalText: string) => {
-                  ctx.streamingResponse.setFinalMessage(MessageFactory.text(finalText));
-                  // send failures are swallowed inside the stream and only show here
-                  const result = await ctx.streamingResponse.endStream();
-                  if (result !== StreamingResponseResult.Success) throw new Error(`stream ended: ${result}`);
-                },
-              },
-            }
-          : {}),
+        ...(conversationType === "personal" ? { stream: teamsStream(ctx) } : {}),
       },
     );
   });

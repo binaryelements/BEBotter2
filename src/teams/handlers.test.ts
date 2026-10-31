@@ -401,6 +401,19 @@ describe("handleMessage streaming", () => {
       expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking", "card", "send:final"]);
     }));
 
+  it("sends no status message around a confirmation card in a chat that streams", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "tool", toolName: "mcp__tickets__close" });
+        await t.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
+        await wait(5000);
+        t.progress!({ kind: "tool", toolName: "mcp__tickets__close" });
+        await wait(5000);
+      });
+      await run(x);
+      expect(x.log).toEqual(["card", "send:final"]);
+    }));
+
   it("falls back to the status message when a stream call throws and sends one reply", () =>
     timed(async () => {
       const x = await streamSetup(async (t, wait) => {
