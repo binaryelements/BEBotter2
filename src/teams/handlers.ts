@@ -36,7 +36,7 @@ export async function serialize<T>(key: string, fn: () => Promise<T>): Promise<T
 
 const ms = (from: string, to?: string) => (to ? Date.parse(to) - Date.parse(from) : "-");
 export function logTurn(chatId: string, t: TurnTimings) {
-  console.log(`turn ${chatId} ${Date.now() - Date.parse(t.receivedAt)}ms ready=${ms(t.receivedAt, t.engineReadyAt)}ms first=${ms(t.receivedAt, t.firstOutputAt)}ms tools=${t.tools}`);
+  console.log(`turn ${chatId} ${Date.now() - Date.parse(t.receivedAt)}ms ready=${ms(t.receivedAt, t.engineReadyAt)}ms first=${ms(t.receivedAt, t.firstOutputAt)}ms deliver=${t.resultAt ? Date.now() - Date.parse(t.resultAt) : "-"}ms tools=${t.tools}`);
 }
 
 export type TeamsIo = {

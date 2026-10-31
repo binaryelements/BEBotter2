@@ -87,7 +87,7 @@ describe("handleMessage", () => {
     const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn "));
     log.mockRestore();
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^turn \S+ \d+ms ready=-ms first=-ms tools=2$/);
+    expect(lines[0]).toMatch(/^turn \S+ \d+ms ready=-ms first=-ms deliver=-ms tools=2$/);
     expect(lines[0]).not.toContain("secret");
   });
 
@@ -244,6 +244,57 @@ describe("handleMessage status message", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("drops a queued status update and sends the reply at once", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "text", text: "one" });
+        await wait(3000);
+        t.progress!({ kind: "text", text: "two" }); // queued for 2 s later
+        await wait(500);
+      });
+      const timersBefore = vi.getTimerCount();
+      await run(x);
+      expect(x.log).toEqual(["send:one", "update:id1:final"]);
+      expect(vi.getTimerCount()).toBeLessThanOrEqual(timersBefore);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits only for the status call in flight, not for a queued one", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "text", text: "one" });
+        await wait(3000); // send resolves after 1 s below
+        t.progress!({ kind: "text", text: "two" });
+      });
+      const release: (() => void)[] = [];
+      x.io.send = (t: string) => new Promise<string>((r) => (x.log.push(`send:${t}`), release.push(() => r("id1"))));
+      const done = run(x);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(x.log).toEqual(["send:one"]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(x.log).toEqual(["send:one"]); // reply still waits for the in-flight send
+      release[0]!();
+      await done;
+      expect(x.log).toEqual(["send:one", "update:id1:final"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs how long the reply took to deliver", async () => {
+    const x = await slowSetup(async () => {});
+    x.s.runTurn.mockImplementation(async () => ({ text: "final", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), resultAt: new Date().toISOString(), tools: 0 } }));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await run(x);
+    const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn "));
+    log.mockRestore();
+    expect(lines[0]).toMatch(/ deliver=\d+ms tools=0$/);
   });
 
   it("replaces the status message when the turn fails", async () => {
