@@ -59,6 +59,35 @@ describe("admin router", () => {
     expect(res.headers.get("location")).toContain("login.microsoftonline.com");
   });
 
+  it("serves the design system assets without a session, cacheable, with the right types", async () => {
+    for (const [file, type] of [["be/tokens.css", "text/css"], ["be/components.css", "text/css"], ["admin.css", "text/css"], ["be/be-mark-cyan.png", "image/png"]]) {
+      const res = await get(`/admin/assets/${file}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain(type);
+      expect(res.headers.get("cache-control")).not.toContain("no-store");
+    }
+    expect((await get("/admin/assets/nope.css")).status).not.toBe(200);
+  });
+
+  it("the theme link sets a Lax cookie on /admin and returns to the page; bad input is ignored", async () => {
+    const res = await get("/admin/theme?set=light&next=/admin/people");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/admin/people");
+    expect(res.headers.get("set-cookie")).toBe("theme=light; Path=/admin; SameSite=Lax; Max-Age=31536000");
+    const bad = await get("/admin/theme?set=red&next=//evil.example");
+    expect(bad.headers.get("location")).toBe("/admin");
+    expect(bad.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  it("pages carry the theme cookie, the company, the role and the current menu item; an invalid theme is ignored", async () => {
+    const page = await (await get("/admin/people", `${as(admin)}; theme=light`)).text();
+    expect(page).toContain('data-theme="light"');
+    expect(page).toContain('class="active" aria-current="page">People</a>');
+    expect(page).toContain("Ann</b> · admin");
+    expect(await (await get("/admin/people", `${as(admin)}; theme=bogus`)).text()).not.toContain("data-theme");
+    expect(await (await get("/admin/people", as(head))).text()).toContain("Hal</b> · head");
+  });
+
   it("a GET without a session redirects to sign-in", async () => {
     for (const path of ["/admin", "/admin/people", "/admin/departments"]) {
       const res = await get(path);

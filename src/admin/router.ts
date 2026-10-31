@@ -1,5 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response, Router } from "express";
+import { eq } from "drizzle-orm";
+import { tenants } from "../db/schema.js";
 import { ConnectionError } from "../connections/store.js";
 import { KnowledgeError } from "../knowledge/store.js";
 import { DirectoryError } from "../org/directory.js";
@@ -10,6 +12,7 @@ import { assignmentRoutes } from "./assignments.js";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { botRoutes } from "./bots.js";
 import { adminOf, wrap } from "./http.js";
+import { assetsDir, shell, themeOf, themes } from "./html.js";
 import { knowledgeRoutes } from "./knowledge.js";
 import { oidcRoutes, page } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
@@ -25,12 +28,28 @@ export function adminRouter(deps: AdminDeps): Router {
   const sKey = sessionKey(deps.config.secretsKey);
   const router = express.Router();
 
-  router.use((_req, res, next) => {
+  // Outside the no-store rule below: static, cacheable (the ?v= in the links busts it), and open to signed-out pages.
+  router.use("/assets", express.static(assetsDir, { maxAge: "1y", immutable: true, index: false }));
+  // Sets the theme cookie (dark, light, or device = forget it) and returns to the page; needs no script.
+  router.get("/theme", (req, res) => {
+    const set = String(req.query.set);
+    const next = String(req.query.next);
+    const value = themes.find((t) => t === set);
+    res.append("Set-Cookie", `theme=${value ?? ""}; Path=/admin; SameSite=Lax; Max-Age=${value ? 31536000 : 0}`);
+    res.redirect(303, /^\/admin(\/[\w./-]*)?$/.test(next) ? next : "/admin");
+  });
+
+  // Body parsing resumes on the socket's async context, so the shell facts are set again after it.
+  const withShell = (req: Request, _res: Response, next: NextFunction) =>
+    shell.run({ theme: themeOf(req.headers.cookie), path: req.originalUrl.split("?")[0] }, next);
+
+  router.use((req, res, next) => {
     res.set({ "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });
-    next();
+    withShell(req, res, next);
   });
   router.use(oidcRoutes(deps));
   router.use(express.urlencoded({ extended: false }));
+  router.use(withShell);
   // before the admin guard: any signed-in person of the tenant may open their own secret link
   router.use(secretRoutes(db, deps.config.secretsKey));
 
@@ -44,6 +63,8 @@ export function adminRouter(deps: AdminDeps): Router {
       if (!actor || !mayEnter(actor)) return page(res, 403, "You do not have access to the admin page.");
       if (!safe && !csrfOk(session, (req.body ?? {}) as Record<string, unknown>)) return page(res, 403, "Not allowed.");
       res.locals.admin = { actor, csrf: session.csrf };
+      const store = shell.getStore();
+      if (store) store.company = (await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, actor.tenantId)))[0]?.name;
       next();
     }),
   );

@@ -1,0 +1,132 @@
+/* Binary Elements components: the BE Hub console's styles as classes, so any tool can use them without
+   the console's global element rules. Load after tokens.css (see README). Every value is a token from tokens.json. */
+.be { font: 13px/1.4 var(--font-sans); color: var(--ink); background: var(--bg); }
+.be *, .be *::before, .be *::after { box-sizing: border-box; }
+.be a, a.be-link { color: var(--link); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent); text-underline-offset: 3px; text-decoration-thickness: 1px; cursor: pointer; }
+.be a:hover, a.be-link:hover { color: var(--link-hover); text-decoration-color: currentColor; }
+.be-mono { font-family: var(--font-mono); font-size: 12.5px; }
+.be-muted { color: var(--muted); } .be-bright { color: var(--bright); }
+.be-ok { color: var(--ok); } .be-warn { color: var(--warn); } .be-bad { color: var(--bad); }
+
+/* eyebrow: section headings, column headers, menu groups */
+.be-eyebrow { font: 600 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.be-section { margin-top: var(--space-18); }
+.be-section > h3 { margin: 0 0 var(--space-8); padding-top: var(--space-8); border-top: 1px solid var(--line); font: 600 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); display: flex; gap: var(--space-10); align-items: center; }
+
+/* buttons */
+.be-btn { font: 500 12px var(--font-mono); padding: 5px 11px; border: 1px solid var(--edge); border-radius: var(--radius-md); background: var(--btn); color: var(--bright); cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-6); white-space: nowrap; box-shadow: var(--shadow-button); }
+.be-btn:hover { background: var(--btn2); border-color: var(--edge2); }
+.be-btn:active { transform: translateY(1px); box-shadow: none; }
+.be-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.be-btn:disabled { opacity: .5; cursor: default; }
+.be-btn.primary { background: var(--cyan); color: var(--on-accent); border-color: var(--cyan); font-weight: 600; }
+.be-btn.danger { background: transparent; border-color: var(--bad); color: var(--bad); box-shadow: none; } .be-btn.danger:hover { background: var(--bad-bg); }
+.be-btn.armed { border-color: var(--bad); background: var(--bad); color: #fff; box-shadow: none; }
+.be-btn.quiet { background: transparent; border-color: transparent; box-shadow: none; color: var(--link); text-decoration: underline; padding: 2px 4px; }
+.be-btn.sm { padding: 3px 8px; font-size: 11.5px; }
+.be-btn.block { width: 100%; justify-content: center; padding: 9px; font-size: 13px; }
+
+/* fields */
+.be-label { display: block; font: 500 12px/1.3 var(--font-sans); color: var(--lbl); margin: 0 0 var(--space-4); }
+.be-hint { font: 12px var(--font-sans); color: var(--muted); margin-top: var(--space-4); } .be-hint.be-bad { color: var(--bad); }
+.be-input, .be-select, .be-textarea { font: 13px var(--font-mono); padding: 5px 8px; border: 1px solid var(--edge); border-radius: var(--radius-md); background: var(--well); color: var(--bright); box-shadow: none; }
+.be-textarea { font-family: var(--font-sans); }
+.be-input::placeholder, .be-textarea::placeholder { color: var(--muted); }
+.be-input:focus, .be-select:focus, .be-textarea:focus { outline: none; border-color: var(--cyan); box-shadow: var(--shadow-focus); }
+.be-select { appearance: none; padding-right: 24px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: right 12px center, right 8px center; background-size: 4px 4px; background-repeat: no-repeat; }
+
+/* toggle chip: a checkbox with its label */
+.be-toggle { display: inline-flex; align-items: center; gap: var(--space-6); padding: 3px 9px 3px 7px; border: 1px solid var(--line2); border-radius: var(--radius-pill); background: var(--well); color: var(--ink); cursor: pointer; user-select: none; }
+.be-toggle input { accent-color: var(--cyan); margin: 0; }
+.be-toggle:has(input:checked) { border-color: var(--sel-edge); background: var(--sel-bg); color: var(--bright); }
+
+/* status chip and dot */
+.be-chip { display: inline-block; padding: 1px 6px; border-radius: var(--radius-xs); background: var(--line); color: var(--lbl); font: 600 11px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
+.be-chip.c { background: var(--sel-bg); color: var(--cyan); } .be-chip.w { background: var(--warn-bg); color: var(--warn); } .be-chip.b { background: var(--bad-bg); color: var(--bad); } .be-chip.g { background: var(--ok-bg); color: var(--ok); }
+.be-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--edge); } .be-dot.on { background: var(--ok); } .be-dot.bad { background: var(--bad); }
+
+/* tabs */
+.be-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.be-tabs a, .be .be-tabs a { padding: 7px 10px; color: var(--muted); font: 12px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; border-bottom: 2px solid transparent; white-space: nowrap; text-decoration: none; }
+.be-tabs a:hover { color: var(--bright); }
+.be-tabs a.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+/* table */
+.be-table { border-collapse: collapse; width: 100%; }
+.be-table th, .be-table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--hover); vertical-align: top; }
+.be-table th { font: 600 11px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--line2); }
+.be-table td .nm { font-weight: 600; color: var(--bright); }
+.be-table tr:hover td { background: var(--hover); }
+
+/* surfaces */
+.be-box { border: 1px solid var(--line2); background: var(--panel2); padding: var(--space-12) 14px; border-radius: var(--radius-md); }
+.be-card { border: 1px solid var(--line2); border-radius: var(--radius-md); background: var(--panel); padding: 26px var(--space-28) 22px; }
+.be-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: var(--space-8); }
+.be-tile { border: 1px solid var(--line2); border-left: 3px solid var(--line2); border-radius: var(--radius-md); padding: 10px var(--space-12); background: var(--panel2); }
+.be-tile .v { font: 500 19.5px var(--font-mono); color: var(--bright); margin-top: 1px; }
+.be-tile .s { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.be-tile.ok { border-left-color: var(--ok); } .be-tile.warn { border-left-color: var(--warn); } .be-tile.bad { border-left-color: var(--bad); }
+.be-notice { display: flex; gap: var(--space-10); align-items: center; flex-wrap: wrap; border: 1px solid var(--line2); border-left: 3px solid var(--cyan); background: var(--panel2); padding: 10px 14px; border-radius: var(--radius-md); }
+.be-notice b { color: var(--bright); font-weight: 600; }
+.be-notice.warn { border-color: var(--warn-edge); border-left-color: var(--warn); background: var(--warn-bg); }
+.be-notice.bad { border-color: var(--bad-edge); border-left-color: var(--bad); background: var(--bad-bg); }
+.be-notice .n { margin-left: auto; color: var(--muted); font: 12px var(--font-mono); }
+.be-empty { padding: var(--space-28) var(--space-12); text-align: center; color: var(--muted); font: 13px var(--font-mono); border: 1px dashed var(--line2); border-radius: var(--radius-md); }
+.be-meter { height: 5px; background: var(--line); border-radius: var(--radius-xs); overflow: hidden; } .be-meter > div { height: 100%; background: var(--cyan); } .be-meter.warn > div { background: var(--warn); } .be-meter.bad > div { background: var(--bad); }
+
+/* side menu */
+.be-nav { width: 196px; display: flex; flex-direction: column; gap: 1px; padding: 10px 8px 8px; border-right: 1px solid var(--line); background: var(--bg); }
+.be-nav .nh { padding: 6px 8px; font: 600 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.be-nav a, .be .be-nav a { display: flex; align-items: center; gap: var(--space-6); padding: 5px 8px 5px 33px; border-left: 2px solid transparent; border-radius: 0 var(--radius-md) var(--radius-md) 0; color: var(--ink); font: 13px var(--font-sans); text-decoration: none; }
+.be-nav a:hover { background: var(--hover); color: var(--bright); }
+.be-nav a.active { background: var(--sel-bg); color: var(--cyan); border-left-color: var(--cyan); }
+.be-nav a small { margin-left: auto; font: 11px var(--font-mono); color: var(--muted); }
+.be-nav .ng { display: flex; flex-direction: column; gap: 1px; margin-bottom: 10px; }
+
+/* brand lockup */
+.be-brand { display: flex; align-items: center; gap: var(--space-10); white-space: nowrap; font: 600 16px var(--font-sans); letter-spacing: .06em; color: var(--bright); }
+.be-brand img { width: 28px; height: 28px; }
+.be-brand .by { margin-left: var(--space-10); padding-left: var(--space-10); border-left: 1px solid var(--line); font: 500 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+/* the mark: cyan on dark, Binary Elements red on light. Put both images in; the theme picks one. */
+.be-mark-light { display: none; }
+[data-theme="light"] .be-mark-dark { display: none; } [data-theme="light"] .be-mark-light { display: inline-block; }
+
+/* segmented: a radio group as joined segments. <div class="be-seg" role="radiogroup"><label><input type="radio"><span>…</span></label>… */
+.be-seg { display: inline-flex; border: 1px solid var(--edge); border-radius: var(--radius-md); background: var(--well); overflow: hidden; }
+.be-seg label { position: relative; display: inline-flex; cursor: pointer; }
+.be-seg label + label { border-left: 1px solid var(--edge); }
+.be-seg input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.be-seg span { padding: 5px 11px; font: 500 12px var(--font-mono); color: var(--lbl); white-space: nowrap; }
+.be-seg label:hover span { background: var(--hover); color: var(--bright); }
+.be-seg input:checked + span { background: var(--sel-bg); color: var(--cyan); font-weight: 600; box-shadow: inset 0 -2px 0 var(--cyan); }
+.be-seg input:focus-visible + span { outline: 2px solid var(--cyan); outline-offset: -2px; }
+.be-seg input:disabled + span { opacity: .5; cursor: default; }
+
+/* key-value list: <dl class="be-kv"><div><dt>label</dt><dd>value</dd></div>… */
+.be-kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-8) var(--space-16); margin: 0; }
+.be-kv > div { display: contents; }
+.be-kv dt { font: 600 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding-top: var(--space-2); }
+.be-kv dd { margin: 0; font: 13px var(--font-sans); color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .be-kv { grid-template-columns: 1fr; gap: 0; } .be-kv > div { display: block; margin-bottom: var(--space-10); } }
+
+/* timing bar: <div class="be-timing" role="img" aria-label="…"><span class="t1" style="width:40%"></span>…</div> then a .be-timing-key legend.
+   Parts differ in lightness as well as hue (t1 cyan, t2 light/dark edge, t3 muted, t4 label grey); the legend always carries the numbers. */
+.be-timing { display: flex; gap: var(--space-2); height: 10px; background: var(--line); border-radius: var(--radius-xs); overflow: hidden; }
+.be-timing > span { display: block; height: 100%; min-width: 2px; background: var(--muted); }
+.be-timing > .t1 { background: var(--cyan); } .be-timing > .t2 { background: var(--edge2); } .be-timing > .t3 { background: var(--muted); } .be-timing > .t4 { background: var(--lbl); }
+.be-timing-key { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-16); margin: var(--space-6) 0 0; padding: 0; list-style: none; font: 12px var(--font-mono); color: var(--lbl); }
+.be-timing-key li { display: inline-flex; align-items: center; gap: var(--space-6); }
+.be-timing-key li::before { content: ""; width: 10px; height: 10px; border-radius: var(--radius-xs); background: var(--muted); }
+.be-timing-key .t1::before { background: var(--cyan); } .be-timing-key .t2::before { background: var(--edge2); } .be-timing-key .t3::before { background: var(--muted); } .be-timing-key .t4::before { background: var(--lbl); }
+
+/* page header: <header class="be-pagehead"><div class="pt"><nav class="crumb">…</nav><h1>title</h1><p class="meta">a · b</p></div><div class="act">buttons</div></header> */
+.be-pagehead { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--space-10) var(--space-16); padding-bottom: var(--space-12); border-bottom: 1px solid var(--line); }
+.be-pagehead .pt { min-width: 0; flex: 1 1 280px; }
+.be-pagehead .crumb { font: 12px var(--font-mono); color: var(--muted); }
+.be-pagehead .crumb a, .be .be-pagehead .crumb a { color: var(--muted); text-decoration: none; }
+.be-pagehead .crumb a:hover { color: var(--bright); text-decoration: underline; }
+.be-pagehead .crumb a:focus-visible, .be-pagehead .crumb [aria-current] { color: var(--bright); }
+.be-pagehead .crumb a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.be-pagehead h1 { margin: var(--space-4) 0 0; font: 600 20px/1.25 var(--font-sans); color: var(--bright); overflow-wrap: anywhere; }
+.be-pagehead .meta { margin: var(--space-4) 0 0; font: 12.5px var(--font-mono); color: var(--muted); }
+.be-pagehead .act { display: flex; flex-wrap: wrap; gap: var(--space-8); align-items: center; }
