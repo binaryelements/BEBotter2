@@ -22,7 +22,8 @@ const config = loadConfig(process.env);
 const db = await connect(config.databaseUrl);
 const confirmations = new Confirmations();
 // operational limits: an idle chat's engine stops after 60 minutes, and at most 20 stay warm
-const warm = { idleMs: 60 * 60_000, max: 20 };
+// engines stay up until `max` evicts the least recently used (~310 MB each); restarts re-warm chats used in the last day
+const warm = { idleMs: Infinity, max: 20, recentMs: 24 * 60 * 60_000 };
 const live = new LiveSessions(query, warm);
 const runnerDeps: RunnerDeps = {
   db,
@@ -51,7 +52,7 @@ startServer(app, {
 });
 
 // chats used within the idle window would still be warm had the service not restarted
-void prewarmRecent(runnerDeps, { withinMs: warm.idleMs, max: warm.max });
+void prewarmRecent(runnerDeps, { withinMs: warm.recentMs, max: warm.max });
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };

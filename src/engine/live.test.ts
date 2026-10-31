@@ -69,6 +69,17 @@ describe("LiveSessions", () => {
     expect(e.started).toHaveLength(2);
   });
 
+  it("with no idle limit a process stays up, sent to or warmed", async () => {
+    vi.useFakeTimers();
+    const e = fakeEngine();
+    const live = new LiveSessions(e.fn, { idleMs: Infinity, max: 5 });
+    await live.send("k", "f", start("m"), "one", quiet);
+    live.warm("w", "f", start("m"));
+    vi.advanceTimersByTime(7 * 24 * 60 * 60_000);
+    expect(e.closed).toEqual([]);
+    expect(await said(live.send("k", "f", start("m"), "two", quiet))).toBe("two on 0");
+  });
+
   it("a running turn is not idle", async () => {
     vi.useFakeTimers();
     let release!: () => void;

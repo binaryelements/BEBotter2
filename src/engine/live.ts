@@ -63,7 +63,7 @@ export class LiveSessions {
     } finally {
       live.busy = false;
       // a turn waiting on a confirmation is busy, so only the time after it counts as idle
-      if (this.live.get(key) === live) live.timer = setTimeout(() => this.drop(key, live), this.opts.idleMs).unref();
+      if (this.live.get(key) === live) this.idle(key, live);
     }
   }
 
@@ -72,8 +72,13 @@ export class LiveSessions {
     if (this.live.has(key)) return;
     const s = this.open(fingerprint, start);
     this.live.set(key, s);
-    s.timer = setTimeout(() => this.drop(key, s), this.opts.idleMs).unref();
+    this.idle(key, s);
     this.evict();
+  }
+
+  // idleMs Infinity keeps a process until `max` evicts it (setTimeout would fire at once on Infinity)
+  private idle(key: string, s: Live): void {
+    if (Number.isFinite(this.opts.idleMs)) s.timer = setTimeout(() => this.drop(key, s), this.opts.idleMs).unref();
   }
 
   close(key: string): void {
