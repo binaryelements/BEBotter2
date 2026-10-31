@@ -14,22 +14,41 @@ async function setup(opts: { taken?: string[]; failKeyOnce?: boolean } = {}) {
   const db = await testDb();
   await upsertTenant(db, { id: "t1" });
   const calls: string[] = [];
-  const taken = new Set(opts.taken ?? []);
+  // the fake server: inboxes by local part, live keys and webhooks per agent
+  const inboxes = new Map((opts.taken ?? []).map((l) => [l, { id: `x-${l}`, address: `${l}@mail.test`, ownerAgent: "someone-else" as string | null }]));
+  const keys = new Map<string, string>(); // id -> agent
+  const hooks = new Map<string, string>();
   let failKey = opts.failKeyOnce ?? false;
   let n = 0;
   const admin = {
-    inboxTaken: async (l: string) => (calls.push(`taken ${l}`), taken.has(l)),
-    createInbox: async (l: string, d: string, a: string) => (calls.push(`create ${l} | ${d} | ${a}`), taken.add(l), { id: `inbox-${++n}`, address: `${l}@mail.test` }),
+    inboxTaken: async (l: string) => (calls.push(`taken ${l}`), inboxes.has(l)),
+    findInbox: async (l: string) => inboxes.get(l),
+    createInbox: async (l: string, d: string, a: string) => {
+      calls.push(`create ${l} | ${d} | ${a}`);
+      if (inboxes.has(l)) throw new MailError("exists", 409);
+      const made = { id: `inbox-${++n}`, address: `${l}@mail.test`, ownerAgent: a };
+      inboxes.set(l, made);
+      return made;
+    },
     setInboxActive: async (id: string, on: boolean) => void calls.push(`active ${id} ${on}`),
     setDisplayName: async (id: string, name: string) => void calls.push(`name ${id} ${name}`),
+    listKeys: async (a: string) => [...keys].filter(([, ag]) => ag === a).map(([id]) => id),
+    listWebhooks: async (a: string) => [...hooks].filter(([, ag]) => ag === a).map(([id]) => id),
     issueKey: async (a: string) => {
       calls.push(`key ${a}`);
       if (failKey) { failKey = false; throw new MailError("down"); }
-      return { id: `key-${++n}`, key: "am_secret" };
+      const id = `key-${++n}`;
+      keys.set(id, a);
+      return { id, key: "am_secret" };
     },
-    revokeKey: async (id: string) => void calls.push(`revoke ${id}`),
-    addWebhook: async (a: string, url: string, inbox: string) => (calls.push(`hook ${url} ${inbox}`), { id: `hook-${++n}`, secret: "amwh_secret" }),
-    removeWebhook: async (id: string) => void calls.push(`unhook ${id}`),
+    revokeKey: async (id: string) => (calls.push(`revoke ${id}`), void keys.delete(id)),
+    addWebhook: async (a: string, url: string, inbox: string) => {
+      calls.push(`hook ${url} ${inbox}`);
+      const id = `hook-${++n}`;
+      hooks.set(id, a);
+      return { id, secret: "amwh_secret" };
+    },
+    removeWebhook: async (id: string) => (calls.push(`unhook ${id}`), void hooks.delete(id)),
   };
   const deps: MailDeps = { db, secretsKey, admin, publicUrl: "https://bot.test" };
   const def = async (name: string, displayName: string | null = null) => {
@@ -37,7 +56,7 @@ async function setup(opts: { taken?: string[]; failKeyOnce?: boolean } = {}) {
     await db.insert(botDefinitions).values({ id, tenantId: "t1", name, displayName, label: `${name} label`, persona: "", model: "m", webSearch: false, computer: false, mcpServers: [] });
     return id;
   };
-  return { db, deps, calls, def, taken };
+  return { db, deps, calls, def, inboxes, keys, hooks };
 }
 
 // opt-in create: request, then read the row back
@@ -73,6 +92,7 @@ describe("mailboxes", () => {
 
   it("treats a 409 on create as taken and leaves no row", async () => {
     const { deps, def, db } = await setup();
+    deps.admin.inboxTaken = async () => false; // raced: free when checked, taken when created
     deps.admin.createInbox = async () => { throw new MailError("exists", 409); };
     await expect(requestMailbox(deps, await def("bot"), "ada")).rejects.toBeInstanceOf(MailboxError);
     expect(await db.select().from(mailboxes)).toHaveLength(0);
@@ -152,5 +172,74 @@ describe("mailboxes", () => {
     await ensureAllMailboxes(deps);
     expect(calls.filter((c) => c.startsWith("create"))).toHaveLength(0);
     expect(calls.filter((c) => c.startsWith("key"))).toHaveLength(1);
+  });
+
+  it("a failed remove cannot be revived by a save or restart, and a retry finishes it", async () => {
+    const { deps, calls, def, db } = await setup();
+    const id = await def("bot");
+    const m = await make(deps, id, "ada");
+    const real = deps.admin.removeWebhook;
+    deps.admin.removeWebhook = async () => { throw new MailError("down"); };
+    await expect(removeMailbox(deps, id)).rejects.toThrow(MailError);
+    expect((await db.select().from(mailboxes))[0]!.status).toBe("removing");
+    calls.length = 0;
+    expect(await ensureMailbox(deps, id)).toMatchObject({ status: "removing" });
+    await ensureAllMailboxes(deps);
+    expect(calls).toEqual([]);
+    deps.admin.removeWebhook = real;
+    await removeMailbox(deps, id);
+    expect((await db.select().from(mailboxes))[0]).toMatchObject({ status: "removed", keyId: null, webhookId: null, inboxId: m.inboxId });
+  });
+
+  it("adopts the inbox after a lost createInbox response", async () => {
+    const { deps, calls, def, inboxes } = await setup();
+    const id = await def("bot");
+    const real = deps.admin.createInbox;
+    let lose = true;
+    deps.admin.createInbox = async (...a) => { const r = await real(...a); if (lose) { lose = false; throw new MailError("lost"); } return r; };
+    expect(await requestMailbox(deps, id, "ada")).toBeUndefined(); // response lost, inbox exists
+    expect(await requestMailbox(deps, id, "ada")).toBe("ada@mail.test"); // 409, owned by this bot's agent: adopted
+    expect(calls.filter((c) => c.startsWith("create"))).toHaveLength(2);
+    expect([...inboxes.keys()]).toEqual(["ada"]);
+  });
+
+  it("does not adopt an inbox owned by another agent", async () => {
+    const { deps, def, db, inboxes } = await setup();
+    const id = await def("bot");
+    deps.admin.inboxTaken = async () => false;
+    inboxes.set("ada", { id: "x", address: "ada@mail.test", ownerAgent: "someone-else" });
+    await expect(requestMailbox(deps, id, "ada")).rejects.toMatchObject({ reason: "taken" });
+    expect(await db.select().from(mailboxes)).toHaveLength(0);
+  });
+
+  it("revokes a stray key and webhook from a lost response before issuing new ones", async () => {
+    const { deps, def, keys, hooks } = await setup({ failKeyOnce: true });
+    const id = await def("bot");
+    const agent = `bb2-${id.slice(0, 12)}`;
+    keys.set("stray-key", agent);
+    hooks.set("stray-hook", agent);
+    keys.set("other-bots-key", "bb2-other");
+    await requestMailbox(deps, id, "ada"); // key issue fails once
+    await requestMailbox(deps, id, "ada");
+    expect([...keys.keys()].sort()).toEqual([(await deps.db.select().from(mailboxes))[0]!.keyId, "other-bots-key"].sort());
+    expect([...hooks.keys()]).toEqual([(await deps.db.select().from(mailboxes))[0]!.webhookId]);
+  });
+
+  it("turns an insert race on the same address into taken", async () => {
+    const { deps, def } = await setup();
+    const a = await def("one");
+    const b = await def("two");
+    const results = await Promise.allSettled([requestMailbox(deps, a, "ada"), requestMailbox(deps, b, "ada")]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const lost = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(lost.reason).toMatchObject({ reason: "taken" });
+  });
+
+  it("tells a removed mailbox to be restored instead", async () => {
+    const { deps, def } = await setup();
+    const id = await def("bot");
+    await make(deps, id, "ada");
+    await removeMailbox(deps, id);
+    await expect(requestMailbox(deps, id, "ada")).rejects.toMatchObject({ reason: "removed" });
   });
 });

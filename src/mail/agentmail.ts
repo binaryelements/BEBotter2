@@ -54,10 +54,24 @@ export function agentMailAdmin(cfg: { url: string; adminKey: string }, fetchFn: 
     async removeWebhook(id: string): Promise<void> {
       await call("DELETE", `/webhooks/${seg(id)}`);
     },
-    async inboxTaken(localPart: string): Promise<boolean> {
+    /** The inbox with this local part, or undefined. Looked up in the inbox list, which also tells who owns it. */
+    async findInbox(localPart: string): Promise<{ id: string; address: string; ownerAgent: string | null } | undefined> {
       const r = await call("GET", "/inboxes");
       const want = localPart.toLowerCase();
-      return Array.isArray(r) && r.some((i) => String((i as { address?: unknown }).address ?? "").split("@")[0]?.toLowerCase() === want);
+      const hit = (Array.isArray(r) ? r : []).find((i: { address?: unknown }) => String(i.address ?? "").split("@")[0]?.toLowerCase() === want);
+      return hit && { id: field(hit, "id"), address: field(hit, "address"), ownerAgent: typeof hit.owner_agent === "string" ? hit.owner_agent : null };
+    },
+    async inboxTaken(localPart: string): Promise<boolean> {
+      return !!(await this.findInbox(localPart));
+    },
+    /** Ids of the agent's keys that are not revoked. */
+    async listKeys(agent: string): Promise<string[]> {
+      const r = await call("GET", `/agents/${seg(agent)}/keys`);
+      return (Array.isArray(r) ? r : []).filter((k: { revoked_at?: unknown }) => !k.revoked_at).map((k) => field(k, "id"));
+    },
+    async listWebhooks(agent: string): Promise<string[]> {
+      const r = await call("GET", `/agents/${seg(agent)}/webhooks`);
+      return (Array.isArray(r) ? r : []).map((w) => field(w, "id"));
     },
   };
 }

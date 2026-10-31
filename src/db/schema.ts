@@ -88,7 +88,7 @@ export const mailboxes = pgTable("mailboxes", {
   keyCipher: text("key_cipher"),
   webhookId: text("webhook_id"),
   webhookSecretCipher: text("webhook_secret_cipher"),
-  status: text("status").notNull(), // pending | active | removed
+  status: text("status").notNull(), // pending | active | removing | removed
   createdAt: createdAt(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

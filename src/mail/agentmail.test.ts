@@ -49,7 +49,7 @@ describe("agentMailAdmin", () => {
   });
 
   it("checks whether a local part is taken, ignoring case", async () => {
-    const { mail } = setup([{ body: [{ address: "Ada@mail.example" }] }, { body: [{ address: "ada@mail.example" }] }]);
+    const { mail } = setup([{ body: [{ id: "i1", address: "Ada@mail.example" }] }, { body: [{ id: "i1", address: "ada@mail.example" }] }]);
     expect(await mail.inboxTaken("ada")).toBe(true);
     expect(await mail.inboxTaken("grace")).toBe(false);
   });
@@ -70,5 +70,17 @@ describe("agentMailAdmin", () => {
     const bad = await mail.issueKey("bot-1", "x").catch((e) => e);
     expect(bad).toBeInstanceOf(MailError);
     expect(bad.message).not.toContain(ISSUED);
+  });
+
+  it("finds an inbox with its owner and lists live keys and webhooks", async () => {
+    const { calls, mail } = setup([
+      { body: [{ id: "i1", address: "Ada@mail.example", owner_agent: "bot-1" }] },
+      { body: [{ id: "k1", revoked_at: null }, { id: "k2", revoked_at: "2026-01-01T00:00:00Z" }] },
+      { body: [{ id: "w1" }] },
+    ]);
+    expect(await mail.findInbox("ada")).toEqual({ id: "i1", address: "Ada@mail.example", ownerAgent: "bot-1" });
+    expect(await mail.listKeys("bot-1")).toEqual(["k1"]);
+    expect(await mail.listWebhooks("bot-1")).toEqual(["w1"]);
+    expect(calls.map((c) => c.url)).toEqual(["https://mail.example/inboxes", "https://mail.example/agents/bot-1/keys", "https://mail.example/agents/bot-1/webhooks"]);
   });
 });
