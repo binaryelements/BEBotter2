@@ -50,6 +50,14 @@ const groups = [
 const appCss = createHash("sha1").update(readFileSync(`${assetsDir}admin.css`)).digest("hex").slice(0, 8);
 const href = (file: string) => `/admin/assets/${file}?v=${file === "admin.css" ? appCss : version}`;
 
+// 16px line icons in the text colour: a screen (follow the device), a sun, a moon
+const svg = (d: string) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const themeIcons: Record<string, string> = {
+  device: svg('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),
+  light: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  dark: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
+};
+
 export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csrf?: string }): string {
   const { actor } = opts;
   const ctx = shell.getStore();
@@ -65,16 +73,17 @@ export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csr
       })}</div>`,
     );
   const pick = (v: string, label: string) =>
-    html`<button class="be-btn sm" name="set" value="${v}" aria-pressed="${String((theme ?? "device") === v)}">${label}</button>`;
+    html`<button class="be-btn sm icon" name="set" value="${v}" aria-label="${label}" title="${label}" aria-pressed="${String((theme ?? "device") === v)}">${raw(themeIcons[v])}</button>`;
   return html`<!doctype html>
 <html lang="en"${theme ? raw(` data-theme="${theme}"`) : ""}>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${opts.title}</title><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"><link rel="stylesheet" href="${href("be/tokens.css")}"><link rel="stylesheet" href="${href("be/components.css")}"><link rel="stylesheet" href="${href("admin.css")}"></head>
 <body class="be">
-<header class="be-top"><div class="be-brand"><img class="be-mark-dark" src="${href("be/be-mark-cyan.png")}" alt=""><img class="be-mark-light" src="${href("be/be-mark-red.png")}" alt="">TEAM BOTTER<span class="by">by Binary Elements</span></div><div class="who">${
-    ctx?.company ? html`<span>${ctx.company}</span>` : ""
+<input type="checkbox" id="nav-open" class="nav-open" aria-label="menu">
+<header class="be-top">${menu.length ? raw('<label for="nav-open" class="be-btn sm icon burger" title="menu"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></label>') : ""}<div class="be-brand"><img class="be-mark-dark" src="${href("be/be-mark-cyan.png")}" alt=""><img class="be-mark-light" src="${href("be/be-mark-red.png")}" alt="">TEAM BOTTER<span class="by">by Binary Elements</span></div><div class="who">${
+    ctx?.company ? html`<span class="co">${ctx.company}</span>` : ""
   }${
-    actor ? html`<span><b>${actor.name}</b> · ${isAdmin(actor) ? "admin" : "head"}</span>` : ""
-  }<form method="get" action="/admin/theme" aria-label="theme"><input type="hidden" name="next" value="${ctx?.url ?? ctx?.path ?? "/admin"}">${pick("device", "device")}${pick("light", "light")}${pick("dark", "dark")}</form>${
+    actor ? html`<span class="me"><b>${actor.name}</b> · ${isAdmin(actor) ? "admin" : "head"}</span>` : ""
+  }<form method="get" action="/admin/theme" aria-label="theme"><input type="hidden" name="next" value="${ctx?.url ?? ctx?.path ?? "/admin"}">${pick("device", "follow device")}${pick("light", "light")}${pick("dark", "dark")}</form>${
     actor && opts.csrf
       ? html`<form method="post" action="/admin/auth/logout"><input type="hidden" name="csrf" value="${opts.csrf}"><button class="be-btn sm">sign out</button></form>`
       : ""

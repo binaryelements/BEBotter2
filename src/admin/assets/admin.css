@@ -8,10 +8,23 @@ body.be { margin: 0; min-height: 100vh; }
 .be-body { display: flex; align-items: stretch; }
 .be-body > .be-nav { flex: none; min-height: calc(100vh - 56px); }
 .be-body > main { flex: 1; min-width: 0; max-width: 1040px; padding: var(--space-18) var(--space-28); }
+/* Phones: the menu folds behind the burger (a checkbox, so no script). */
+.burger { display: none; cursor: pointer; }
+/* the checkbox stays focusable for keyboards, out of sight; its focus shows on the burger */
+.nav-open { display: none; position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.nav-open:focus-visible + .be-top .burger { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.nav-open:checked + .be-top .burger { border-color: var(--sel-edge); background: var(--sel-bg); color: var(--cyan); }
 @media (max-width: 720px) {
   .be-body { flex-direction: column; }
-  .be-body > .be-nav { width: auto; min-height: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .be-body > .be-nav { display: none; width: auto; min-height: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .nav-open:checked ~ .be-body > .be-nav { display: block; }
+  .burger, .nav-open { display: inline-flex; }
   .be-body > main { padding: var(--space-12) var(--space-16); }
+  /* one brand row (burger + name), then the person and their controls; the company and tagline go */
+  .be-top { gap: var(--space-8) var(--space-10); }
+  .be-top .by, .be-top .co { display: none; }
+  .be-top .who { flex-basis: 100%; margin-left: 0; }
+  .be-top .who .me { flex: 1; }
 }
 
 /* Un-migrated markup inside main already looks like the design system. */
@@ -37,3 +50,6 @@ main .error { border: 1px solid var(--bad-edge); border-left: 3px solid var(--ba
 main form.inline-edit { display: flex; gap: var(--space-6); align-items: center; margin: 0; }
 /* The mark follows the device too when no theme is chosen. */
 @media (prefers-color-scheme: light) { :root:not([data-theme]) .be-mark-dark { display: none; } :root:not([data-theme]) .be-mark-light { display: inline-block; } }
+/* Theme picker: icon-only buttons, square. */
+.be-btn.icon { padding: 4px 6px; line-height: 0; }
+.be-btn.icon svg { display: block; }

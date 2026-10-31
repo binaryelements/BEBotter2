@@ -48,6 +48,8 @@ describe("html", () => {
     expect(themed).toContain('<html lang="en" data-theme="light">');
     expect(themed).toContain('class="active" aria-current="page">Bots</a>');
     expect(themed).toContain("Acme &lt;b&gt;");
+    expect(themed).toMatch(/aria-label="light" title="light" aria-pressed="true"><svg/);
+    expect(themed).toMatch(/aria-label="follow device" title="follow device" aria-pressed="false"><svg/);
   });
 
   it("layout escapes the title and the name", () => {
