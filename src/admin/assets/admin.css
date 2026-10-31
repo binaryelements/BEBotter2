@@ -35,3 +35,5 @@ main .error { border: 1px solid var(--bad-edge); border-left: 3px solid var(--ba
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); margin: var(--space-12) 0; }
 .row form { display: contents; }
 main form.inline-edit { display: flex; gap: var(--space-6); align-items: center; margin: 0; }
+/* The mark follows the device too when no theme is chosen. */
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .be-mark-dark { display: none; } :root:not([data-theme]) .be-mark-light { display: inline-block; } }

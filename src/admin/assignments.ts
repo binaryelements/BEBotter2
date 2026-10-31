@@ -36,7 +36,7 @@ export function assignmentRoutes(db: Db): Router {
         const url = `/admin/assignments/${encodeURIComponent(c.id)}`;
         return html`<tr><td><form class="inline-edit" method="post" action="${url}/label">${csrfField}<input class="be-input" name="label" value="${c.label ?? ""}" placeholder="${c.id.slice(-12)}" maxlength="80" aria-label="Label"> <button class="be-btn sm">save</button></form></td>
 <td>${c.type}</td><td>${c.lastSeenAt?.toISOString() ?? ""}</td>
-<td><form class="inline-edit" method="post" action="${url}">${csrfField}<select class="be-select" name="definitionId" aria-label="Bot"><option value="">None</option>${defs.map((d) => html`<option value="${d.id}" ${d.id === c.definitionId ? "selected" : ""}>${d.label}</option>`)}</select> <button class="be-btn sm">save</button></form></td></tr>`;
+<td><form class="inline-edit" method="post" action="${url}">${csrfField}<select class="be-select" name="definitionId" aria-label="Bot"><option value="">none</option>${defs.map((d) => html`<option value="${d.id}" ${d.id === c.definitionId ? "selected" : ""}>${d.label}</option>`)}</select> <button class="be-btn sm">save</button></form></td></tr>`;
       });
       res.type("html").send(layout({ title: "Assignments", body: html`${pageHead("Assignments")}${
         rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Chat</th><th>Type</th><th>Last seen</th><th>Bot</th></tr></thead><tbody>${body}</tbody></table>`) : html`<div class="be-empty">No chats yet.</div>`

@@ -8,7 +8,7 @@ import { auditEvents, chatAssignments, departmentMembers, mailboxes } from "../d
 import type { BotDefinition } from "../db/schema.js";
 import type { Actor } from "./access.js";
 import { isAdmin } from "./access.js";
-import { html, layout } from "./html.js";
+import { chip, html, layout, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { getTenantSettings } from "../org/org.js";
@@ -38,9 +38,9 @@ export async function botsTable(db: Db, tenantId: string, defs: BotDefinition[])
   ]);
   const address = new Map(boxes.map((b) => [b.id, b.address]));
   const active = new Map(last.map((l) => [l.id, l.at]));
-  return html`<table class="be-table"><thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Model</th><th>Last active</th></tr></thead><tbody>${defs.map(
+  return scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Model</th><th>Last active</th></tr></thead><tbody>${defs.map(
     (d) => html`<tr><td class="nm"><a href="/admin/bots/${d.id}">${d.displayName ?? d.name}</a></td><td>${d.label}</td><td>${address.get(d.id) ?? ""}</td><td>${d.model}</td><td>${stamp(active.get(d.id))}</td></tr>`,
-  )}</tbody></table>`;
+  )}</tbody></table>`);
 }
 
 /** Midnight (start of the local day, or of the local month) in the time zone, as an instant. */
@@ -89,7 +89,8 @@ export function overviewRoutes(db: Db): Router {
             listActions(db, { ...scope, limit: 10_000 }).then((rows) => rows.filter((r) => r.startedAt >= month)),
             db.select({ id: chatAssignments.chatId }).from(chatAssignments).where(inArray(chatAssignments.definitionId, definitionIds)),
           ]);
-      const waiting = pending.filter((r) => r.kind === "tool");
+      // the confirmation window is 10 minutes: an older pending row can no longer be approved
+      const waiting = pending.filter((r) => r.kind === "tool" && r.startedAt.getTime() > now.getTime() - 10 * 60_000);
       const today = monthRows.filter((r) => r.startedAt >= day);
       const replies = today.flatMap((r) => (r.kind === "message" && r.timings?.sentAt ? [(Date.parse(r.timings.sentAt) - Date.parse(r.timings.receivedAt)) / 1000] : []));
       const typical = median(replies);
@@ -102,7 +103,7 @@ ${waiting.map((r) => html`<div class="be-notice warn"><span><b>${name.get(r.defi
 <section class="be-section"><h3>Bots</h3>${await botsTable(db, actor.tenantId, defs)}</section>
 <section class="be-section"><h3>Recent activity <a href="/admin/activity">all activity</a></h3>${
         recent.length
-          ? html`<table class="be-table"><thead><tr><th>Time</th><th>Bot</th><th>Summary</th><th>Status</th></tr></thead><tbody>${recent.map((r) => html`<tr><td>${stamp(r.startedAt)}</td><td>${name.get(r.definitionId) ?? ""}</td><td>${r.summary}</td><td>${r.status}</td></tr>`)}</tbody></table>`
+          ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Bot</th><th>Summary</th><th>Status</th></tr></thead><tbody>${recent.map((r) => html`<tr><td>${stamp(r.startedAt)}</td><td>${name.get(r.definitionId) ?? ""}</td><td>${r.summary}</td><td>${chip(r.status)}</td></tr>`)}</tbody></table>`)
           : html`<div class="be-empty">Nothing yet.</div>`
       }</section>`;
       res.type("html").send(layout({ title: "Overview", body, actor, csrf }));

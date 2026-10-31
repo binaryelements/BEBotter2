@@ -118,9 +118,9 @@ export function activityRoutes(db: Db): Router {
         layout({
           title: "Activity",
           body: html`${pageHead("Activity", html`<a class="be-btn" href="/admin/activity.csv${csv ? `?${csv}` : ""}">export csv</a>`)}
-<form class="row" method="get" action="/admin/activity"><input class="be-input" name="bot" value="${q(req, "bot") ?? ""}" placeholder="bot id" aria-label="Bot"> <input class="be-input" name="person" value="${q(req, "person") ?? ""}" placeholder="person id" aria-label="Person"> <input class="be-input" name="chat" value="${q(req, "chat") ?? ""}" placeholder="chat id" aria-label="Chat"> <select class="be-select" name="status" aria-label="Status"><option value="">Any</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
+<form class="row" method="get" action="/admin/activity"><input class="be-input" name="bot" value="${q(req, "bot") ?? ""}" placeholder="bot id" aria-label="Bot"> <input class="be-input" name="person" value="${q(req, "person") ?? ""}" placeholder="person id" aria-label="Person"> <input class="be-input" name="chat" value="${q(req, "chat") ?? ""}" placeholder="chat id" aria-label="Chat"> <select class="be-select" name="status" aria-label="Status"><option value="">any</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
 ${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
-${older ? html`<p><a href="/admin/activity?${older}">Older</a></p>` : ""}`,
+${older ? html`<p><a href="/admin/activity?${older}">older</a></p>` : ""}`,
           actor,
           csrf,
         }),

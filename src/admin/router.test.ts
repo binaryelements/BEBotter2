@@ -69,6 +69,18 @@ describe("admin router", () => {
     expect((await get("/admin/assets/nope.css")).status).not.toBe(200);
   });
 
+  it("admin.css is versioned by its content, the design system files by their sync version", async () => {
+    const page = await (await get("/admin/people", as(admin))).text();
+    expect(page).toMatch(/admin\.css\?v=[0-9a-f]{8}"/);
+    expect(page).toMatch(/be\/tokens\.css\?v=\w{7}"/);
+  });
+
+  it("the theme link keeps the page's query string on the way back, and only within /admin", async () => {
+    const ok = await get("/admin/theme?set=dark&next=" + encodeURIComponent("/admin/bots/x?tab=actions"));
+    expect(ok.headers.get("location")).toBe("/admin/bots/x?tab=actions");
+    expect((await get("/admin/theme?set=dark&next=" + encodeURIComponent("//evil.example/admin"))).headers.get("location")).toBe("/admin");
+  });
+
   it("the theme link sets a Lax cookie on /admin and returns to the page; bad input is ignored", async () => {
     const res = await get("/admin/theme?set=light&next=/admin/people");
     expect(res.status).toBe(303);

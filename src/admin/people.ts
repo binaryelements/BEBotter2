@@ -53,7 +53,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
       render(
         res,
         "People",
-        html`${pageHead("People", admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button class="be-btn primary">sync from microsoft 365</button></form>` : undefined)}${
+        html`${pageHead("People", admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button class="be-btn primary">sync from Microsoft 365</button></form>` : undefined)}${
           synced ? html`<div class="be-notice"><span>Added ${synced[1]}, updated ${synced[2]}.</span></div>` : ""
         }${
           rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Personal bot</th><th>Departments</th></tr></thead><tbody>${rows.map((p) => {

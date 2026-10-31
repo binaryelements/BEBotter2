@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
@@ -26,7 +27,7 @@ export function html(strings: TemplateStringsArray, ...values: Value[]): SafeHtm
 export const raw = (s: string) => new SafeHtml(s);
 
 /** Per-request facts the shell needs but pages do not pass: set by the router. */
-export type Shell = { theme?: string; path: string; company?: string };
+export type Shell = { theme?: string; path: string; url?: string; company?: string };
 export const shell = new AsyncLocalStorage<Shell>();
 
 export const assetsDir = fileURLToPath(new URL("./assets/", import.meta.url));
@@ -45,7 +46,9 @@ const groups = [
   { name: "Audit", items: [{ label: "Activity", path: "activity", head: true }, { label: "Settings", path: "settings", head: false }] },
 ];
 
-const href = (file: string) => `/admin/assets/${file}?v=${version}`;
+// The design system files change only on a re-sync (VERSION); the app's own stylesheet is versioned by its content.
+const appCss = createHash("sha1").update(readFileSync(`${assetsDir}admin.css`)).digest("hex").slice(0, 8);
+const href = (file: string) => `/admin/assets/${file}?v=${file === "admin.css" ? appCss : version}`;
 
 export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csrf?: string }): string {
   const { actor } = opts;
@@ -71,7 +74,7 @@ export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csr
     ctx?.company ? html`<span>${ctx.company}</span>` : ""
   }${
     actor ? html`<span><b>${actor.name}</b> · ${isAdmin(actor) ? "admin" : "head"}</span>` : ""
-  }<form method="get" action="/admin/theme" aria-label="theme"><input type="hidden" name="next" value="${ctx?.path ?? "/admin"}">${pick("device", "device")}${pick("light", "light")}${pick("dark", "dark")}</form>${
+  }<form method="get" action="/admin/theme" aria-label="theme"><input type="hidden" name="next" value="${ctx?.url ?? ctx?.path ?? "/admin"}">${pick("device", "device")}${pick("light", "light")}${pick("dark", "dark")}</form>${
     actor && opts.csrf
       ? html`<form method="post" action="/admin/auth/logout"><input type="hidden" name="csrf" value="${opts.csrf}"><button class="be-btn sm">sign out</button></form>`
       : ""

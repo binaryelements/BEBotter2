@@ -39,6 +39,7 @@ describe("overview", () => {
       row(1, a, { toolName: "send_email", summary: "Send the quarterly mail", status: "pending" }),
       row(2, a, { kind: "message", summary: "m", costUsd: "1.250000", timings: { receivedAt: at(0), sentAt: at(2), tools: 0 } }),
       row(3, a, { kind: "message", summary: "m", costUsd: "0.500000", timings: { receivedAt: at(0), sentAt: at(6), tools: 0 } }),
+      row(5, a, { toolName: "old_tool", summary: "Orphaned long ago", status: "pending", startedAt: new Date(now.getTime() - 30 * 60_000) }),
       row(4, b, { toolName: "secret_tool", summary: "Beta private job", status: "pending" }),
     ]);
     const app = express();
@@ -58,6 +59,7 @@ describe("overview", () => {
     expect(page).toContain('median reply time</div><div class="v">4.0 s</div>');
     expect(page).toContain('spend this month</div><div class="v">$1.75</div>');
     expect(page).toContain("is waiting for approval: Send the quarterly mail");
+    expect(page).not.toContain("is waiting for approval: Orphaned long ago"); // pending for over 10 minutes: no longer approvable, not counted
     expect(page).not.toContain("<button class=\"be-btn primary\">approve");
     expect(page).toContain("Secret ops");
     expect(page).toContain('aria-current="page">Overview</a>');

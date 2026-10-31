@@ -27,10 +27,10 @@ export function settingsRoutes(db: Db): Router {
           title: "Settings",
           body: html`${pageHead("Settings")}
 <form method="post" action="/admin/settings"><input type="hidden" name="csrf" value="${csrf}">
-<p><label class="be-label">Bot name <input class="be-input" name="botName" value="${s.botName ?? ""}" maxlength="40"></label></p>
-<p><label class="be-label">Keep activity (days) <input class="be-input" name="retentionDays" type="number" min="1" max="3650" value="${s.retentionDays}" required></label></p>
-<p><label class="be-label">Default model <input class="be-input" name="defaultModel" value="${s.defaultModel ?? ""}"></label></p>
-<p><label class="be-label">Time zone <input class="be-input" name="timezone" value="${s.timezone}" required placeholder="Australia/Sydney"></label></p>
+<p><label class="be-label">bot name <input class="be-input" name="botName" value="${s.botName ?? ""}" maxlength="40"></label></p>
+<p><label class="be-label">keep activity (days) <input class="be-input" name="retentionDays" type="number" min="1" max="3650" value="${s.retentionDays}" required></label></p>
+<p><label class="be-label">default model <input class="be-input" name="defaultModel" value="${s.defaultModel ?? ""}"></label></p>
+<p><label class="be-label">time zone <input class="be-input" name="timezone" value="${s.timezone}" required placeholder="Australia/Sydney"></label></p>
 <button class="be-btn primary">save</button></form>`,
           actor,
           csrf,

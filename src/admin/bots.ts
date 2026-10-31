@@ -20,11 +20,11 @@ import { DirectoryError, listDepartments } from "../org/directory.js";
 import { getTenantSettings } from "../org/org.js";
 import { createRoutine, deleteRoutine, listRoutines, updateRoutine } from "../routines/store.js";
 import { isAdmin, mayEditPersona } from "./access.js";
-import { html, layout, raw } from "./html.js";
+import { html, layout, raw, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
-import { armedPage } from "./arm.js";
+import { armedPage, isArmed } from "./arm.js";
 import { botsTable, visibleBots } from "./overview.js";
 
 const field = (req: Request, name: string) => {
@@ -97,10 +97,10 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
         html`<header class="be-pagehead"><div class="pt"><h1>Bots</h1></div></header>
 ${await botsTable(db, actor.tenantId, defs)}${
           admin
-            ? html`<details class="be-section"><summary class="be-btn">add bot…</summary><h2>New bot</h2><form method="post" action="/admin/bots">${csrfField(res)}
-<p><label>Name <input name="displayName" maxlength="60"></label> <label>Handle <input name="name" required></label> <label>Label <input name="label" required></label> <label>Model <input name="model" value="${settings.defaultModel ?? defaultModel}"></label></p>
-${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" autocomplete="off"></label> @${domain}</p>` : ""}
-<p><label>Persona<textarea name="persona"></textarea></label></p><button class="be-btn primary">Create</button></form></details>`
+            ? html`<details class="be-section"><summary class="be-btn">add bot…</summary><form method="post" action="/admin/bots">${csrfField(res)}
+<p><label>name <input name="displayName" maxlength="60"></label> <label>handle <input name="name" required></label> <label>label <input name="label" required></label> <label>model <input name="model" value="${settings.defaultModel ?? defaultModel}"></label></p>
+${domain ? html`<p><label>email address <input name="localPart" maxlength="36" autocomplete="off"></label> @${domain}</p>` : ""}
+<p><label>persona<textarea name="persona"></textarea></label></p><button class="be-btn primary">create</button></form></details>`
             : ""
         }`,
       );
@@ -139,10 +139,10 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
     if (!mail) return html`<div class="be-empty">Email is not set up.</div>`;
     const csrf = csrfField(res, "email");
     const box = await mailboxOf(id);
-    const act = (path: string, label: string, extra: SafeHtml = html``) => html`<form method="post" action="/admin/bots/${id}/${path}">${csrf}${extra}<button class="be-btn">${label}</button></form>`;
+    const act = (path: string, label: string, extra: SafeHtml = html``) => html`<form method="post" action="/admin/bots/${id}/${path}">${csrf}${extra}<button class="be-btn${path.endsWith("/remove") ? " danger" : ""}">${label}</button></form>`;
     if (!box) {
       const domain = await mailDomain();
-      return html`<h2>Email</h2><form method="post" action="/admin/bots/${id}/mailbox">${csrf}<p><label>Email address <input name="localPart" maxlength="36" autocomplete="off" required></label>${domain ? html` @${domain}` : ""}</p><button class="be-btn primary">Create email address</button></form>`;
+      return html`<h2>Email</h2><form method="post" action="/admin/bots/${id}/mailbox">${csrf}<p><label>email address <input name="localPart" maxlength="36" autocomplete="off" required></label>${domain ? html` @${domain}` : ""}</p><button class="be-btn primary">create email address</button></form>`;
     }
     const label = box.status === "active" ? "Active" : box.status === "pending" ? "Being created" : box.status === "removing" ? "Being removed" : "Removed";
     let sendAs: SafeHtml = html``;
@@ -153,13 +153,13 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
       } catch {
         state = "unknown";
       }
-      sendAs = html`<h3>Company address</h3>${state ? html`<p>${state}</p>` : ""}
-<form method="post" action="/admin/bots/${id}/send-as">${csrf}<p><label>Company address <input type="email" name="address" placeholder="name@example.com" required></label></p><button class="be-btn">Save</button></form>${act("send-as/remove", "Clear")}
+      sendAs = html`<h3>company address</h3>${state ? html`<p>${state}</p>` : ""}
+<form method="post" action="/admin/bots/${id}/send-as">${csrf}<p><label>company address <input type="email" name="address" placeholder="name@example.com" required></label></p><button class="be-btn">save</button></form>${act("send-as/remove", "clear")}
 <p>In Microsoft 365, forward the company address to ${box.address ?? ""} with a plain forward, and allow automatic forwarding in the outbound anti-spam policy.</p>`;
     }
     return html`<h2>Email</h2><dl class="be-kv"><div><dt>address</dt><dd>${box.address ?? box.localPart ?? ""}</dd></div><div><dt>status</dt><dd>${label}</dd></div></dl>${
-      box.status === "active" ? act("mailbox/remove", "Remove email address") : box.status === "removed" ? act("mailbox/restore", "Restore email address")
-        : box.status === "pending" ? act("mailbox/retry", "Try again") : box.status === "removing" ? act("mailbox/remove", "Finish removing") : ""
+      box.status === "active" ? act("mailbox/remove", "remove email address") : box.status === "removed" ? act("mailbox/restore", "restore email address")
+        : box.status === "pending" ? act("mailbox/retry", "try again") : box.status === "removing" ? act("mailbox/remove", "finish removing") : ""
     }${sendAs}`;
   };
 
@@ -188,8 +188,8 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
           )}</div>`
     }</td></tr>`;
     return html`<h2>Actions</h2><form method="post" action="/admin/bots/${def.id}/actions">${csrfField(res, "actions")}${[...groups.keys()].sort().map(
-      (g) => html`<h3>${g}</h3><table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`,
-    )}<p><button class="be-btn primary">Save</button></p></form>`;
+      (g) => html`<h3>${g}</h3>${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}`,
+    )}<p><button class="be-btn primary">save</button></p></form>`;
   };
 
   router.get(
@@ -201,13 +201,13 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
       const admin = isAdmin(actor);
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
-      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} chats</p></div></header>${
+      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${TABS.map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t}</a>`)}</nav>` : ""
       }`;
-      const personaBox = html`<p><label>Persona<textarea name="persona">${def.persona}</textarea></label></p>`;
+      const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
       let body: SafeHtml;
       if (!admin) {
-        body = html`${head()}<form method="post" action="/admin/bots/${def.id}">${csrfField(res)}${personaBox}<button class="be-btn primary">Save</button></form>`;
+        body = html`${head()}<form method="post" action="/admin/bots/${def.id}">${csrfField(res)}${personaBox}<button class="be-btn primary">save</button></form>`;
       } else {
         const asked = typeof req.query.tab === "string" ? req.query.tab : "";
         const tab = TABS.find((t) => t === asked) ?? "overview";
@@ -226,11 +226,11 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
         const hide = (name: string, value: string) => html`<input type="hidden" name="${name}" value="${value}">`;
         const settings = (on: "overview" | "persona") => html`<form method="post" action="/admin/bots/${def.id}">${csrf}${
           on === "overview"
-            ? html`<p><label>Name <input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label> <label>Label <input name="label" value="${def.label}" required></label> <label>Model <input name="model" value="${def.model}" required></label></p>
-<p><label><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> Web search</label> <label><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> Computer</label></p>
-<fieldset><legend>Departments</legend>${depts.map((d) => html`<label><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</fieldset>${hide("persona", def.persona)}`
+            ? html`<p><label>name <input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label> <label>label <input name="label" value="${def.label}" required></label> <label>model <input name="model" value="${def.model}" required></label></p>
+<p><label><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search</label> <label><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> computer</label></p>
+<fieldset><legend>departments</legend>${depts.map((d) => html`<label><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</fieldset>${hide("persona", def.persona)}`
             : html`${personaBox}${hide("displayName", def.displayName ?? "")}${hide("label", def.label)}${hide("model", def.model)}${def.webSearch ? hide("webSearch", "on") : ""}${def.computer ? hide("computer", "on") : ""}${allowed.map((d) => hide("departments", d))}`
-        }<p><button class="be-btn primary">Save</button></p></form>`;
+        }<p><button class="be-btn primary">save</button></p></form>`;
         let section: SafeHtml;
         if (tab === "overview") {
           section = html`<dl class="be-kv"><div><dt>model</dt><dd>${def.model}</dd></div><div><dt>web search</dt><dd>${yesNo(def.webSearch)}</dd></div><div><dt>computer</dt><dd>${yesNo(def.computer)}</dd></div><div><dt>departments</dt><dd>${depts.filter((d) => allowed.includes(d.id)).map((d) => d.name).join(", ") || "none"}</dd></div></dl>${settings("overview")}`;
@@ -242,28 +242,28 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
           section = await actionsSectionFor(res, def, linked);
         } else if (tab === "connections") {
           const connRows = conns.map((c) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}</td><td>${c.secretCipher ? "set" : "none"}</td>
-<td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${linkedIds.has(c.id) ? "off" : "on"}"><button class="be-btn sm">${linkedIds.has(c.id) ? "Unlink" : "Link"}</button></form></td>
-<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger">Revoke</button></form>`}${
-            c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">Reset host key</button></form>` : ""}</td></tr>`);
+<td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${linkedIds.has(c.id) ? "off" : "on"}"><button class="be-btn sm">${linkedIds.has(c.id) ? "unlink" : "link"}</button></form></td>
+<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger">revoke</button></form>`}${
+            c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td></tr>`);
           section = html`<h2>MCP servers</h2>
-<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th></tr></thead><tbody>${def.mcpServers.map(
-            (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ")}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm">Remove</button></form></td></tr>`,
-          )}</tbody></table>
+${scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th></tr></thead><tbody>${def.mcpServers.map(
+            (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ")}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm danger">remove</button></form></td></tr>`,
+          )}</tbody></table>`)}
 <form method="post" action="/admin/bots/${def.id}/servers">${csrf}
-<p><label>Name <input name="name" required></label> <label>Transport <select name="transport"><option>http</option><option>stdio</option></select></label> <label>URL <input name="url"></label> <label>Command <input name="command"></label> <label>Args <input name="args"></label></p>
-<p><label>Header name <input name="headerName"></label> <label>Header value <input type="password" name="headerValue" autocomplete="off"></label> <label>Read-only tools <input name="readOnlyTools"></label></p>
-<button class="be-btn">Add server</button></form>
+<p><label>name <input name="name" required></label> <label>transport <select name="transport"><option>http</option><option>stdio</option></select></label> <label>url <input name="url"></label> <label>command <input name="command"></label> <label>args <input name="args"></label></p>
+<p><label>header name <input name="headerName"></label> <label>header value <input type="password" name="headerValue" autocomplete="off"></label> <label>read-only tools <input name="readOnlyTools"></label></p>
+<button class="be-btn">add server</button></form>
 <h2>Connections</h2>
-<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Secret</th><th>This bot</th><th></th></tr></thead><tbody>${connRows}</tbody></table>`;
+${scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Secret</th><th>This bot</th><th></th></tr></thead><tbody>${connRows}</tbody></table>`)}`;
         } else if (tab === "routines") {
           const routineRows = rts.map((r) => html`<tr><td>${r.prompt.slice(0, 80)}</td><td>${r.schedule ?? r.runAt?.toISOString() ?? ""}</td><td>${chatLabel.get(r.chatId) ?? r.chatId.slice(-12)}</td><td>${yesNo(r.quiet)}</td><td>${yesNo(r.enabled)}</td><td>${r.grantPersonId ? (personName.get(r.grantPersonId) ?? "—") : "—"}</td>
-<td><form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="be-btn sm">${r.enabled ? "Disable" : "Enable"}</button></form>
-<form method="post" action="/admin/bots/${def.id}/routines/${r.id}/delete">${csrf}<button class="be-btn sm">Delete</button></form></td></tr>`);
+<td><form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="be-btn sm">${r.enabled ? "disable" : "enable"}</button></form>
+<form method="post" action="/admin/bots/${def.id}/routines/${r.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form></td></tr>`);
           section = html`<h2>Routines</h2>
-<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th>Chat</th><th>Quiet</th><th>Enabled</th><th>Grant</th><th></th></tr></thead><tbody>${routineRows}</tbody></table>
+${scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th>Chat</th><th>Quiet</th><th>Enabled</th><th>Grant</th><th></th></tr></thead><tbody>${routineRows}</tbody></table>`)}
 <form method="post" action="/admin/bots/${def.id}/routines">${csrf}
-<p><label>Chat <select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>Schedule <input name="schedule" placeholder="0 9 * * 1-5" required></label> <label><input type="checkbox" name="quiet"> Quiet</label> <label><input type="checkbox" name="grant"> Grant my access</label></p>
-<p><label>Prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn">Add routine</button></form>`;
+<p><label>chat <select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>schedule <input name="schedule" placeholder="0 9 * * 1-5" required></label> <label><input type="checkbox" name="quiet"> quiet</label> <label><input type="checkbox" name="grant"> grant my access</label></p>
+<p><label>prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn">add routine</button></form>`;
         } else {
           section = assigned.length ? html`<ul>${assigned.map((c) => html`<li>${chatLabel.get(c.id)}</li>`)}</ul>` : html`<div class="be-empty">No chats yet.</div>`;
         }
@@ -302,7 +302,7 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
         if (!isAdmin(actor)) return deny(res);
         if (!mail) throw new DirectoryError("Email is not set up");
         await ownBot(actor.tenantId, req.params.id);
-        if (path === "mailbox/remove" && field(req, "confirm") !== "yes") return armed(res, req, "Remove email address?", "confirm remove?", back(req, req.params.id));
+        if ((path === "mailbox/remove" || path === "send-as/remove") && !isArmed(req)) return armed(res, req, path === "send-as/remove" ? "Clear company address?" : "Remove email address?", path === "send-as/remove" ? "confirm clear?" : "confirm remove?", back(req, req.params.id));
         try {
           await run(req, req.params.id, actor.tenantId);
         } catch (e) {
@@ -386,6 +386,7 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
+      if (!isArmed(req)) return armed(res, req, "Remove server?", "confirm remove?", back(req, req.params.id));
       await removeMcpServer(db, actor.tenantId, req.params.id, req.params.name);
       res.redirect(303, back(req, req.params.id));
     }),
@@ -406,7 +407,7 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      if (field(req, "confirm") !== "yes") return armed(res, req, "Revoke connection?", "confirm revoke?", "/admin/bots");
+      if (!isArmed(req)) return armed(res, req, "Revoke connection?", "confirm revoke?", "/admin/bots");
       const c = await revokeConnection(db, actor.tenantId, req.params.connectionId);
       render(res, "Revoked", html`<h1>Revoked ${c.name}</h1>${
         c.kind === "ssh" && c.publicKey
@@ -461,6 +462,7 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       await ownRoutine(actor.tenantId, req.params.id, req.params.rid);
+      if (!isArmed(req)) return armed(res, req, "Delete routine?", "confirm delete?", back(req, req.params.id));
       await deleteRoutine(db, actor.tenantId, req.params.rid);
       res.redirect(303, back(req, req.params.id));
     }),

@@ -6,7 +6,7 @@ import { getDefinition, listDefinitions, setAllowedDepartments, upsertDefinition
 import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
+import { botDefinitions, connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
 import { listRoutines } from "../routines/store.js";
 import { eq } from "drizzle-orm";
@@ -129,7 +129,7 @@ describe("bots screen", () => {
 
   it("an admin removes a server", async () => {
     const d = await def("helper");
-    expect((await post(`/admin/bots/${d.id}/servers/tickets/delete`, "Ann", [])).status).toBe(303);
+    expect((await post(`/admin/bots/${d.id}/servers/tickets/delete`, "Ann", [["confirm", "yes"]])).status).toBe(303);
     expect((await getDefinition(db, T, d.id))!.mcpServers).toEqual([]);
     await setAllowedDepartments(db, T, d.id, []);
   });
@@ -153,6 +153,9 @@ describe("bots screen", () => {
     });
     it("revoke shows the public key and the connection can no longer run", async () => {
       const c = await conn("rev");
+      const armed = await post(`/admin/connections/${c}/revoke`, "Ann", []);
+      expect(await armed.text()).toContain("confirm revoke?");
+      expect((await db.select().from(connections).where(eq(connections.id, c)))[0].status).toBe("active"); // the first press changes nothing
       const res = await post(`/admin/connections/${c}/revoke`, "Ann", [["confirm", "yes"]]);
       const text = await res.text();
       expect(text).toContain("ssh-ed25519 AAAAPUB rev");
@@ -180,7 +183,10 @@ describe("bots screen", () => {
       expect((await post(`/admin/bots/${d.id}/routines`, "Ann", [["chatId", chatId], ["prompt", "x"], ["schedule", "bogus"]])).status).toBe(400);
       await post(`/admin/bots/${d.id}/routines/${r.id}/enabled`, "Ann", [["enabled", "off"]]);
       expect((await listRoutines(db, T, d.id))[0].enabled).toBe(false);
-      await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", []);
+      const armed = await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", []);
+      expect(await armed.text()).toContain("confirm delete?");
+      expect(await listRoutines(db, T, d.id)).toHaveLength(1); // the first press changes nothing
+      await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", [["confirm", "yes"]]);
       expect(await listRoutines(db, T, d.id)).toHaveLength(0);
     });
     it("a foreign-tenant or unknown connection id gives 400 and changes nothing", async () => {
@@ -281,7 +287,7 @@ describe("bot names and email addresses", () => {
     await post(`/admin/bots/${def.id}`, "Ann", [["displayName", "Ines"], ["label", "plain"], ["model", "m"], ["persona", "p"]]);
     expect((await getDefinition(db, T, def.id))!.displayName).toBe("Ines");
     const page = await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text();
-    expect(page).toContain("Create email address");
+    expect(page).toContain("create email address");
     expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain('value="Ines"');
   });
 
@@ -291,7 +297,7 @@ describe("bot names and email addresses", () => {
     expect((await box(def.id))?.address).toBe("iris@mail.test");
     const page = await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text();
     expect(page).toContain("iris@mail.test");
-    expect(page).toContain("Remove email address");
+    expect(page).toContain("remove email address");
     for (const secret of ["bam_", "amwh_"]) expect(page).not.toContain(secret);
   });
 
@@ -309,7 +315,7 @@ describe("bot names and email addresses", () => {
     const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
     expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [["confirm", "yes"]])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("removed");
-    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("Restore email address");
+    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("restore email address");
     expect((await post(`/admin/bots/${def.id}/mailbox/restore`, "Ann", [])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("active");
   });
@@ -326,11 +332,11 @@ describe("bot names and email addresses", () => {
   it("a pending mailbox offers Try again and a removing one Finish removing", async () => {
     const { def } = await create("stuck");
     await db.insert(mailboxes).values({ definitionId: def.id, tenantId: T, agent: "bb2-stuck", localPart: "stuck", status: "pending" });
-    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("Try again");
+    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("try again");
     expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Ann", [])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("active");
     await db.update(mailboxes).set({ status: "removing" }).where(eq(mailboxes.definitionId, def.id));
-    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("Finish removing");
+    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("finish removing");
     expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [["confirm", "yes"]])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("removed");
     expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Hal", [])).status).toBe(403);
@@ -345,7 +351,7 @@ describe("bot names and email addresses", () => {
     expect(page).toContain("pending forward");
     expect(page).toContain("automatic forwarding");
     expect(page).not.toContain("bam_");
-    expect((await post(`/admin/bots/${def.id}/send-as/remove`, "Ann", [])).status).toBe(303);
+    expect((await post(`/admin/bots/${def.id}/send-as/remove`, "Ann", [["confirm", "yes"]])).status).toBe(303);
     expect(calls.some((c) => c.startsWith("clear "))).toBe(true);
   });
 
@@ -490,7 +496,7 @@ describe("bot page tabs and arming", () => {
   const get = (path: string) => fetch(url + path, { redirect: "manual", headers: { cookie: cookie() } }).then((r) => r.text());
 
   it("each tab shows its own section and not the others", async () => {
-    const section: Record<string, string> = { persona: "Persona text.", email: "Remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines</h2>" };
+    const section: Record<string, string> = { persona: "Persona text.", email: "remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines</h2>" };
     for (const [tab, mark] of Object.entries(section)) {
       const page = await get(`/admin/bots/${botId}?tab=${tab}`);
       expect(page).toContain(mark);
@@ -502,6 +508,21 @@ describe("bot page tabs and arming", () => {
     expect(first).toContain("be-pagehead");
     expect(first).toContain("tabby@mail.test · m1");
     expect(first).not.toMatch(/bam_|amwh_/);
+  });
+
+  it("removing a server, deleting a routine and clearing the company address need a second press", async () => {
+    const post = (path: string, body: [string, string][]) =>
+      fetch(`${url}/admin/bots/${botId}/${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded", cookie: cookie() }, body: new URLSearchParams([["csrf", "csrf-1"], ["tab", "connections"], ...body]).toString() });
+    await db.update(botDefinitions).set({ mcpServers: [{ name: "srv", transport: "stdio", command: "c", args: [], readOnlyTools: [] }] as never }).where(eq(botDefinitions.id, botId));
+    const first = await post("servers/srv/delete", []);
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("confirm remove?");
+    expect((await getDefinition(db, T, botId))!.mcpServers.map((x) => x.name)).toEqual(["srv"]);
+    expect((await post("servers/srv/delete", [["confirm", "yes"]])).status).toBe(303);
+    expect((await getDefinition(db, T, botId))!.mcpServers).toHaveLength(0);
+    const armed = await post("send-as/remove", []);
+    expect(armed.status).toBe(200);
+    expect(await armed.text()).toContain("confirm clear?");
   });
 
   it("removing the email address needs a second press and then works", async () => {

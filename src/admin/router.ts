@@ -37,12 +37,12 @@ export function adminRouter(deps: AdminDeps): Router {
     const next = String(req.query.next);
     const value = themes.find((t) => t === set);
     res.append("Set-Cookie", `theme=${value ?? ""}; Path=/admin; SameSite=Lax; Max-Age=${value ? 31536000 : 0}`);
-    res.redirect(303, /^\/admin(\/[\w./-]*)?$/.test(next) ? next : "/admin");
+    res.redirect(303, /^\/admin(\/[\w./-]*)?(\?[\w./%=&-]*)?$/.test(next) ? next : "/admin");
   });
 
   // Body parsing resumes on the socket's async context, so the shell facts are set again after it.
   const withShell = (req: Request, _res: Response, next: NextFunction) =>
-    shell.run({ theme: themeOf(req.headers.cookie), path: req.originalUrl.split("?")[0] }, next);
+    shell.run({ theme: themeOf(req.headers.cookie), path: req.originalUrl.split("?")[0], url: req.originalUrl }, next);
 
   router.use((req, res, next) => {
     res.set({ "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });

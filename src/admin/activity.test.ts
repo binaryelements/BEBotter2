@@ -67,7 +67,7 @@ describe("activity screen", () => {
     expect(t).toContain("mcp__x__y");
     expect(t).toContain("message");
     expect(t).toContain("confirmed by Hal");
-    expect(t).not.toContain(">Older<");
+    expect(t).not.toContain(">older<");
   });
 
   it("shows timings for message rows that have them", async () => {
@@ -134,11 +134,11 @@ describe("activity screen", () => {
   it("Older pages on to the next rows and ignores a bad before", async () => {
     for (let i = 0; i < 100; i++) await add("Eve", `bulk ${i}`, { at: new Date(Date.UTC(2020, 0, 1, 0, i)), chat: "chat-2" });
     const first = await (await get("/admin/activity", "Ann")).text();
-    const link = first.match(/href="([^"]+)">Older/)?.[1].replaceAll("&amp;", "&");
+    const link = first.match(/href="([^"]+)">older/)?.[1].replaceAll("&amp;", "&");
     expect(link).toContain("before=");
     const next = await (await get(link!, "Ann")).text();
     expect(next).toContain("bulk");
-    expect(next).not.toContain(">Older<");
+    expect(next).not.toContain(">older<");
     expect(first).not.toContain("2020-01-01T00:00");
     expect((await get("/admin/activity?before=nonsense", "Ann")).status).toBe(200);
   });
@@ -151,7 +151,7 @@ describe("activity screen", () => {
     while (path) {
       const t = await (await get(path, "Ann")).text();
       seen.push(...[...t.matchAll(/tie-\d+/g)].map((m) => m[0]));
-      path = t.match(/href="([^"]+)">Older/)?.[1].replaceAll("&amp;", "&");
+      path = t.match(/href="([^"]+)">older/)?.[1].replaceAll("&amp;", "&");
     }
     expect(seen.sort()).toEqual([...Array(105).keys()].map((i) => `tie-${i}`).sort());
   });
