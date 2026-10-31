@@ -160,10 +160,10 @@ export const computers = pgTable("computers", {
 export const auditEvents = pgTable("audit_events", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id),
-  chatId: text("chat_id").notNull().references(() => chats.id),
+  chatId: text("chat_id").references(() => chats.id), // null for admin actions
   definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
   personId: text("person_id").references(() => people.id),
-  kind: text("kind").notNull(), // tool | message
+  kind: text("kind").notNull(), // tool | message | admin
   toolName: text("tool_name"),
   toolInput: jsonb("tool_input"),
   summary: text("summary").notNull(),

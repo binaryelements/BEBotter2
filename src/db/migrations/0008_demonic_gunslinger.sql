@@ -1,0 +1,1 @@
+ALTER TABLE "audit_events" ALTER COLUMN "chat_id" DROP NOT NULL;

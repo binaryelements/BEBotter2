@@ -85,9 +85,10 @@ describe("agentMailAdmin", () => {
   });
 
   it("reads the mail domain and manages send-as", async () => {
-    const { calls, mail } = setup([{ body: { mail_domain: "eml.example" } }, { body: {} }, { body: {} }, { body: { status: "ok" } }, { body: {} }]);
+    const { calls, mail } = setup([{ body: { mail_domain: "eml.example" } }, { body: { checks: [] } }, { body: {} }, { body: { status: "ok" } }, { body: {} }]);
     expect(await mail.mailDomain()).toBe("eml.example");
-    await mail.checkSendAs("a@co.example");
+    expect(await mail.mailDomain()).toBe("eml.example"); // cached: no second request
+    expect(await mail.checkSendAs("a@co.example")).toEqual({ ok: true, reasons: [] });
     await mail.requestSendAs("i1", "a@co.example");
     expect(await mail.getSendAs("i1")).toEqual({ status: "ok" });
     await mail.removeSendAs("i1");
@@ -98,5 +99,18 @@ describe("agentMailAdmin", () => {
       ["GET", "https://mail.example/inboxes/i1/send-as", undefined],
       ["DELETE", "https://mail.example/inboxes/i1/send-as", undefined],
     ]);
+  });
+
+  it("a negative check lists its reasons (DMARC is only reported) and a refusal keeps a cleaned detail", async () => {
+    const { mail } = setup([
+      { body: { checks: [{ name: "spf", ok: false, detail: "no record" }, { name: "dmarc", ok: false, detail: "none" }, { name: "dkim", ok: true, detail: "" }] } },
+      { status: 422, body: { detail: `domain not signed bam_abc123 ${"x".repeat(300)}` } },
+    ]);
+    expect(await mail.checkSendAs("a@co.example")).toEqual({ ok: false, reasons: ["spf: no record"] });
+    const e = await mail.requestSendAs("i1", "a@co.example").catch((x) => x);
+    expect(e).toBeInstanceOf(MailError);
+    expect(e.detail.length).toBeLessThanOrEqual(200);
+    expect(e.detail).toContain("domain not signed");
+    expect(e.detail).not.toContain("bam_");
   });
 });

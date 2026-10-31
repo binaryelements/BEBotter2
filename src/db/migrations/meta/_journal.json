@@ -57,6 +57,13 @@
       "when": 1793430227017,
       "tag": "0007_bent_red_shift",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793431394619,
+      "tag": "0008_demonic_gunslinger",
+      "breakpoints": true
     }
   ]
 }

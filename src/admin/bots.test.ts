@@ -5,7 +5,7 @@ import type { Db } from "../db/client.js";
 import { getDefinition, listDefinitions, setAllowedDepartments } from "../bots/definitions.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { connections, chatAssignments, chats, mailboxes } from "../db/schema.js";
+import { connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
 import { listRoutines } from "../routines/store.js";
 import { eq } from "drizzle-orm";
@@ -233,7 +233,7 @@ describe("bot names and email addresses", () => {
     revokeKey: async (k: string) => void calls.push(`revoke ${k}`),
     addWebhook: async () => ({ id: `hook-${++n}`, secret: "amwh_fake" }),
     removeWebhook: async (h: string) => void calls.push(`unhook ${h}`),
-    checkSendAs: async (a: string) => (calls.push(`check ${a}`), {}),
+    checkSendAs: async (a: string) => (calls.push(`check ${a}`), a.endsWith("@bad.test") ? { ok: false, reasons: ["spf: not set up"] } : { ok: true, reasons: [] }),
     requestSendAs: async (i: string, a: string) => (calls.push(`send-as ${i} ${a}`), {}),
     getSendAs: async () => ({ status: "pending forward", key: "bam_leak" }),
     removeSendAs: async (i: string) => void calls.push(`clear ${i}`),
@@ -323,6 +323,42 @@ describe("bot names and email addresses", () => {
     expect(page).not.toContain("bam_");
     expect((await post(`/admin/bots/${def.id}/send-as/remove`, "Ann", [])).status).toBe(303);
     expect(calls.some((c) => c.startsWith("clear "))).toBe(true);
+  });
+
+  it("a negative send-as verdict stops before the request and shows the reason", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    const before = calls.length;
+    const res = await post(`/admin/bots/${def.id}/send-as`, "Ann", [["address", "iris@bad.test"]]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("spf: not set up");
+    expect(calls.slice(before)).toEqual(["check iris@bad.test"]);
+  });
+
+  it("an invalid local part is shown and creates nothing; a post without CSRF is refused", async () => {
+    const { def } = await create("badlocal");
+    const res = await post(`/admin/bots/${def.id}/mailbox`, "Ann", [["localPart", "no spaces!"]]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("letters, digits");
+    expect(await box(def.id)).toBeUndefined();
+    const noCsrf = await fetch(`${url}/admin/bots/${def.id}/mailbox`, {
+      method: "POST", redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, id.Ann) },
+      body: new URLSearchParams([["localPart", "fine"]]).toString(),
+    });
+    expect(noCsrf.status).toBe(403);
+    expect(await box(def.id)).toBeUndefined();
+  });
+
+  it("every action leaves an admin audit row, shown on the Activity page", async () => {
+    const rows = await db.select().from(auditEvents).where(eq(auditEvents.kind, "admin"));
+    expect(rows.length).toBeGreaterThan(4);
+    expect(rows.every((r) => r.chatId === null && r.personId === id.Ann)).toBe(true);
+    expect(rows.some((r) => r.toolName === "send-as" && r.status === "failed")).toBe(true);
+    expect(rows.some((r) => r.toolName === "mailbox/remove" && r.status === "done")).toBe(true);
+    expect(JSON.stringify(rows)).not.toMatch(/bam_|amwh_/);
+    const res = await get("/admin/activity", "Ann");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Admin: mailbox/remove");
   });
 
   it("heads and another tenant's admin are refused", async () => {

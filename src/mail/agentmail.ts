@@ -1,5 +1,12 @@
+/** BE AgentMail's own explanation of a refusal: plain text, short, with anything that looks like a key removed. */
+export function cleanDetail(raw: unknown): string | undefined {
+  const text = typeof raw === "string" ? raw : "";
+  const out = text.replace(/\b(?:bam|amwh)_\S*/g, "").replace(/\s+/g, " ").trim().slice(0, 200);
+  return out || undefined;
+}
+
 export class MailError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(message: string, readonly status?: number, readonly detail?: string) {
     super(message);
     this.name = "MailError";
   }
@@ -14,11 +21,21 @@ export function agentMailAdmin(cfg: { url: string; adminKey: string }, fetchFn: 
         method,
         headers: { Authorization: `Bearer ${cfg.adminKey}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(3000),
       });
     } catch {
       throw new MailError(`BE AgentMail unreachable: ${method} ${path}`);
     }
-    if (!res.ok) throw new MailError(`BE AgentMail ${method} ${path} failed with status ${res.status}`, res.status);
+    if (!res.ok) {
+      let detail: string | undefined;
+      try {
+        const j = JSON.parse(await res.text()) as { detail?: unknown };
+        detail = cleanDetail(j.detail);
+      } catch {
+        // no readable explanation
+      }
+      throw new MailError(`BE AgentMail ${method} ${path} failed with status ${res.status}`, res.status, detail);
+    }
     const text = await res.text();
     return text ? JSON.parse(text) : {};
   }
@@ -28,6 +45,7 @@ export function agentMailAdmin(cfg: { url: string; adminKey: string }, fetchFn: 
   };
   const field = (r: unknown, name: string) => str((r as Record<string, unknown>)[name], name);
   const seg = encodeURIComponent;
+  let domainCache: { value?: string; error?: Error; until: number } | undefined;
 
   return {
     async createInbox(localPart: string, displayName: string, agent: string): Promise<{ id: string; address: string }> {
@@ -66,11 +84,26 @@ export function agentMailAdmin(cfg: { url: string; adminKey: string }, fetchFn: 
     },
     /** The domain inboxes live on, from the status page. */
     async mailDomain(): Promise<string> {
-      return field(await call("GET", "/status"), "mail_domain");
+      if (domainCache && domainCache.until > Date.now()) {
+        if (domainCache.error) throw domainCache.error;
+        return domainCache.value!;
+      }
+      try {
+        const value = field(await call("GET", "/status"), "mail_domain");
+        domainCache = { value, until: Date.now() + 5 * 60_000 };
+        return value;
+      } catch (e) {
+        domainCache = { error: e as Error, until: Date.now() + 60_000 };
+        throw e;
+      }
     },
     // send-as answers are free-form objects; the admin page shows their plain fields
-    async checkSendAs(address: string): Promise<Record<string, unknown>> {
-      return (await call("GET", `/send-as-check?address=${seg(address)}`)) as Record<string, unknown>;
+    /** Verdict of the domain checks (SPF, DKIM, ...): ok unless the answer or one of its checks (DMARC is only reported) says no. */
+    async checkSendAs(address: string): Promise<{ ok: boolean; reasons: string[] }> {
+      const r = (await call("GET", `/send-as-check?address=${seg(address)}`)) as { ok?: unknown; checks?: unknown };
+      const failed = (Array.isArray(r.checks) ? r.checks : []).filter((c: { ok?: unknown; name?: unknown }) => c.ok === false && !/dmarc/i.test(String(c.name ?? "")));
+      const reasons = failed.map((c: { name?: unknown; detail?: unknown }) => cleanDetail(`${String(c.name ?? "")}: ${String(c.detail ?? "")}`)).filter((x): x is string => !!x);
+      return { ok: r.ok !== false && failed.length === 0, reasons };
     },
     async requestSendAs(inboxId: string, address: string): Promise<Record<string, unknown>> {
       return (await call("POST", `/inboxes/${seg(inboxId)}/send-as`, { address })) as Record<string, unknown>;

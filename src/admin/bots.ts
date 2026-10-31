@@ -7,6 +7,7 @@ import {
 import { eq } from "drizzle-orm";
 import { listConnections, listConnectionsFor, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
 import type { Db } from "../db/client.js";
+import { beginAction, completeAction } from "../audit/audit.js";
 import { chatAssignments, chats, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
 import { MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
@@ -54,10 +55,18 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
     if (!def) throw new DirectoryError("Bot not found");
     return def;
   };
-  const audit = (actor: { personId: string }, what: string, id: string) => console.log(`admin: ${what} bot=${id} by=${actor.personId}`);
+  // one audit row per action, with its outcome; a failed write never fails the action
+  const audit = async (actor: { tenantId: string; personId: string }, what: string, definitionId: string, outcome: "done" | "failed", note = "") => {
+    try {
+      const rowId = await beginAction(db, { tenantId: actor.tenantId, definitionId, personId: actor.personId, kind: "admin", toolName: what, summary: `Admin: ${what}${note ? ` (${note})` : ""}`.slice(0, 300) });
+      await completeAction(db, rowId, { status: outcome });
+    } catch (e) {
+      console.error("admin audit:", e instanceof Error ? e.name : "error");
+    }
+  };
   const mailMessage = (e: unknown): string | undefined => {
     if (e instanceof MailboxError) return e.reason === "taken" ? "That address is taken" : e.reason === "removed" ? "This email address was removed. Restore it instead." : e.message;
-    if (e instanceof MailError) return "BE AgentMail did not accept that. Try again later.";
+    if (e instanceof MailError) return e.detail ? `BE AgentMail: ${e.detail}` : "BE AgentMail did not accept that. Try again later.";
     return undefined;
   };
   const SEND_AS_SHOWN = ["status", "state", "enabled", "active", "message", "detail", "reason"];
@@ -108,12 +117,13 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
       onSaved?.(def.id);
       const localPart = field(req, "localPart").trim();
       if (mail && localPart) {
-        audit(actor, "email address requested", def.id);
         try {
           await requestMailbox(mail, def.id, localPart); // bounded wait; the bot page shows the address or that it is being created
+          await audit(actor, "mailbox", def.id, "done");
         } catch (e) {
-          const msg = mailMessage(e);
-          if (!msg) throw e;
+          const msg = mailMessage(e) ?? "Something went wrong.";
+          if (!mailMessage(e)) console.error("mailbox:", e instanceof Error ? e.name : "error");
+          await audit(actor, "mailbox", def.id, "failed", msg);
           return render(res, "Bot created", html`<h1>Bot created</h1><p>${msg}.</p><p><a href="/admin/bots/${def.id}">Open the bot</a></p>`);
         }
       }
@@ -137,7 +147,7 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
       try {
         state = plainFields(await mail.admin.getSendAs(box.inboxId));
       } catch {
-        state = "unavailable";
+        state = "unknown";
       }
       sendAs = html`<h3>Company address</h3>${state ? html`<p>${state}</p>` : ""}
 <form method="post" action="/admin/bots/${id}/send-as">${csrf}<p><label>Company address <input type="email" name="address" placeholder="name@example.com" required></label></p><button>Save</button></form>${act("send-as/remove", "Clear")}
@@ -235,14 +245,15 @@ ${mailSection}<h2>MCP servers</h2>
         if (!isAdmin(actor)) return deny(res);
         if (!mail) throw new DirectoryError("Email is not set up");
         await ownBot(actor.tenantId, req.params.id);
-        audit(actor, path, req.params.id);
         try {
           await run(req, req.params.id, actor.tenantId);
         } catch (e) {
-          const msg = mailMessage(e);
+          const msg = mailMessage(e) ?? (e instanceof DirectoryError ? e.message : undefined);
+          await audit(actor, path, req.params.id, "failed", msg);
           if (!msg) throw e;
           throw new DirectoryError(msg);
         }
+        await audit(actor, path, req.params.id, "done");
         res.redirect(303, `/admin/bots/${req.params.id}`);
       }),
     );
@@ -258,7 +269,8 @@ ${mailSection}<h2>MCP servers</h2>
     const address = field(req, "address").trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) throw new DirectoryError("Enter an email address");
     const inbox = await activeInbox(id);
-    await mail!.admin.checkSendAs(address);
+    const verdict = await mail!.admin.checkSendAs(address);
+    if (!verdict.ok) throw new DirectoryError(verdict.reasons.length ? `Cannot send as that address: ${verdict.reasons.join("; ")}` : "Cannot send as that address");
     await mail!.admin.requestSendAs(inbox, address);
   });
   mailAction("send-as/remove", async (_req, id) => mail!.admin.removeSendAs(await activeInbox(id)));
