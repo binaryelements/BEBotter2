@@ -74,7 +74,14 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
   const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id);
   const [mailbox] = deps.agentmailUrl ? await db.select().from(mailboxes).where(eq(mailboxes.definitionId, definition.id)) : [];
   // the bot's own agent key goes to the SDK subprocess as a header, never to the model or the computer
-  const mail = mailbox?.status === "active" && mailbox.keyCipher && mailbox.address ? { address: mailbox.address, keyId: mailbox.keyId, key: decrypt(deps.secretsKey, mailbox.keyCipher) } : undefined;
+  let mail: { address: string; keyId: string | null; key: string } | undefined;
+  if (mailbox?.status === "active" && mailbox.keyCipher && mailbox.address) {
+    try {
+      mail = { address: mailbox.address, keyId: mailbox.keyId, key: decrypt(deps.secretsKey, mailbox.keyCipher) };
+    } catch (e) {
+      console.error("mailbox key:", e instanceof Error ? e.name : "error"); // no mail this turn; the turn still runs
+    }
+  }
   // the SDK advertises cwd to MCP servers as the client root, so it must be the folder the files server serves
   mkdirSync(deps.filesDir, { recursive: true });
   // a process with no turn running (warmed, or between turns) acts for nobody
@@ -107,7 +114,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       systemPrompt: `${definition.persona}\n\n${
         mail
           ? `Your name is ${definition.displayName ?? definition.label} and your own email address is ${mail.address}.`
-          : "You have no email address and cannot send or receive email; an admin can add one on the admin page."
+          : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
       }`,
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],

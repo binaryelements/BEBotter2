@@ -28,6 +28,7 @@ describe("classify", () => {
       ["mcp__mail__reply_to_email", "write"],
       ["mcp__mail__list_messages", "read"],
       ["mcp__mail__read_thread", "read"],
+      ["mcp__mail__forward_email", "write"],
       ["mcp__connections__other", "write"],
       ["mcp__knowledge__other", "write"],
     ];

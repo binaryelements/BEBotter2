@@ -632,6 +632,31 @@ describe("runTurn", () => {
     }
   });
 
+  it("the no-mail prompt mentions the admin page only when mail is configured", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    const ask = async () => {};
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
+    await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
+    expect(String(q.seen[0]!.systemPrompt)).toContain("cannot send or receive email.");
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain("admin");
+    expect(String(q.seen[1]!.systemPrompt)).toContain("an admin can add one on the admin page");
+  });
+
+  it("a mailbox key that cannot be decrypted means no mail, and the turn still runs", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: "garbage", status: "active" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const q = fakeQuery({ calls: [] });
+    const r = await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: async () => {} });
+    expect(r.text).toBe("Done.");
+    expect(q.seen[0]!.mcpServers).not.toHaveProperty("mail");
+    expect(err).toHaveBeenCalledWith("mailbox key:", expect.any(String));
+    err.mockRestore();
+  });
+
   it("removing the mailbox starts a new process without mail", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
