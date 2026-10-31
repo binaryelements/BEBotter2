@@ -96,3 +96,14 @@
 - [ ] `AGENTMAIL_ADMIN_KEY` added to `.env` from the key file without printing it; rebuild; the IT Support and Marketing bots get addresses at start.
 - [ ] From the test inbox agent (`claude-code`), email the IT Support bot: a notice appears in the Teams chat. Ask the bot to read it and reply: the reply needs the card (Martin clicks), then arrives in the test inbox.
 - [ ] Remove the mailbox on the admin page: the next turn has no mail tools and the old key gets 401. Restore it.
+
+### Task 7: Action rules on the admin page (Martin, 2026-10-31: "have it in admin so we can confirm which action is allowed with or without user confirmation")
+
+**Files:** Modify `src/db/schema.ts` (+ add-only migration), `src/engine/gate.ts`, `src/engine/runner.ts`, `src/admin/bots.ts`; Tests alongside.
+
+- Table `tool_rules(definition_id, tool_name, rule)` with `rule` `free` | `confirm`; table `definition_tools(definition_id, tool_name, first_seen, last_seen)` filled from the Agent SDK `system/init` message's tool list on every engine start (no hard-coded tool list).
+- `classify` = the bot's rule for that tool if set, else today's default (known reads free, everything else confirm). Approve-class tools (connection approval) are locked to confirmation by an admin or head and cannot be set free; the page shows them as locked.
+- Bot page section **Actions**: every tool the bot has, grouped by where it comes from (web, mail, knowledge, connections, routines, computer, each MCP server), each with **Runs freely** / **Needs confirmation** and the default marked. Admins only, CSRF form, every change audited (who, tool, old → new). A tool seen for the first time appears with its default.
+- Rules are part of the live-engine fingerprint input only where they change the engine (they don't — `classify` runs per call), so changes take effect on the next tool call without a restart.
+- [ ] **Tests:** override free on a write runs without a card; override confirm on a read asks; approve-class can't be set free (form and classify both refuse); unknown tool defaults to confirm; init tool list recorded; page shows groups, defaults and locked rows; non-admin 403; change audited.
+- [ ] Commit `feat(admin): choose which bot actions need confirmation`.
