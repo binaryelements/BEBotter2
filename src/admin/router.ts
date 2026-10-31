@@ -37,7 +37,8 @@ export function adminRouter(deps: AdminDeps): Router {
     const next = String(req.query.next);
     const value = themes.find((t) => t === set);
     res.append("Set-Cookie", `theme=${value ?? ""}; Path=/admin; SameSite=Lax; Max-Age=${value ? 31536000 : 0}`);
-    res.redirect(303, /^\/admin(\/[\w./-]*)?(\?[\w./%=&-]*)?$/.test(next) ? next : "/admin");
+    // path segments without dots, so "/admin/../x" never passes
+    res.redirect(303, /^\/admin(\/[\w-]+)*\/?(\?[\w./%=&-]*)?$/.test(next) ? next : "/admin");
   });
 
   // Body parsing resumes on the socket's async context, so the shell facts are set again after it.
