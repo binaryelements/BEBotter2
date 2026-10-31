@@ -684,6 +684,17 @@ describe("runTurn", () => {
     expect(String(q.seen[0]!.systemPrompt)).toContain("cannot send or receive email");
   });
 
+  it("a named bot with a mailbox states its name once and its address", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: encrypt(key, "am_botkey"), status: "active" });
+    const q = fakeQuery({ calls: [] });
+    await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition: { ...definition, displayName: "Ada" }, person, text: "a", askConfirmation: async () => {} });
+    const prompt = String(q.seen[0]!.systemPrompt);
+    expect(prompt.split("Your name is Ada.").length - 1).toBe(1);
+    expect(prompt).toContain("Your own email address is ada@mail.example.test.");
+  });
+
   it("a mailbox key that cannot be decrypted means no mail, and the turn still runs", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

@@ -114,7 +114,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       model: definition.model,
       systemPrompt: `${definition.persona}\n\n${definition.displayName ? `Your name is ${definition.displayName}. ` : ""}${
         mail
-          ? `Your name is ${definition.displayName ?? definition.label} and your own email address is ${mail.address}.`
+          ? `Your own email address is ${mail.address}.`
           : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
       }`,
       cwd: deps.filesDir,
