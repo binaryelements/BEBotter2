@@ -171,7 +171,7 @@ describe("runTurn", () => {
 
     expect(result).toMatchObject({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
+    expect(requests[0]).toEqual({ actionId: expect.any(String), label: "Ops", toolName: "mcp__tickets__close_ticket", input: { id: 7 } });
     expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "routine", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
     expect(q.seen[0]!.cwd).toBe(filesDir);
@@ -268,8 +268,8 @@ describe("runTurn", () => {
     const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7 }], ["mcp__computer__bash", { command: "uptime" }], ["mcp__connections__approve", { name: "x" }], ["mcp__tickets__new_tool", {}]] });
     const asked: string[] = [];
     const d = deps(db, q.fn);
-    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => { asked.push(r.summary.split(" ")[0]!); await d.confirmations.resolve(r.actionId, boss.id, "no"); } });
-    expect(asked).toEqual(["uptime", "approve", "new_tool"]);
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => { asked.push(r.toolName); await d.confirmations.resolve(r.actionId, boss.id, "no"); } });
+    expect(asked).toEqual(["mcp__computer__bash", "mcp__connections__approve", "mcp__tickets__new_tool"]);
     expect(q.decisions).toEqual(["allow", "deny", "deny", "deny"]);
   });
 
@@ -356,7 +356,7 @@ describe("runTurn", () => {
     await runTurn(d, {
       tenantId: "t1", chatId: "c1", definition, person, text: "x",
       askConfirmation: async (r) => {
-        if (r.summary.startsWith("approve")) {
+        if (r.toolName === "mcp__connections__approve") {
           await d.confirmations.resolve(r.actionId, boss.id, "yes");
           approveConfirmed();
         } else {
@@ -624,7 +624,7 @@ describe("runTurn", () => {
     });
     expect(q.seen[0]!.mcpServers!["conn-desk"]).toEqual({ type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Api-Key": "mcp-tok" } });
     expect(q.decisions).toEqual(["allow", "deny"]);
-    expect(requests.map((r) => r.summary)).toEqual(['close_ticket {"id":1}']);
+    expect(requests.map((r) => [r.toolName, r.input])).toEqual([["mcp__conn-desk__close_ticket", { id: 1 }]]);
   });
 
   it("an active mailbox attaches the mail server with the bot's key; sends ask, reads do not; a saved server named mail is skipped", async () => {
@@ -644,6 +644,7 @@ describe("runTurn", () => {
     expect(q.seen[0]!.systemPrompt).toContain("ada@mail.example.test");
     expect(q.decisions).toEqual(["allow", "deny"]);
     expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ name: "Ada", label: "Ops", toolName: "mcp__mail__send_email" });
   });
 
   it("no mail server when the mailbox is removed or mail is not configured", async () => {

@@ -20,17 +20,23 @@ export function teamsStream(ctx: TurnContext): TeamsStream {
   return {
     informative: (text) => ctx.streamingResponse.queueInformativeUpdate(text),
     chunk: (text) => ctx.streamingResponse.queueTextChunk(text),
-    end: async (finalText) => {
+    end: async (finalText, card) => {
       // the stream swallows send failures, even the final message's, and still reports success; watch that send ourselves
       let landed = false;
-      const watch = async <T>(activities: { type?: string; text?: string }[], next: () => Promise<T>) => {
+      const isFinal = (a: { type?: string; text?: string; attachments?: unknown[] }) =>
+        a.type === "message" && (a.text ?? "") === finalText && !!a.attachments?.length === !!card;
+      const watch = async <T>(activities: { type?: string; text?: string; attachments?: unknown[] }[], next: () => Promise<T>) => {
         const r = await next();
-        if (activities.some((a) => a.type === "message" && a.text === finalText)) landed = true;
+        if (activities.some(isFinal)) landed = true;
         return r;
       };
       ctx.onSendActivities((_c, activities, next) => watch(activities, next));
       ctx.onUpdateActivity((_c, activity, next) => watch([activity], next)); // a stream past Teams' time limit ends with an edit
-      ctx.streamingResponse.setFinalMessage(MessageFactory.text(finalText));
+      if (card) {
+        const attachment = CardFactory.adaptiveCard(card);
+        ctx.streamingResponse.setFinalMessage(MessageFactory.attachment(attachment, finalText || undefined));
+        ctx.streamingResponse.setAttachments([attachment]); // the final message takes its attachments from here
+      } else ctx.streamingResponse.setFinalMessage(MessageFactory.text(finalText));
       const result = await ctx.streamingResponse.endStream();
       if (result !== StreamingResponseResult.Success || !landed) throw new Error(`stream ended: ${landed ? result : "final message not sent"}`);
     },

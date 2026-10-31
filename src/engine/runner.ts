@@ -44,7 +44,8 @@ export type RunnerDeps = {
   /** Warm engine processes per chat and bot; without it every turn starts its own. */
   live?: LiveSessions;
 };
-export type ConfirmationRequest = { actionId: string; label: string; summary: string; args: string };
+/** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
+export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
 export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string };
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
@@ -300,8 +301,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     }
     try {
       // the card shows every argument, so a call too large to show is never asked
-      const args = JSON.stringify(input, null, 2);
-      if (args.length > MAX_CARD_ARGS) {
+      if (JSON.stringify(input, null, 2).length > MAX_CARD_ARGS) {
         await completeAction(db, auditId, { status: "denied" });
         releaseApprove(toolUseID);
         return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
@@ -309,7 +309,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind) });
       let o: Outcome | { result: "failed" };
       try {
-        await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input), args });
+        await turn.askConfirmation({ actionId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input });
         o = await outcome;
       } catch (err) {
         console.error("confirmation card failed", err);

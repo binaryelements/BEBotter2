@@ -6,7 +6,7 @@ import type { ProgressEvent, RunResult, RunTurnInput } from "../engine/runner.js
 import { definitionsForChat } from "../bots/definitions.js";
 import { mayUseDefinition } from "../admin/access.js";
 import { getTenantSettings, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { confirmationCard, withRoleLabel } from "./cards.js";
+import { confirmationCard, toolWords, withRoleLabel } from "./cards.js";
 import type { AdaptiveCard } from "./cards.js";
 
 export type IncomingMessage = {
@@ -46,7 +46,8 @@ export type TeamsIo = {
   /** A reply typed out as it is written (one-to-one chats); end's text is the whole final message. */
   stream?: TeamsStream;
 };
-export type TeamsStream = { informative(text: string): void; chunk(text: string): void; end(finalText: string): Promise<void> };
+/** end's card, when given, goes out with the final message; finalText may then be empty. */
+export type TeamsStream = { informative(text: string): void; chunk(text: string): void; end(finalText: string, card?: AdaptiveCard): Promise<void> };
 
 const STATUS_AFTER_MS = 3000;
 const STATUS_EVERY_MS = 2000;
@@ -89,7 +90,7 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
       if (!line) return;
       label = line;
       sawText = true;
-    } else if (e.kind === "tool" && !sawText) label = `Working: ${e.toolName.replace(/^mcp__/, "")}…`;
+    } else if (e.kind === "tool" && !sawText) label = `Working: ${toolWords(e.toolName)}…`;
     else return;
     if (!timer && !done) timer = setTimeout(() => void (ops = ops.then(flush)), Math.max(0, last + STATUS_EVERY_MS - Date.now()));
   };
@@ -172,13 +173,13 @@ export async function handleMessage(
       } else if (e.kind === "tool") status.progress(e);
       else if (e.kind === "message-end") newMessage = true;
     };
-    /** Ends the stream with text as its final message; false when there was nothing to end or it failed. */
-    const endStream = async (text: string) => {
+    /** Ends the stream with text (and a card) as its final message; false when there was nothing to end or it failed. */
+    const endStream = async (text: string, card?: AdaptiveCard) => {
       const s = stream;
       stream = undefined;
       if (!s || !streamed) return false;
       try {
-        await s.end(text);
+        await s.end(text, card);
         return true;
       } catch (err) {
         console.error("ending the stream failed", err instanceof Error ? err.message : "unknown");
@@ -200,9 +201,11 @@ export async function handleMessage(
         receivedAt: msg.receivedAt,
         askConfirmation: async (req) => {
           status.supersede();
-          // a stream must not stay open through a wait of up to 10 minutes; the reply after the card is a new message
-          await endStream(soFar);
-          return io.sendCard(confirmationCard(req));
+          // a stream must not stay open through a wait of up to 10 minutes: the card ends it, replacing any progress line;
+          // the reply after the card is a new message
+          const card = confirmationCard(req);
+          if (await endStream(flowing ? soFar : "", card)) return;
+          return io.sendCard(card);
         },
         progress,
       });
