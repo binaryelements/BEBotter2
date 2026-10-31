@@ -97,6 +97,19 @@ describe("LiveSessions", () => {
     expect(e.started).toHaveLength(3);
   });
 
+  it("never evicts a process whose turn is running", async () => {
+    let release!: () => void;
+    const e = fakeEngine({ hold: new Promise<void>((r) => (release = r)) });
+    const live = new LiveSessions(e.fn, { idleMs: 60_000, max: 1 });
+    const slow = live.send("a", "f", start("m"), "slow", quiet);
+    await live.send("b", "f", start("m"), "x", quiet);
+    expect(e.closed).toEqual([]);
+    release();
+    expect(await said(slow)).toBe("slow on 0");
+    await live.send("c", "f", start("m"), "x", quiet);
+    expect(e.closed).toEqual([0, 1]);
+  });
+
   it.each([["throws", { crash: "boom" }], ["ends", { endOn: "boom" }]])("a stream that %s mid-turn rejects and the next send starts fresh", async (_, opts) => {
     const e = fakeEngine(opts);
     const live = new LiveSessions(e.fn, { idleMs: 60_000, max: 5 });

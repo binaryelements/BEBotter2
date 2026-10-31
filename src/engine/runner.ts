@@ -136,8 +136,21 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     lastConfirmer = undefined;
     release();
   };
+  // Each attempt (live, retry, fallback) starts from clean bookkeeping. A call still pending from an attempt whose
+  // process died must not hold up, or be authorised in, the next one.
+  let attemptNo = 0;
+  const settle = async () => {
+    attemptNo++;
+    for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });
+    inFlight.clear();
+    for (const id of [...approveReleases.keys()]) releaseApprove(id);
+    approveTail = Promise.resolve();
+    lastConfirmer = undefined;
+  };
+  const STALE = { behavior: "deny" as const, message: "Not done: the attempt that asked has ended." };
 
   const canUseTool: CanUseTool = async (toolName, input, { toolUseID }) => {
+    const run = attemptNo;
     const json = JSON.stringify(input);
     const auditId = await beginAction(db, {
       ...base,
@@ -146,6 +159,11 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       toolInput: json.length <= MAX_AUDIT_INPUT ? input : { truncated: true, preview: json.slice(0, MAX_AUDIT_INPUT) },
       summary: summarise(toolName, input),
     });
+    const stale = async () => {
+      await completeAction(db, auditId, { status: "failed" });
+      return STALE;
+    };
+    if (run !== attemptNo) return stale();
     const kind = classify(toolName, definition, conn.readOnly);
     if (kind === "read") {
       inFlight.set(toolUseID, auditId);
@@ -162,6 +180,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       const previous = approveTail;
       approveTail = new Promise<void>((resolve) => approveReleases.set(toolUseID, resolve));
       await previous;
+      if (run !== attemptNo) return stale();
     }
     try {
       // the card shows every argument, so a call too large to show is never asked
@@ -180,6 +199,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         console.error("confirmation card failed", err);
         o = { result: "failed" }; // the question never reached the asker; the model gets the denial and the turn goes on
       }
+      if (run !== attemptNo) return stale();
       if (o.result === "confirmed") {
         if (kind === "approve") lastConfirmer = o.personId;
         await recordAuthority(db, auditId, { type: "confirmation", personId: o.personId });
@@ -274,6 +294,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       if (networkRetried || !((code && TRANSIENT.has(code)) || e.message === "fetch failed")) throw err;
       networkRetried = true;
       console.warn("engine call failed, retrying once", code);
+      await settle();
       return once(resume);
     }
   };
@@ -318,6 +339,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       return await viaLive(live);
     } catch (err) {
       console.error("live engine failed, starting a cold one", err instanceof Error ? err.message : "unknown");
+      await settle();
       return attempt(resume);
     }
   };
@@ -335,6 +357,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         if (msg) await auditMessage(FAILED_TEXT, "failed", msg.total_cost_usd);
         await db.delete(sessions).where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
         live?.close(liveKey); // it holds the session just given up
+        await settle();
         msg = await attempt();
       }
     } else {
@@ -356,9 +379,6 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const auditId = await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd, timings);
     return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id, changed, timings, auditId };
   } finally {
-    // allowed but never finished (interrupted, maxTurns hit, stream died)
-    for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });
-    inFlight.clear();
-    for (const id of [...approveReleases.keys()]) releaseApprove(id);
+    await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
   }
 }

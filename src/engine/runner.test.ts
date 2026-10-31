@@ -11,7 +11,7 @@ import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import { connections, sessions } from "../db/schema.js";
-import { requestConnection } from "../connections/store.js";
+import { requestConnection, revokeConnection } from "../connections/store.js";
 import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
 import { testDb } from "../db/test-db.js";
@@ -600,6 +600,74 @@ describe("runTurn", () => {
       expect(result.text).toBe("Done.");
       expect(result.timings.live).toBeUndefined();
       expect(q.seen).toHaveLength(1);
+    });
+
+    it("a process that dies after an approval was allowed does not hold up the cold run's approval", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
+      await setRole(db, "t1", boss.id, "admin");
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      const approve: [string, Record<string, unknown>] = ["mcp__connections__approve", { name: "x" }];
+      // allows an approve call, then dies before its PostToolUse hook
+      const dying = (({ prompt, options }: { prompt: AsyncIterable<unknown>; options: Options }) =>
+        Object.assign(
+          (async function* () {
+            for await (const _ of prompt) {
+              await options.canUseTool!(approve[0], approve[1], { signal: new AbortController().signal, toolUseID: "live-0" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+              throw new Error("process died");
+            }
+          })(),
+          { close: () => {} },
+        )) as unknown as typeof query;
+      const q = fakeQuery({ calls: [approve] });
+      const d = { ...deps(db, q.fn), live: new LiveSessions(dying, { idleMs: 60_000, max: 5 }) };
+      const result = await runTurn(d, {
+        tenantId: "t1", chatId: "c1", definition, person, text: "approve x",
+        askConfirmation: async (r) => void (await d.confirmations.resolve(r.actionId, boss.id, "yes")),
+      });
+      err.mockRestore();
+      expect(result.text).toBe("Done.");
+      expect(q.decisions).toEqual(["allow"]);
+      const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
+      expect(rows.map((r) => r.status).sort()).toEqual(["done", "failed"]);
+    });
+
+    it("records each warm turn's own cost", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const totals = [0.1, 0.25];
+      const fn = (({ prompt }: { prompt: AsyncIterable<unknown> }) =>
+        Object.assign(
+          (async function* () {
+            let i = 0;
+            for await (const _ of prompt) yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: totals[i++], is_error: false };
+          })(),
+          { close: () => {} },
+        )) as unknown as typeof query;
+      const d = liveDeps(db, fn);
+      const costs: number[] = [];
+      for (const text of ["a", "b"]) costs.push((await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text, askConfirmation: async () => {} })).costUsd);
+      expect(costs).toEqual([0.1, 0.15]);
+      const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "message");
+      expect(rows.map((r) => r.costUsd).sort()).toEqual(["0.100000", "0.150000"]);
+    });
+
+    it("a connection approved or revoked between turns starts a new process", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const ask = async () => {};
+      await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
+      const { connection } = await requestConnection({ db, ssh: fakeSsh(), secretsKey: key }, "t1", {
+        kind: "mcp", name: "desk", target: "https://mcp.example.test/mcp", mode: "read-only", config: { headerName: "X-Api-Key", readOnlyTools: [] }, definitionId: definition.id, personId: person.id,
+      });
+      await db.update(connections).set({ status: "active", secretCipher: encrypt(key, "mcp-tok") }).where(eq(connections.id, connection.id));
+      await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
+      await revokeConnection(db, "t1", connection.id);
+      await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "c", askConfirmation: ask });
+      expect(q.seen.map((o) => Object.keys(o.mcpServers!).includes("conn-desk"))).toEqual([false, true, false]);
     });
 
     it("a granted routine run never uses the live process", async () => {
