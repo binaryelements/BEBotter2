@@ -99,6 +99,29 @@ export const mailDeliveries = pgTable("mail_deliveries", {
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// an admin's choice per bot and tool; a tool with no row runs by its default class
+export const toolRules = pgTable(
+  "tool_rules",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    toolName: text("tool_name").notNull(),
+    rule: text("rule").$type<"free" | "confirm">().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.toolName] })],
+);
+
+// the tools the engine announced for a bot, so the admin page lists them without a hard-coded list
+export const definitionTools = pgTable(
+  "definition_tools",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    toolName: text("tool_name").notNull(),
+    firstSeen: timestamp("first_seen", { withTimezone: true }).notNull().defaultNow(),
+    lastSeen: timestamp("last_seen", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.toolName] })],
+);
+
 export const departments = pgTable(
   "departments",
   {

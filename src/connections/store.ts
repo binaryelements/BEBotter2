@@ -252,20 +252,25 @@ export async function runHttp(deps: ConnectionDeps, tenantId: string, definition
   return (await sendHttp(deps.fetchFn, httpConn(deps, c), req)).text;
 }
 
+/** The approved mcp connections among a bot's linked ones, and their read-only tools by `conn-*` server name. */
+export const activeMcp = (linked: Connection[]) => linked.filter((c) => c.kind === "mcp" && c.status === "active");
+export const mcpReadOnly = (active: Connection[]) => active.map((c) => ({ name: `conn-${c.name}`, readOnlyTools: (c.config as { readOnlyTools: string[] }).readOnlyTools }));
+
 /** Active mcp connections linked to the bot, attached as `conn-<name>` servers, with the tools approved as read-only. */
+
 export async function connectionMcpConfigs(
   db: Db,
   secretsKey: Buffer,
   tenantId: string,
   definitionId: string,
 ): Promise<{ servers: Record<string, McpServerConfig>; readOnly: { name: string; readOnlyTools: string[] }[] }> {
-  const active = (await listConnectionsFor(db, tenantId, definitionId)).filter((c) => c.kind === "mcp" && c.status === "active");
+  const active = activeMcp(await listConnectionsFor(db, tenantId, definitionId));
   const servers: Record<string, McpServerConfig> = {};
   for (const c of active) {
     const { headerName, secret } = mcpConn({ secretsKey }, c);
     servers[`conn-${c.name}`] = { type: "http", url: c.target, ...(headerName && secret ? { headers: { [headerName]: secret } } : {}) };
   }
-  return { servers, readOnly: active.map((c) => ({ name: `conn-${c.name}`, readOnlyTools: (c.config as { readOnlyTools: string[] }).readOnlyTools })) };
+  return { servers, readOnly: mcpReadOnly(active) };
 }
 
 export async function revokeConnection(db: Db, tenantId: string, id: string): Promise<Connection> {

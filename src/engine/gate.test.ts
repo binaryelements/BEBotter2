@@ -48,4 +48,12 @@ describe("classify", () => {
   it("treats anything else as write", () => {
     for (const n of ["Bash", "Write", "Edit", "Mystery"]) expect(classify(n, def)).toBe("write");
   });
+
+  it("an admin rule turns a write free and a read into a confirmation; approve stays approve", () => {
+    expect(classify("mcp__tickets__close_ticket", def, [], "free")).toBe("read");
+    expect(classify("mcp__tickets__list_tickets", def, [], "confirm")).toBe("write");
+    expect(classify("WebSearch", def, [], "confirm")).toBe("write");
+    expect(classify("mcp__connections__approve", def, [], "free")).toBe("approve");
+    expect(classify("mcp__someone__new_tool", def)).toBe("write");
+  });
 });

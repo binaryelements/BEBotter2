@@ -64,6 +64,13 @@
       "when": 1793431394619,
       "tag": "0008_demonic_gunslinger",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793431811080,
+      "tag": "0009_unusual_killmonger",
+      "breakpoints": true
     }
   ]
 }

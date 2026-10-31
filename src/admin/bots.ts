@@ -5,8 +5,12 @@ import {
   updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
 import { eq } from "drizzle-orm";
-import { listConnections, listConnectionsFor, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
+import { activeMcp, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
 import type { Db } from "../db/client.js";
+import type { BotDefinition, Connection } from "../db/schema.js";
+import { defaultClass } from "../engine/gate.js";
+import type { ToolRule } from "../engine/gate.js";
+import { knownTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
 import { beginAction, completeAction } from "../audit/audit.js";
 import { chatAssignments, chats, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
@@ -158,6 +162,35 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
     }${sendAs}`;
   };
 
+  const RULE_LABEL: Record<ToolRule, string> = { free: "Runs freely", confirm: "Needs confirmation" };
+  // every tool the engine announced for the bot, with its default and the admin's rule; approve-class is locked
+  const actionsOf = async (def: BotDefinition, linked: Connection[]) => {
+    const [tools, rules] = await Promise.all([knownTools(db, def.id), toolRulesFor(db, def.id)]);
+    const readOnly = mcpReadOnly(activeMcp(linked));
+    return tools.map((tool) => {
+      const base = defaultClass(tool, def, readOnly);
+      const fallback: ToolRule = base === "read" ? "free" : "confirm";
+      const current: ToolRule = base === "approve" ? "confirm" : (rules.get(tool) ?? fallback);
+      return { tool, locked: base === "approve", fallback, current };
+    });
+  };
+  const actionsSectionFor = async (res: Response, def: BotDefinition, linked: Connection[]): Promise<SafeHtml> => {
+    const actions = await actionsOf(def, linked);
+    if (!actions.length) return html``; // nothing until the bot's engine has started once
+    const groups = new Map<string, typeof actions>();
+    for (const a of actions) groups.set(toolSource(a.tool), [...(groups.get(toolSource(a.tool)) ?? []), a]);
+    const row = (a: (typeof actions)[number]) => html`<tr><td>${a.tool.replace(/^mcp__.+?__/, "")}</td><td>${
+      a.locked
+        ? html`${RULE_LABEL.confirm} (locked)`
+        : html`<select name="rule:${a.tool}" aria-label="${a.tool}">${(["free", "confirm"] as const).map(
+            (r) => html`<option value="${r}" ${a.current === r ? "selected" : ""}>${RULE_LABEL[r]}${a.fallback === r ? " (default)" : ""}</option>`,
+          )}</select>`
+    }</td></tr>`;
+    return html`<h2>Actions</h2><form method="post" action="/admin/bots/${def.id}/actions">${csrfField(res)}${[...groups.keys()].sort().map(
+      (g) => html`<h3>${g}</h3><table><tbody>${groups.get(g)!.map(row)}</tbody></table>`,
+    )}<button>Save</button></form>`;
+  };
+
   router.get(
     "/bots/:id",
     wrap(async (req, res) => {
@@ -189,6 +222,7 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
 <td><form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="secondary">${r.enabled ? "Disable" : "Enable"}</button></form>
 <form method="post" action="/admin/bots/${def.id}/routines/${r.id}/delete">${csrf}<button class="secondary">Delete</button></form></td></tr>`);
         const mailSection = await mailSectionFor(res, def.id);
+        const actionsSection = await actionsSectionFor(res, def, linked);
         body = html`<h1>${def.label}</h1>
 <form method="post" action="/admin/bots/${def.id}">${csrf}
 <p><label>Name <input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label> <label>Label <input name="label" value="${def.label}" required></label> <label>Model <input name="model" value="${def.model}" required></label></p>
@@ -196,7 +230,7 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
 ${personaBox}
 <fieldset><legend>Departments</legend>${depts.map((d) => html`<label><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</fieldset>
 <p><button>Save</button></p></form>
-${mailSection}<h2>MCP servers</h2>
+${mailSection}${actionsSection}<h2>MCP servers</h2>
 <table><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th></tr></thead><tbody>${def.mcpServers.map(
           (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ")}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="secondary">Remove</button></form></td></tr>`,
         )}</tbody></table>
@@ -274,6 +308,29 @@ ${mailSection}<h2>MCP servers</h2>
     await mail!.admin.requestSendAs(inbox, address);
   });
   mailAction("send-as/remove", async (_req, id) => mail!.admin.removeSendAs(await activeInbox(id)));
+
+  router.post(
+    "/bots/:id/actions",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const def = await ownBot(actor.tenantId, req.params.id);
+      const actions = await actionsOf(def, await listConnectionsFor(db, actor.tenantId, def.id));
+      // only tools the bot has are read from the form; all are checked before any is saved
+      const changes: ((typeof actions)[number] & { want: ToolRule })[] = [];
+      for (const a of actions) {
+        const want = field(req, `rule:${a.tool}`);
+        if (want !== "free" && want !== "confirm") continue;
+        if (a.locked && want === "free") throw new DirectoryError(`${a.tool} always needs confirmation`);
+        if (want !== a.current) changes.push({ ...a, want });
+      }
+      for (const c of changes) {
+        await setToolRule(db, def.id, c.tool, c.want === c.fallback ? undefined : c.want);
+        await audit(actor, c.tool, def.id, "done", `${RULE_LABEL[c.current]} → ${RULE_LABEL[c.want]}`);
+      }
+      res.redirect(303, `/admin/bots/${def.id}`);
+    }),
+  );
 
   router.post(
     "/bots/:id/servers",

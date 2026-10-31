@@ -25,6 +25,7 @@ import { Confirmations } from "./confirm.js";
 import { LiveSessions } from "./live.js";
 import { listRoutines } from "../routines/store.js";
 import { prewarm, prewarmRecent, runTurn } from "./runner.js";
+import { knownTools, setToolRule } from "./tool-rules.js";
 import type { ConfirmationRequest } from "./runner.js";
 
 const key = Buffer.alloc(32, 9);
@@ -254,6 +255,36 @@ describe("runTurn", () => {
     expect(asked).toHaveLength(1);
     const row = (await listActions(db, { tenantId: "t1" })).find((r) => r.kind === "tool")!;
     expect(row).toMatchObject({ status: "denied", authority: null });
+  });
+
+  it("an admin's rule frees a write and asks for a read, but never frees an approval", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
+    await setRole(db, "t1", boss.id, "admin");
+    await setToolRule(db, definition.id, "mcp__tickets__close_ticket", "free");
+    await setToolRule(db, definition.id, "mcp__computer__bash", "confirm");
+    await setToolRule(db, definition.id, "mcp__connections__approve", "free"); // stored by hand: the page refuses it
+    const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7 }], ["mcp__computer__bash", { command: "uptime" }], ["mcp__connections__approve", { name: "x" }], ["mcp__tickets__new_tool", {}]] });
+    const asked: string[] = [];
+    const d = deps(db, q.fn);
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => { asked.push(r.summary.split(" ")[0]!); await d.confirmations.resolve(r.actionId, boss.id, "no"); } });
+    expect(asked).toEqual(["uptime", "approve", "new_tool"]);
+    expect(q.decisions).toEqual(["allow", "deny", "deny", "deny"]);
+  });
+
+  it("records the tools the engine announces, and a later turn adds new ones", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const engine = (tools: string[]) => (() =>
+      (async function* () {
+        yield { type: "system", subtype: "init", session_id: "s-1", tools };
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, is_error: false };
+      })()) as unknown as typeof query;
+    await runTurn(deps(db, engine(["WebSearch", "mcp__mail__send_email"])), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    expect(await knownTools(db, definition.id)).toEqual(["WebSearch", "mcp__mail__send_email"]);
+    await runTurn(deps(db, engine(["WebSearch", "mcp__knowledge__read"])), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    expect(await knownTools(db, definition.id)).toEqual(["WebSearch", "mcp__knowledge__read", "mcp__mail__send_email"]);
   });
 
   it("a failure while preparing an approval does not hold up the next one", async () => {

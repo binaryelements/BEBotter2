@@ -2,7 +2,8 @@ import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
-import { getDefinition, listDefinitions, setAllowedDepartments } from "../bots/definitions.js";
+import { getDefinition, listDefinitions, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
+import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
@@ -368,5 +369,74 @@ describe("bot names and email addresses", () => {
       expect((await post(`/admin/bots/${def.id}/${path}`, "Zed", [["localPart", "x"], ["address", "a@b.test"]])).status).toBe(400);
     }
     expect((await box(def.id))?.status).toBe("active");
+  });
+});
+
+describe("action rules", () => {
+  let db: Db;
+  let url: string;
+  let close: () => Promise<void>;
+  const id: Record<string, string> = {};
+  let botId: string;
+
+  beforeAll(async () => {
+    db = await testDb();
+    await upsertTenant(db, { id: T });
+    await upsertTenant(db, { id: "tenant-2" });
+    for (const name of ["Ann", "Hal"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
+    id.Zed = (await upsertPerson(db, { tenantId: "tenant-2", aadObjectId: "aad-Zed", name: "Zed" })).id;
+    await setRole(db, T, id.Ann, "admin");
+    await setRole(db, "tenant-2", id.Zed, "admin");
+    const sales = (await createDepartment(db, T, "Sales")).id;
+    await setMembership(db, T, sales, id.Hal, "head");
+    const app = express();
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [] }));
+    ({ url, close } = await serve(app));
+    const def = await upsertDefinition(db, secretsKey, T, { name: "ops", label: "Ops", persona: "p", mcpServers: [{ name: "tickets", transport: "http", url: "https://mcp.example.test/", readOnlyTools: ["list_tickets"] }] });
+    botId = def.id;
+    await setAllowedDepartments(db, T, botId, [sales]);
+    await recordTools(db, botId, ["WebSearch", "mcp__mail__send_email", "mcp__connections__approve", "mcp__tickets__list_tickets", "mcp__tickets__close_ticket"]);
+  });
+  afterAll(() => close());
+
+  const cookie = (who: string) => sessionCookie(secretsKey, who === "Zed" ? "tenant-2" : T, id[who]);
+  const get = (path: string, who: string) => fetch(url + path, { redirect: "manual", headers: { cookie: cookie(who) } });
+  const post = (path: string, who: string, body: [string, string][]) =>
+    fetch(url + path, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded", cookie: cookie(who) }, body: new URLSearchParams([["csrf", "csrf-1"], ...body]).toString() });
+  const rules = async () => Object.fromEntries(await toolRulesFor(db, botId));
+
+  it("the page groups the bot's tools by source, marks defaults and locks approvals", async () => {
+    const page = await (await get(`/admin/bots/${botId}`, "Ann")).text();
+    expect(page).toContain("<h2>Actions</h2>");
+    for (const g of ["web", "mail", "connections", "tickets"]) expect(page).toContain(`<h3>${g}</h3>`);
+    expect(page).toMatch(/name="rule:WebSearch"[^]*?<option value="free" selected>Runs freely \(default\)/);
+    expect(page).toMatch(/name="rule:mcp__mail__send_email"[^]*?<option value="confirm" selected>Needs confirmation \(default\)/);
+    expect(page).toContain("Needs confirmation (locked)");
+    expect(page).not.toContain('name="rule:mcp__connections__approve"');
+  });
+
+  it("an admin's change is saved, shown and audited; choosing the default again clears it", async () => {
+    expect((await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__mail__send_email", "free"], ["rule:WebSearch", "free"]])).status).toBe(303);
+    expect(await rules()).toEqual({ mcp__mail__send_email: "free" });
+    expect(await (await get(`/admin/bots/${botId}`, "Ann")).text()).toMatch(/name="rule:mcp__mail__send_email"[^]*?<option value="free" selected>Runs freely</);
+    const rows = await db.select().from(auditEvents).where(eq(auditEvents.kind, "admin"));
+    expect(rows).toHaveLength(1); // the unchanged WebSearch writes no row
+    expect(rows[0]).toMatchObject({ chatId: null, personId: id.Ann, toolName: "mcp__mail__send_email", status: "done", summary: "Admin: mcp__mail__send_email (Needs confirmation → Runs freely)" });
+    await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__mail__send_email", "confirm"], ["rule:mcp__tickets__list_tickets", "confirm"]]);
+    expect(await rules()).toEqual({ mcp__tickets__list_tickets: "confirm" });
+  });
+
+  it("an approval cannot be set free, and an unknown tool is ignored", async () => {
+    const before = await rules();
+    expect((await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__connections__approve", "free"], ["rule:mcp__tickets__close_ticket", "free"]])).status).toBe(400);
+    expect((await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__evil__anything", "free"]])).status).toBe(303);
+    expect(await rules()).toEqual(before);
+  });
+
+  it("heads get 403 and see no Actions; another tenant's admin is refused", async () => {
+    expect((await post(`/admin/bots/${botId}/actions`, "Hal", [["rule:mcp__tickets__close_ticket", "free"]])).status).toBe(403);
+    expect(await (await get(`/admin/bots/${botId}`, "Hal")).text()).not.toContain("<h2>Actions</h2>");
+    expect((await post(`/admin/bots/${botId}/actions`, "Zed", [["rule:mcp__tickets__close_ticket", "free"]])).status).toBe(400);
+    expect((await rules()).mcp__tickets__close_ticket).toBeUndefined();
   });
 });

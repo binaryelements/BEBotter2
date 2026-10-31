@@ -22,6 +22,7 @@ export type { TurnTimings };
 import type { Confirmations, Outcome } from "./confirm.js";
 import { classify } from "./gate.js";
 import type { LiveSessions } from "./live.js";
+import { recordTools, toolRule } from "./tool-rules.js";
 
 export type RunnerDeps = {
   db: Db;
@@ -184,9 +185,15 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     for (const k of ["engineReadyAt", "firstOutputAt", "firstToolAt", "resultAt", "live"] as const) delete timings[k];
     timings.tools = 0;
   };
+  // the engine's own tool list, for the admin page; awaited before the turn ends, and its failure never fails the turn
+  let toolsRecorded = Promise.resolve();
   const observe = (msg: SDKMessage) => {
     const at = new Date().toISOString();
-    if (msg.type === "system" && msg.subtype === "init") timings.engineReadyAt ??= at;
+    if (msg.type === "system" && msg.subtype === "init") {
+      timings.engineReadyAt ??= at;
+      const tools = msg.tools ?? []; // never trust the engine's message to be complete
+      toolsRecorded = toolsRecorded.then(() => recordTools(db, definition.id, tools)).catch((e) => console.error("recording tools failed", e instanceof Error ? e.name : "unknown"));
+    }
     if (msg.type === "result") timings.resultAt = at;
     // a subagent's words are not the reply
     if (msg.type === "stream_event" && msg.parent_tool_use_id === null) {
@@ -270,8 +277,10 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       await completeAction(db, auditId, { status: "failed" });
       return STALE;
     };
+    // read per call, so an admin's change applies to the next call without restarting the engine
+    const rule = await toolRule(db, definition.id, toolName);
     if (run !== attemptNo) return stale();
-    const kind = classify(toolName, definition, conn.readOnly);
+    const kind = classify(toolName, definition, conn.readOnly, rule);
     if (kind === "read") {
       inFlight.set(toolUseID, auditId);
       return { behavior: "allow", updatedInput: input };
@@ -442,6 +451,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return { text, costUsd, sessionId: msg.session_id, changed, timings, auditId };
   } finally {
     await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
+    await toolsRecorded;
   }
 }
 
