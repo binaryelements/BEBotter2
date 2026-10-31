@@ -16,6 +16,7 @@ import { assetsDir, shell, themeOf, themes } from "./html.js";
 import { knowledgeRoutes } from "./knowledge.js";
 import { oidcRoutes, page } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
+import { overviewRoutes } from "./overview.js";
 import { peopleRoutes } from "./people.js";
 import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
@@ -69,7 +70,7 @@ export function adminRouter(deps: AdminDeps): Router {
     }),
   );
 
-  router.get("/", (_req, res) => res.redirect(303, isAdmin(adminOf(res).actor) ? "/admin/people" : "/admin/departments"));
+  router.use(overviewRoutes(db));
   router.use(peopleRoutes(db, deps.fetchUsers));
   router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail }));
   router.use(assignmentRoutes(db));

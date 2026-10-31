@@ -130,13 +130,13 @@ describe("admin router", () => {
     expect((await get("/admin/people", sessionCookie(secretsKey, "tenant-1", "no-such-person"))).status).toBe(403);
   });
 
-  it("GET /admin sends admins to People and heads to Departments", async () => {
-    const a = await get("/admin", as(admin));
-    expect(a.status).toBe(303);
-    expect(a.headers.get("location")).toBe("/admin/people");
-    const h = await get("/admin", as(head));
-    expect(h.status).toBe(303);
-    expect(h.headers.get("location")).toBe("/admin/departments");
+  it("GET /admin lands admins and heads on the Overview; plain users are refused", async () => {
+    for (const who of [admin, head]) {
+      const res = await get("/admin", as(who));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("<h1>Overview</h1>");
+    }
+    expect((await get("/admin/overview", as(user))).status).toBe(403);
   });
 
   it("a POST with a missing or wrong csrf is 403", async () => {

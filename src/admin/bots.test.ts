@@ -60,7 +60,7 @@ describe("bots screen", () => {
       ["name", "tickets"], ["transport", "http"], ["url", "https://mcp.example.test/"], ["headerName", "Authorization"], ["headerValue", "Bearer s3cret"], ["readOnlyTools", "list_a, list_b"],
     ]);
     expect(add.status).toBe(303);
-    const page = await (await get(`/admin/bots/${d.id}`, "Ann")).text();
+    const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
     expect(page).toContain("tickets");
     expect(page).toContain("headers set");
     expect(page).toContain("list_a, list_b");
@@ -145,7 +145,7 @@ describe("bots screen", () => {
       const c = await conn("lnk");
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
       expect((await listConnectionsFor(db, T, d.id)).map((x) => x.id)).toContain(c);
-      const page = await (await get(`/admin/bots/${d.id}`, "Ann")).text();
+      const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
       expect(page).toContain("lnk");
       expect(page).not.toContain("CIPHER-SECRET");
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
@@ -153,13 +153,13 @@ describe("bots screen", () => {
     });
     it("revoke shows the public key and the connection can no longer run", async () => {
       const c = await conn("rev");
-      const res = await post(`/admin/connections/${c}/revoke`, "Ann", []);
+      const res = await post(`/admin/connections/${c}/revoke`, "Ann", [["confirm", "yes"]]);
       const text = await res.text();
       expect(text).toContain("ssh-ed25519 AAAAPUB rev");
       const [row] = await db.select().from(connections).where(eq(connections.id, c));
       expect([row.status, row.secretCipher]).toEqual(["revoked", null]);
       const h = await conn("revhttp", { kind: "http", target: "https://x.example.test", config: {}, publicKey: null });
-      expect(await (await post(`/admin/connections/${h}/revoke`, "Ann", [])).text()).toContain("Revoke the token at its source");
+      expect(await (await post(`/admin/connections/${h}/revoke`, "Ann", [["confirm", "yes"]])).text()).toContain("Revoke the token at its source");
     });
     it("reset host key moves a blocked connection back to pending", async () => {
       const c = await conn("blk", { status: "blocked", hostKey: "k" });
@@ -172,7 +172,7 @@ describe("bots screen", () => {
       const chatId = "chat-r1";
       await db.insert(chats).values({ id: chatId, tenantId: T, conversationType: "personal", label: "Ops room" } as typeof chats.$inferInsert);
       await db.insert(chatAssignments).values({ chatId, definitionId: d.id } as typeof chatAssignments.$inferInsert);
-      expect(await (await get(`/admin/bots/${d.id}`, "Ann")).text()).toContain("Ops room");
+      expect(await (await get(`/admin/bots/${d.id}?tab=chats`, "Ann")).text()).toContain("Ops room");
       const res = await post(`/admin/bots/${d.id}/routines`, "Ann", [["chatId", chatId], ["prompt", "Check disk"], ["schedule", "0 9 * * 1-5"], ["grant", "on"]]);
       expect(res.status).toBe(303);
       const [r] = await listRoutines(db, T, d.id);
@@ -188,7 +188,7 @@ describe("bots screen", () => {
       const c = await conn("foreign", { tenantId: "other" });
       const d = await def("helper");
       for (const p of [`/admin/connections/${c}/revoke`, `/admin/connections/${c}/reset-host-key`, `/admin/connections/nope/revoke`, `/admin/bots/${d.id}/connections/${c}/link`]) {
-        expect((await post(p, "Ann", [["linked", "on"]])).status).toBe(400);
+        expect((await post(p, "Ann", [["linked", "on"], ["confirm", "yes"]])).status).toBe(400);
       }
       const [row] = await db.select().from(connections).where(eq(connections.id, c));
       expect([row.status, row.secretCipher]).toEqual(["active", "CIPHER-SECRET"]);
@@ -207,7 +207,7 @@ describe("bots screen", () => {
       const d = await def("helper");
       await conn("pk", { secretCipher: "-----BEGIN OPENSSH PRIVATE KEY-----" });
       const c = await conn("pk2", { secretCipher: "-----BEGIN OPENSSH PRIVATE KEY-----" });
-      expect(await (await post(`/admin/connections/${c}/revoke`, "Ann", [])).text()).not.toContain("BEGIN OPENSSH");
+      expect(await (await post(`/admin/connections/${c}/revoke`, "Ann", [["confirm", "yes"]])).text()).not.toContain("BEGIN OPENSSH");
       for (const p of ["/admin/bots", `/admin/bots/${d.id}`, "/admin/settings"]) expect(await (await get(p, "Ann")).text()).not.toContain("BEGIN OPENSSH");
     });
   });
@@ -280,16 +280,16 @@ describe("bot names and email addresses", () => {
     expect(await (await get("/admin/bots", "Ann")).text()).toContain('name="localPart"');
     await post(`/admin/bots/${def.id}`, "Ann", [["displayName", "Ines"], ["label", "plain"], ["model", "m"], ["persona", "p"]]);
     expect((await getDefinition(db, T, def.id))!.displayName).toBe("Ines");
-    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
-    expect(page).toContain('value="Ines"');
+    const page = await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text();
     expect(page).toContain("Create email address");
+    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain('value="Ines"');
   });
 
   it("a typed address creates the mailbox and the page shows it without any key", async () => {
     const { res, def } = await create("withmail", [["localPart", "Iris"]]);
     expect(res.status).toBe(303);
     expect((await box(def.id))?.address).toBe("iris@mail.test");
-    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    const page = await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text();
     expect(page).toContain("iris@mail.test");
     expect(page).toContain("Remove email address");
     for (const secret of ["bam_", "amwh_"]) expect(page).not.toContain(secret);
@@ -307,9 +307,9 @@ describe("bot names and email addresses", () => {
 
   it("remove and restore call the mailbox functions; removed offers restore", async () => {
     const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
-    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [])).status).toBe(303);
+    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [["confirm", "yes"]])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("removed");
-    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Restore email address");
+    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("Restore email address");
     expect((await post(`/admin/bots/${def.id}/mailbox/restore`, "Ann", [])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("active");
   });
@@ -326,12 +326,12 @@ describe("bot names and email addresses", () => {
   it("a pending mailbox offers Try again and a removing one Finish removing", async () => {
     const { def } = await create("stuck");
     await db.insert(mailboxes).values({ definitionId: def.id, tenantId: T, agent: "bb2-stuck", localPart: "stuck", status: "pending" });
-    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Try again");
+    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("Try again");
     expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Ann", [])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("active");
     await db.update(mailboxes).set({ status: "removing" }).where(eq(mailboxes.definitionId, def.id));
-    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Finish removing");
-    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [])).status).toBe(303);
+    expect(await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text()).toContain("Finish removing");
+    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [["confirm", "yes"]])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("removed");
     expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Hal", [])).status).toBe(403);
   });
@@ -341,7 +341,7 @@ describe("bot names and email addresses", () => {
     expect((await post(`/admin/bots/${def.id}/send-as`, "Ann", [["address", "iris@company.test"]])).status).toBe(303);
     expect(calls).toContain("check iris@company.test");
     expect(calls.some((c) => c.startsWith("send-as ") && c.endsWith(" iris@company.test"))).toBe(true);
-    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    const page = await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text();
     expect(page).toContain("pending forward");
     expect(page).toContain("automatic forwarding");
     expect(page).not.toContain("bam_");
@@ -429,11 +429,11 @@ describe("action rules", () => {
   const rules = async () => Object.fromEntries(await toolRulesFor(db, botId));
 
   it("the page groups the bot's tools by source, marks defaults and locks approvals", async () => {
-    const page = await (await get(`/admin/bots/${botId}`, "Ann")).text();
+    const page = await (await get(`/admin/bots/${botId}?tab=actions`, "Ann")).text();
     expect(page).toContain("<h2>Actions</h2>");
     for (const g of ["web", "mail", "connections", "tickets"]) expect(page).toContain(`<h3>${g}</h3>`);
-    expect(page).toMatch(/name="rule:WebSearch"[^]*?<option value="free" selected>Runs freely \(default\)/);
-    expect(page).toMatch(/name="rule:mcp__mail__send_email"[^]*?<option value="confirm" selected>Needs confirmation \(default\)/);
+    expect(page).toMatch(/name="rule:WebSearch" value="free" checked><span>Runs freely \(default\)/);
+    expect(page).toMatch(/name="rule:mcp__mail__send_email" value="confirm" checked><span>Needs confirmation \(default\)/);
     expect(page).toContain("Needs confirmation (locked)");
     expect(page).not.toContain('name="rule:mcp__connections__approve"');
   });
@@ -441,7 +441,7 @@ describe("action rules", () => {
   it("an admin's change is saved, shown and audited; choosing the default again clears it", async () => {
     expect((await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__mail__send_email", "free"], ["rule:WebSearch", "free"]])).status).toBe(303);
     expect(await rules()).toEqual({ mcp__mail__send_email: "free" });
-    expect(await (await get(`/admin/bots/${botId}`, "Ann")).text()).toMatch(/name="rule:mcp__mail__send_email"[^]*?<option value="free" selected>Runs freely</);
+    expect(await (await get(`/admin/bots/${botId}?tab=actions`, "Ann")).text()).toMatch(/name="rule:mcp__mail__send_email" value="free" checked><span>Runs freely</);
     const rows = await db.select().from(auditEvents).where(eq(auditEvents.kind, "admin"));
     expect(rows).toHaveLength(1); // the unchanged WebSearch writes no row
     expect(rows[0]).toMatchObject({ chatId: null, personId: id.Ann, toolName: "mcp__mail__send_email", status: "done", summary: "Admin: mcp__mail__send_email (Needs confirmation → Runs freely)" });
@@ -461,5 +461,59 @@ describe("action rules", () => {
     expect(await (await get(`/admin/bots/${botId}`, "Hal")).text()).not.toContain("<h2>Actions</h2>");
     expect((await post(`/admin/bots/${botId}/actions`, "Zed", [["rule:mcp__tickets__close_ticket", "free"]])).status).toBe(400);
     expect((await rules()).mcp__tickets__close_ticket).toBeUndefined();
+  });
+});
+
+
+describe("bot page tabs and arming", () => {
+  let db: Db;
+  let url: string;
+  let close: () => Promise<void>;
+  let ann: string, botId: string;
+
+  beforeAll(async () => {
+    db = await testDb();
+    await upsertTenant(db, { id: T });
+    ann = (await upsertPerson(db, { tenantId: T, aadObjectId: "aad-Ann", name: "Ann" })).id;
+    await setRole(db, T, ann, "admin");
+    botId = (await upsertDefinition(db, secretsKey, T, { name: "tabby", label: "Tabby", persona: "Persona text.", model: "m1", mcpServers: [] } as Parameters<typeof upsertDefinition>[3])).id;
+    await recordTools(db, botId, ["WebSearch"]);
+    await db.insert(mailboxes).values({ definitionId: botId, tenantId: T, agent: "a", localPart: "tabby", inboxId: "in1", address: "tabby@mail.test", status: "active" });
+    const mail = { db, secretsKey, publicUrl: "https://bot.example.test", admin: { mailDomain: async () => "mail.test", getSendAs: async () => ({}), setInboxActive: async () => undefined, listKeys: async () => [], listWebhooks: async () => [], revokeKey: async () => undefined, removeWebhook: async () => undefined } } as unknown as MailDeps;
+    const app = express();
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [], mail }));
+    ({ url, close } = await serve(app));
+  });
+  afterAll(() => close());
+
+  const cookie = () => sessionCookie(secretsKey, T, ann);
+  const get = (path: string) => fetch(url + path, { redirect: "manual", headers: { cookie: cookie() } }).then((r) => r.text());
+
+  it("each tab shows its own section and not the others", async () => {
+    const section: Record<string, string> = { persona: "Persona text.", email: "Remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines</h2>" };
+    for (const [tab, mark] of Object.entries(section)) {
+      const page = await get(`/admin/bots/${botId}?tab=${tab}`);
+      expect(page).toContain(mark);
+      for (const [other, m] of Object.entries(section)) if (other !== tab && m !== "Persona text.") expect(page).not.toContain(m);
+      expect(page).toContain(`class="active" aria-current="page">${tab}</a>`);
+    }
+    const first = await get(`/admin/bots/${botId}`);
+    expect(first).toContain('class="active" aria-current="page">overview</a>');
+    expect(first).toContain("be-pagehead");
+    expect(first).toContain("tabby@mail.test · m1");
+    expect(first).not.toMatch(/bam_|amwh_/);
+  });
+
+  it("removing the email address needs a second press and then works", async () => {
+    const post = (body: [string, string][]) =>
+      fetch(`${url}/admin/bots/${botId}/mailbox/remove`, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded", cookie: cookie() }, body: new URLSearchParams([["csrf", "csrf-1"], ["tab", "email"], ...body]).toString() });
+    const first = await post([]);
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("confirm remove?");
+    expect((await db.select().from(mailboxes).where(eq(mailboxes.definitionId, botId)))[0].status).toBe("active");
+    const second = await post([["confirm", "yes"]]);
+    expect(second.status).toBe(303);
+    expect(second.headers.get("location")).toBe(`/admin/bots/${botId}?tab=email`);
+    expect((await db.select().from(mailboxes).where(eq(mailboxes.definitionId, botId)))[0].status).toBe("removed");
   });
 });

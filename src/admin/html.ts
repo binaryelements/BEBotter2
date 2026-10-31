@@ -38,8 +38,8 @@ export const themeOf = (cookieHeader: string | undefined) => {
   return themes.find((t) => t === v);
 };
 
-// Overview joins the first (unnamed) group when its page lands.
 const groups = [
+  { name: "", items: [{ label: "Overview", path: "overview", head: true }] },
   { name: "Bots", items: [{ label: "Bots", path: "bots", head: false }, { label: "Assignments", path: "assignments", head: false }, { label: "Shared notes", path: "knowledge", head: true }] },
   { name: "People", items: [{ label: "People", path: "people", head: true }, { label: "Departments", path: "departments", head: true }] },
   { name: "Audit", items: [{ label: "Activity", path: "activity", head: true }, { label: "Settings", path: "settings", head: false }] },
@@ -56,8 +56,8 @@ export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csr
     .map((g) => ({ ...g, items: g.items.filter(visible) }))
     .filter((g) => g.items.length > 0)
     .map(
-      (g) => html`<div class="ng"><div class="nh">${g.name}</div>${g.items.map((s) => {
-        const on = ctx?.path === `/admin/${s.path}` || ctx?.path.startsWith(`/admin/${s.path}/`);
+      (g) => html`<div class="ng">${g.name ? html`<div class="nh">${g.name}</div>` : ""}${g.items.map((s) => {
+        const on = ctx?.path === `/admin/${s.path}` || (s.path === "overview" && ctx?.path === "/admin") || ctx?.path.startsWith(`/admin/${s.path}/`);
         return html`<a href="/admin/${s.path}"${on ? raw(' class="active" aria-current="page"') : ""}>${s.label}</a>`;
       })}</div>`,
     );
