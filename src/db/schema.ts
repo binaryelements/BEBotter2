@@ -63,6 +63,7 @@ export const botDefinitions = pgTable(
     id: text("id").primaryKey(),
     tenantId: text("tenant_id").notNull().references(() => tenants.id),
     name: text("name").notNull(),
+    displayName: text("display_name"), // the bot's name, shown to people and used for its mail address
     label: text("label").notNull(),
     persona: text("persona").notNull(),
     model: text("model").notNull(),
@@ -74,6 +75,22 @@ export const botDefinitions = pgTable(
   },
   (t) => [unique().on(t.tenantId, t.name)],
 );
+
+export const mailboxes = pgTable("mailboxes", {
+  definitionId: text("definition_id").primaryKey().references(() => botDefinitions.id),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  agent: text("agent").notNull(),
+  // ids and ciphers stay null until each step succeeds, so a half-finished create can resume
+  inboxId: text("inbox_id"),
+  address: text("address"),
+  keyId: text("key_id"),
+  keyCipher: text("key_cipher"),
+  webhookId: text("webhook_id"),
+  webhookSecretCipher: text("webhook_secret_cipher"),
+  status: text("status").notNull(), // active | removed
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const departments = pgTable(
   "departments",

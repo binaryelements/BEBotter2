@@ -24,6 +24,8 @@ const schema = z.object({
   COMPUTER_IMAGE: z.string().default("bebotter2-computer"),
   DOCKER_SOCKET: z.string().default("/var/run/docker.sock"),
   FILES_DIR: z.string().default("/srv/files"),
+  AGENTMAIL_URL: z.string().default("https://agentmail.a.sapautomate.com").transform((s) => s.replace(/\/+$/, "")),
+  AGENTMAIL_ADMIN_KEY: z.string().optional(),
 });
 
 export type Config = {
@@ -39,6 +41,7 @@ export type Config = {
   computerImage: string;
   dockerSocket: string;
   filesDir: string;
+  agentmail?: { url: string; adminKey: string };
 };
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -56,5 +59,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     computerImage: e.COMPUTER_IMAGE,
     dockerSocket: e.DOCKER_SOCKET,
     filesDir: e.FILES_DIR,
+    agentmail: e.AGENTMAIL_ADMIN_KEY ? { url: e.AGENTMAIL_URL, adminKey: e.AGENTMAIL_ADMIN_KEY } : undefined,
   };
 }
