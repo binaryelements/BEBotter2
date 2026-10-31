@@ -11,7 +11,7 @@ import { decrypt, encrypt } from "../secrets/cipher.js";
 export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine"] as const;
 
 /** MCP connections attach as `conn-<name>`, so that prefix is reserved too. */
-export const isReservedMcpName = (name: string): boolean => (RESERVED_MCP_NAMES as readonly string[]).includes(name) || name.startsWith("conn-");
+export const isReservedMcpName = (name: string): boolean => (RESERVED_MCP_NAMES as readonly string[]).includes(name.toLowerCase()) || name.toLowerCase().startsWith("conn-");
 
 export const mcpServerInput = z.object({
   name: z.string().min(1),
@@ -94,6 +94,11 @@ const stdioEnv = () => ({ PATH: process.env.PATH ?? "", HOME: process.env.HOME ?
 export function mcpServerConfigs(def: BotDefinition, secretsKey: Buffer): Record<string, McpServerConfig> {
   const out: Record<string, McpServerConfig> = {};
   for (const s of def.mcpServers) {
+    // saved before the name was reserved: skipped so it never shadows a built-in
+    if (isReservedMcpName(s.name)) {
+      console.error(`bot ${def.id}: MCP server "${s.name}" skipped, the name is reserved`);
+      continue;
+    }
     if (s.transport === "http" && !s.url) throw new Error(`MCP server ${s.name} has no url`);
     if (s.transport === "stdio" && !s.command) throw new Error(`MCP server ${s.name} has no command`);
     out[s.name] =

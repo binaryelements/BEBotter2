@@ -64,7 +64,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const { tenantId, chatId, definition, person } = turn;
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id };
 
-  const [session] = await db
+  // a run under an admin grant starts clean: text from the chat must not steer it, and its context stays out of the chat's session
+  const ownSession = !!turn.routine?.grantPersonId;
+  const [session] = ownSession ? [] : await db
     .select()
     .from(sessions)
     .where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
@@ -117,31 +119,36 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       approveTail = new Promise<void>((resolve) => approveReleases.set(toolUseID, resolve));
       await previous;
     }
-    // the card shows every argument, so a call too large to show is never asked
-    const args = JSON.stringify(input, null, 2);
-    if (args.length > MAX_CARD_ARGS) {
-      await completeAction(db, auditId, { status: "denied" });
-      releaseApprove(toolUseID);
-      return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
-    }
-    const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind) });
-    let o: Outcome | { result: "failed" };
     try {
-      await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input), args });
-      o = await outcome;
+      // the card shows every argument, so a call too large to show is never asked
+      const args = JSON.stringify(input, null, 2);
+      if (args.length > MAX_CARD_ARGS) {
+        await completeAction(db, auditId, { status: "denied" });
+        releaseApprove(toolUseID);
+        return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
+      }
+      const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind) });
+      let o: Outcome | { result: "failed" };
+      try {
+        await turn.askConfirmation({ actionId, label: definition.label, summary: summarise(toolName, input), args });
+        o = await outcome;
+      } catch (err) {
+        console.error("confirmation card failed", err);
+        o = { result: "failed" }; // the question never reached the asker; the model gets the denial and the turn goes on
+      }
+      if (o.result === "confirmed") {
+        if (kind === "approve") lastConfirmer = o.personId;
+        await recordAuthority(db, auditId, { type: "confirmation", personId: o.personId });
+        inFlight.set(toolUseID, auditId);
+        return { behavior: "allow", updatedInput: input };
+      }
+      await completeAction(db, auditId, { status: o.result });
+      releaseApprove(toolUseID);
+      return { behavior: "deny", message: NOT_DONE[o.result] };
     } catch (err) {
-      console.error("confirmation card failed", err);
-      o = { result: "failed" }; // the question never reached the asker; the model gets the denial and the turn goes on
+      releaseApprove(toolUseID); // a failure here must not hold up the next approval
+      throw err;
     }
-    if (o.result === "confirmed") {
-      if (kind === "approve") lastConfirmer = o.personId;
-      await recordAuthority(db, auditId, { type: "confirmation", personId: o.personId });
-      inFlight.set(toolUseID, auditId);
-      return { behavior: "allow", updatedInput: input };
-    }
-    await completeAction(db, auditId, { status: o.result });
-    releaseApprove(toolUseID);
-    return { behavior: "deny", message: NOT_DONE[o.result] };
   };
 
   const afterTool: HookCallback = async (input) => {
@@ -170,7 +177,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     maxTurns: 25,
     // the model's process gets no service secrets, only what it needs to run
     env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-    mcpServers: { ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), connections: connectionsMcpServer(deps, { ...base, confirmedBy }), routine: routineMcpServer(deps, { ...base, post: turn.routine?.post }), ...deps.builtinServers?.({ confirmedBy }), ...mcpServerConfigs(definition, deps.secretsKey), ...conn.servers },
+    mcpServers: { ...mcpServerConfigs(definition, deps.secretsKey), ...(computer ? { computer } : {}), knowledge: knowledgeMcpServer(deps, base), connections: connectionsMcpServer(deps, { ...base, confirmedBy }), routine: routineMcpServer(deps, { ...base, post: turn.routine?.post }), ...deps.builtinServers?.({ confirmedBy }), ...conn.servers },
     canUseTool,
     hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
   };
@@ -227,10 +234,11 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const ok = succeeded(msg);
     const text = ok && msg.subtype === "success" ? msg.result : FAILED_TEXT;
     const now = new Date();
-    await db
-      .insert(sessions)
-      .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
-      .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
+    if (!ownSession)
+      await db
+        .insert(sessions)
+        .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
+        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
     await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd);
     return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id, changed };
   } finally {

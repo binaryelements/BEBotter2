@@ -129,11 +129,23 @@ describe("bot definition admin helpers", () => {
 
 describe("reserved MCP names", () => {
   it("are refused", () => {
-    for (const name of ["knowledge", "connections", "routine", "computer", "conn-x"]) {
+    for (const name of ["knowledge", "connections", "routine", "computer", "conn-x", "Knowledge", "COMPUTER", "Conn-x"]) {
       const r = mcpServerInput.safeParse({ name, transport: "http", url: "https://example.com/mcp" });
       expect(r.success, name).toBe(false);
       expect(JSON.stringify(r.error?.issues)).toContain("reserved");
     }
     expect(mcpServerInput.safeParse({ name: "docs", transport: "http", url: "https://example.com/mcp" }).success).toBe(true);
+  });
+
+  it("saved servers with a reserved name are skipped at runtime", async () => {
+    const db = await testDb();
+    const key = Buffer.alloc(32, 3);
+    await upsertTenant(db, { id: "t1" });
+    const def = await upsertDefinition(db, key, "t1", { name: "b", label: "B", persona: "p", mcpServers: [{ name: "docs", transport: "stdio", command: "run" }] });
+    const legacy = { ...def, mcpServers: ["knowledge", "Routine", "conn-x", "docs"].map((name) => ({ name, transport: "stdio" as const, command: "run", readOnlyTools: [] })) };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(Object.keys(mcpServerConfigs(legacy, key))).toEqual(["docs"]);
+    expect(errors).toHaveBeenCalledTimes(3);
+    errors.mockRestore();
   });
 });
