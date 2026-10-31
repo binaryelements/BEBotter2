@@ -60,6 +60,18 @@ describe("handleMessage", () => {
     expect(s.sent).toEqual(["reply"]);
   });
 
+  it("still logs the timing line when recording it fails", async () => {
+    const s = await setup(true);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(recordSent).mockRejectedValueOnce(new Error("db down"));
+    await s.run(msg("personal"));
+    err.mockRestore();
+    const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn c1 "));
+    log.mockRestore();
+    expect(lines).toHaveLength(1);
+  });
+
   it("writes sentAt to the turn's row and logs one timing line without message text", async () => {
     const s = await setup(true);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -154,15 +166,15 @@ describe("handleMessage status message", () => {
         t.progress!({ kind: "text", text: "first" });
         t.progress!({ kind: "text", text: `  second\n\nline ${"x".repeat(300)}` });
         await wait(1999);
-        expect(x.log).toEqual(["send:Working: knowledge__search…"]);
+        expect(x.log).toEqual(["send:**Helper**\n\nWorking: knowledge__search…"]);
         await wait(1);
         await wait(5000);
       });
       const timersBefore = vi.getTimerCount();
       await run(x, "groupChat");
       expect(x.log).toEqual([
-        "send:Working: knowledge__search…",
-        `update:id1:second line ${"x".repeat(200 - "second line ".length)}`,
+        "send:**Helper**\n\nWorking: knowledge__search…",
+        `update:id1:**Helper**\n\nsecond line ${"x".repeat(200 - "second line ".length)}`,
         "update:id1:**Helper**\n\nfinal",
       ]);
       expect(vi.getTimerCount()).toBeLessThanOrEqual(timersBefore);
@@ -181,6 +193,54 @@ describe("handleMessage status message", () => {
       });
       await run(x);
       expect(x.log).toEqual(["send:thinking", "send:final"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends the reply as a new message once a confirmation card went out", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "text", text: "thinking" });
+        await wait(3000);
+        await t.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
+      });
+      await run(x);
+      expect(x.log).toEqual(["send:thinking", "send:final"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends at most one status message when Teams returns no activity id", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "text", text: "one" });
+        await wait(3000);
+        t.progress!({ kind: "text", text: "two" });
+        await wait(3000);
+      });
+      x.io.send = async (t: string) => (x.log.push(`send:${t}`), undefined as unknown as string);
+      await run(x);
+      expect(x.log).toEqual(["send:one", "send:final"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("carries the role label on the status message in a group chat", async () => {
+    vi.useFakeTimers();
+    try {
+      const x = await slowSetup(async (t, wait) => {
+        t.progress!({ kind: "text", text: "thinking" });
+        await wait(3000);
+        t.progress!({ kind: "text", text: "more" });
+        await wait(2000);
+      });
+      await run(x, "groupChat");
+      expect(x.log.slice(0, 2)).toEqual(["send:**Helper**\n\nthinking", "update:id1:**Helper**\n\nmore"]);
     } finally {
       vi.useRealTimers();
     }

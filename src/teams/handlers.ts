@@ -35,7 +35,7 @@ export async function serialize<T>(key: string, fn: () => Promise<T>): Promise<T
 }
 
 const ms = (from: string, to?: string) => (to ? Date.parse(to) - Date.parse(from) : "-");
-function logTurn(chatId: string, t: TurnTimings) {
+export function logTurn(chatId: string, t: TurnTimings) {
   console.log(`turn ${chatId} ${Date.now() - Date.parse(t.receivedAt)}ms ready=${ms(t.receivedAt, t.engineReadyAt)}ms first=${ms(t.receivedAt, t.firstOutputAt)}ms tools=${t.tools}`);
 }
 
@@ -49,12 +49,14 @@ const STATUS_AFTER_MS = 3000;
 const STATUS_EVERY_MS = 2000;
 
 /** One status message for a slow turn: shown after 3 s, edited at most every 2 s (latest wins), then turned into the reply. */
-function statusMessage(io: TeamsIo) {
+function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => t) {
   let label = "";
   let sawText = false;
   let shown = "";
   let id: string | undefined;
   let done = false;
+  let sentOnce = false; // at most one status message per turn, even when Teams gave no id to edit it by
+  let superseded = false;
   let last = Date.now() + STATUS_AFTER_MS - STATUS_EVERY_MS; // the first attempt is due STATUS_AFTER_MS from now
   let timer: ReturnType<typeof setTimeout> | undefined;
   let ops: Promise<unknown> = Promise.resolve();
@@ -65,8 +67,11 @@ function statusMessage(io: TeamsIo) {
     last = Date.now();
     shown = label;
     try {
-      if (id) await io.update(id, label);
-      else id = await io.send(label);
+      if (id) await io.update(id, decorate(label));
+      else if (!sentOnce) {
+        sentOnce = true;
+        id = await io.send(decorate(label));
+      }
     } catch (err) {
       console.error("status message failed", err);
     }
@@ -80,12 +85,12 @@ function statusMessage(io: TeamsIo) {
     } else if (!sawText) label = `Working: ${e.toolName.replace(/^mcp__/, "")}…`;
     if (!timer && !done) timer = setTimeout(() => void (ops = ops.then(flush)), Math.max(0, last + STATUS_EVERY_MS - Date.now()));
   };
-  /** Replaces the status message with text; sends a new message when there is none or it cannot be edited. */
+  /** Replaces the status message with text; sends a new message when there is none, it cannot be edited, or a card was sent. */
   const finish = async (text: string) => {
     done = true;
     clearTimeout(timer);
     await ops;
-    if (id) {
+    if (id && !superseded) {
       try {
         return await io.update(id, text);
       } catch (err) {
@@ -94,7 +99,11 @@ function statusMessage(io: TeamsIo) {
     }
     id = await io.send(text);
   };
-  return { progress, finish };
+  /** A confirmation card went out: the reply must arrive as a new message, since edits notify nobody. */
+  const supersede = () => {
+    superseded = true;
+  };
+  return { progress, finish, supersede };
 }
 
 export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string };
@@ -113,7 +122,8 @@ export async function handleMessage(
   if (!definition) return void (await io.send("No bot is set up for this chat yet."));
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
   await serialize(`${msg.chatId}:${definition.id}`, async () => {
-    const status = statusMessage(io);
+    const personal = msg.conversationType === "personal";
+    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(definition.label, t));
     try {
       const result = await deps.runTurn({
         tenantId: msg.tenantId,
@@ -122,16 +132,19 @@ export async function handleMessage(
         person,
         text: msg.text,
         receivedAt: msg.receivedAt,
-        askConfirmation: (req) => io.sendCard(confirmationCard(req)),
+        askConfirmation: (req) => {
+          status.supersede();
+          return io.sendCard(confirmationCard(req));
+        },
         progress: status.progress,
       });
-      await status.finish(msg.conversationType === "personal" ? result.text : withRoleLabel(definition.label, result.text));
+      await status.finish(personal ? result.text : withRoleLabel(definition.label, result.text));
       try {
         await recordSent(db, result.auditId, new Date());
-        logTurn(msg.chatId, result.timings);
       } catch (err) {
         console.error("recording turn timing failed", err); // the reply is already delivered; never answer twice
       }
+      logTurn(msg.chatId, result.timings);
     } catch (err) {
       console.error(err);
       await status.finish("Something went wrong on my side.");
