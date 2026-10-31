@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
+import type * as auditModule from "../audit/audit.js";
 import { eq } from "drizzle-orm";
-import { beginAction, completeAction } from "../audit/audit.js";
+import { beginAction, completeAction, recordSent } from "../audit/audit.js";
+vi.mock("../audit/audit.js", async (orig) => {
+  const actual = await orig<typeof auditModule>();
+  return { ...actual, recordSent: vi.fn(actual.recordSent) };
+});
 import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
@@ -46,6 +51,15 @@ async function setup(assign: boolean) {
 }
 
 describe("handleMessage", () => {
+  it("sends only the reply when recording the timing fails", async () => {
+    const s = await setup(true);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(recordSent).mockRejectedValueOnce(new Error("db down"));
+    await s.run(msg("personal"));
+    err.mockRestore();
+    expect(s.sent).toEqual(["reply"]);
+  });
+
   it("writes sentAt to the turn's row and logs one timing line without message text", async () => {
     const s = await setup(true);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});

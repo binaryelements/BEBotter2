@@ -80,6 +80,21 @@ function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()
 afterEach(() => vi.useRealTimers());
 
 describe("runTurn", () => {
+  it("a throwing progress callback is logged and the turn still finishes", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fn = (() =>
+      (async function* () {
+        yield { type: "assistant", message: { content: [{ type: "text", text: "Hi." }] } };
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, is_error: false };
+      })()) as unknown as typeof query;
+    const result = await runTurn(deps(db, fn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {}, progress: () => { throw new Error("boom"); } });
+    expect(result.text).toBe("Done.");
+    expect(err).toHaveBeenCalledWith("progress callback failed", expect.any(Error));
+    err.mockRestore();
+  });
+
   it("records phase timings on the message row and reports progress in order", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

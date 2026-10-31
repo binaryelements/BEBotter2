@@ -67,8 +67,12 @@ export async function handleMessage(
         askConfirmation: (req) => sendCard(confirmationCard(req)),
       });
       await send(msg.conversationType === "personal" ? result.text : withRoleLabel(definition.label, result.text));
-      await recordSent(db, result.auditId, new Date());
-      logTurn(msg.chatId, result.timings);
+      try {
+        await recordSent(db, result.auditId, new Date());
+        logTurn(msg.chatId, result.timings);
+      } catch (err) {
+        console.error("recording turn timing failed", err); // the reply is already delivered; never answer twice
+      }
     } catch (err) {
       console.error(err);
       await send("Something went wrong on my side.");

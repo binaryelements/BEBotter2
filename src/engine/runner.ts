@@ -72,6 +72,13 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const received = turn.receivedAt ?? new Date();
   const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };
   // phase bookkeeping for one SDK message; a live-session pool can feed its messages here too
+  const report = (event: ProgressEvent) => {
+    try {
+      turn.progress?.(event);
+    } catch (err) {
+      console.error("progress callback failed", err); // a broken listener must not abort the SDK stream
+    }
+  };
   const observe = (msg: SDKMessage) => {
     const at = new Date().toISOString();
     if (msg.type === "system" && msg.subtype === "init") timings.engineReadyAt ??= at;
@@ -79,12 +86,12 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     for (const block of msg.message.content) {
       if (block.type === "text") {
         timings.firstOutputAt ??= at;
-        turn.progress?.({ kind: "text", text: block.text });
+        report({ kind: "text", text: block.text });
       } else if (block.type === "tool_use") {
         timings.firstOutputAt ??= at;
         timings.firstToolAt ??= at;
         timings.tools++;
-        turn.progress?.({ kind: "tool", toolName: block.name });
+        report({ kind: "tool", toolName: block.name });
       }
     }
   };
