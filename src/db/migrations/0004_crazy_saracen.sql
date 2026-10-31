@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "last_cost_usd" numeric(12, 6);

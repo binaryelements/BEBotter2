@@ -120,6 +120,8 @@ export const sessions = pgTable(
     chatId: text("chat_id").notNull().references(() => chats.id),
     definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
     sdkSessionId: text("sdk_session_id").notNull(),
+    /** The last total_cost_usd the engine reported for this session; a turn's cost is the growth since. */
+    lastCostUsd: numeric("last_cost_usd", { precision: 12, scale: 6 }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.chatId, t.definitionId] })],

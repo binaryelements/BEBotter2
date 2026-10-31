@@ -4,7 +4,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import type { HookCallback, Options, PostToolUseFailureHookInput, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
-import { listActions } from "../audit/audit.js";
+import type * as auditModule from "../audit/audit.js";
+import { completeAction, listActions } from "../audit/audit.js";
+vi.mock("../audit/audit.js", async (orig) => {
+  const actual = await orig<typeof auditModule>();
+  return { ...actual, completeAction: vi.fn(actual.completeAction) };
+});
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
@@ -396,6 +401,51 @@ describe("runTurn", () => {
     errors.mockRestore();
   });
 
+  it("a cold resume that carries an earlier total records only the new spend", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(sessions).values({ chatId: "c1", definitionId: definition.id, sdkSessionId: "s-old", lastCostUsd: "0.400000", updatedAt: new Date() });
+    const totals = [0.55, 0.1];
+    const queryFn = (() =>
+      (async function* () {
+        yield { type: "result", subtype: "success", result: "Back.", session_id: "s-old", total_cost_usd: totals.shift(), is_error: false };
+      })()) as unknown as typeof query;
+    const run = () => runTurn(deps(db, queryFn), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    expect((await run()).costUsd).toBeCloseTo(0.15, 6);
+    expect((await db.select().from(sessions))[0]!.lastCostUsd).toBe("0.550000");
+    // a total below the stored one is a fresh total
+    expect((await run()).costUsd).toBeCloseTo(0.1, 6);
+    expect((await db.select().from(sessions))[0]!.lastCostUsd).toBe("0.100000");
+  });
+
+  it("a failing settle never replaces the answer", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    // a granted write is allowed and its hook never runs, so settle has an unfinished row to close
+    const queryFn = (({ options }: { options: Options }) =>
+      (async function* () {
+        await options.canUseTool!("mcp__tickets__close_ticket", { id: 7 }, { signal: new AbortController().signal, toolUseID: "tu-0" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, is_error: false };
+      })()) as unknown as typeof query;
+    const actualComplete = (await vi.importActual<typeof auditModule>("../audit/audit.js")).completeAction;
+    vi.mocked(completeAction).mockImplementation(async (...a) => {
+      if (a[2].status === "failed") throw new Error("db down");
+      return actualComplete(...a);
+    });
+    try {
+      const result = await runTurn(deps(db, queryFn), {
+        tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
+        routine: { id: "r1", grantPersonId: person.id, post: async () => {} },
+      });
+      expect(result.text).toBe("Done.");
+      expect(err).toHaveBeenCalledWith("closing an unfinished action failed", "db down");
+    } finally {
+      vi.mocked(completeAction).mockImplementation(actualComplete);
+      err.mockRestore();
+    }
+  });
+
   it("retries once with the same resume when the network drops", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
@@ -651,6 +701,26 @@ describe("runTurn", () => {
       expect(costs).toEqual([0.1, 0.15]);
       const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "message");
       expect(rows.map((r) => r.costUsd).sort()).toEqual(["0.100000", "0.150000"]);
+    });
+
+    it("progress from a warm process reaches only the turn that is running", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const fn = (({ prompt }: { prompt: AsyncIterable<{ message: { content: string } }> }) =>
+        Object.assign(
+          (async function* () {
+            for await (const m of prompt) {
+              yield { type: "assistant", message: { content: [{ type: "text", text: `working on ${m.message.content}` }] } };
+              yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, is_error: false };
+            }
+          })(),
+          { close: () => {} },
+        )) as unknown as typeof query;
+      const d = liveDeps(db, fn);
+      const seen: string[][] = [[], []];
+      for (const [i, text] of ["a", "b"].entries())
+        await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text, askConfirmation: async () => {}, progress: (e) => void (e.kind === "text" && seen[i]!.push(e.text)) });
+      expect(seen).toEqual([["working on a"], ["working on b"]]);
     });
 
     it("a connection approved or revoked between turns starts a new process", async () => {

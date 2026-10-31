@@ -1,6 +1,6 @@
 import type { Options, Query, SDKMessage, SDKResultMessage, SDKUserMessage, query } from "@anthropic-ai/claude-agent-sdk";
 
-type Live = { q: Query; it: AsyncIterator<SDKMessage>; push: (m: SDKUserMessage) => void; end: () => void; fingerprint: string; busy: boolean; spent: number; timer?: NodeJS.Timeout };
+type Live = { q: Query; it: AsyncIterator<SDKMessage>; push: (m: SDKUserMessage) => void; end: () => void; fingerprint: string; busy: boolean; timer?: NodeJS.Timeout };
 
 /** A prompt the SDK reads one user message at a time, for as long as the process lives. */
 function inbox() {
@@ -34,7 +34,7 @@ export class LiveSessions {
   ) {}
 
   /**
-   * Sends one user message and resolves with its result, whose total_cost_usd is this turn's cost (the process reports a running total).
+   * Sends one user message and resolves with its result (total_cost_usd is the session's running total).
    * A different fingerprint replaces the process; a failed turn closes it.
    */
   async send(key: string, fingerprint: string, start: () => Options, text: string, onMessage: (m: SDKMessage) => void): Promise<SDKResultMessage> {
@@ -46,7 +46,7 @@ export class LiveSessions {
     if (!s) {
       const box = inbox();
       const q = this.queryFn({ prompt: box.iterable, options: start() });
-      s = { q, it: q[Symbol.asyncIterator](), push: box.push, end: box.end, fingerprint, busy: false, spent: 0 };
+      s = { q, it: q[Symbol.asyncIterator](), push: box.push, end: box.end, fingerprint, busy: false };
     }
     const live = s;
     clearTimeout(live.timer);
@@ -60,11 +60,7 @@ export class LiveSessions {
         const { value, done } = await live.it.next();
         if (done) throw new Error("engine process ended mid-turn");
         onMessage(value);
-        if (value.type === "result") {
-          const cost = value.total_cost_usd - live.spent;
-          live.spent = value.total_cost_usd;
-          return { ...value, total_cost_usd: cost };
-        }
+        if (value.type === "result") return value;
       }
     } catch (err) {
       this.drop(key, live);

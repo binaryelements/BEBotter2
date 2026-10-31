@@ -90,12 +90,13 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   };
   // each attempt starts over, so the timings describe the attempt that answered
   const resetTimings = () => {
-    for (const k of ["engineReadyAt", "firstOutputAt", "firstToolAt", "live"] as const) delete timings[k];
+    for (const k of ["engineReadyAt", "firstOutputAt", "firstToolAt", "resultAt", "live"] as const) delete timings[k];
     timings.tools = 0;
   };
   const observe = (msg: SDKMessage) => {
     const at = new Date().toISOString();
     if (msg.type === "system" && msg.subtype === "init") timings.engineReadyAt ??= at;
+    if (msg.type === "result") timings.resultAt = at;
     if (msg.type !== "assistant") return;
     for (const block of msg.message.content) {
       if (block.type === "text") {
@@ -116,6 +117,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     .select()
     .from(sessions)
     .where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
+  // the engine reports a session's running total, resumed sessions included; a turn's cost is the growth since the last one seen
+  let lastCost = Number(session?.lastCostUsd ?? 0);
+  const turnCost = (total: number) => (ownSession ? total : Math.round((total >= lastCost ? total - lastCost : total) * 1e6) / 1e6);
   const containerId = definition.computer ? await ensureComputer(db, deps.docker, deps.computerImage, definition.id) : undefined;
   const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id);
 
@@ -141,7 +145,13 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   let attemptNo = 0;
   const settle = async () => {
     attemptNo++;
-    for (const auditId of inFlight.values()) await completeAction(db, auditId, { status: "failed" });
+    for (const auditId of inFlight.values()) {
+      try {
+        await completeAction(db, auditId, { status: "failed" });
+      } catch (err) {
+        console.error("closing an unfinished action failed", err instanceof Error ? err.message : "unknown"); // never replaces the turn's answer
+      }
+    }
     inFlight.clear();
     for (const id of [...approveReleases.keys()]) releaseApprove(id);
     approveTail = Promise.resolve();
@@ -283,7 +293,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     }
     return undefined;
   };
-  // one transient-network retry per turn, so with the resume retry a turn runs at most three attempts
+  // one transient-network retry per turn, so with the warm process and the resume retry a turn runs at most four attempts
   let networkRetried = false;
   const attempt = async (resume?: string): Promise<SDKResultMessage | undefined> => {
     try {
@@ -354,7 +364,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       }
       if (!succeeded(msg)) {
         // the transcript may be gone (redeploy, lost volume); start a fresh session once
-        if (msg) await auditMessage(FAILED_TEXT, "failed", msg.total_cost_usd);
+        if (msg) await auditMessage(FAILED_TEXT, "failed", turnCost(msg.total_cost_usd));
+        lastCost = 0; // a fresh session starts its own total
         await db.delete(sessions).where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
         live?.close(liveKey); // it holds the session just given up
         await settle();
@@ -370,14 +381,14 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const ok = succeeded(msg);
     const text = ok && msg.subtype === "success" ? msg.result : FAILED_TEXT;
     const now = new Date();
+    const costUsd = turnCost(msg.total_cost_usd);
     if (!ownSession)
       await db
         .insert(sessions)
-        .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, updatedAt: now })
-        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, updatedAt: now } });
-    timings.resultAt = now.toISOString();
-    const auditId = await auditMessage(text, ok ? "done" : "failed", msg.total_cost_usd, timings);
-    return { text, costUsd: msg.total_cost_usd, sessionId: msg.session_id, changed, timings, auditId };
+        .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now })
+        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now } });
+    const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings);
+    return { text, costUsd, sessionId: msg.session_id, changed, timings, auditId };
   } finally {
     await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
   }
