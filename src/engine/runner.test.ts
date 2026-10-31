@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import type { HookCallback, Options, PostToolUseFailureHookInput, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
 import { listActions } from "../audit/audit.js";
-import { upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
@@ -17,6 +17,8 @@ import { setRole } from "../org/directory.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { Confirmations } from "./confirm.js";
+import { LiveSessions } from "./live.js";
+import { listRoutines } from "../routines/store.js";
 import { runTurn } from "./runner.js";
 import type { ConfirmationRequest } from "./runner.js";
 
@@ -26,32 +28,35 @@ const calls: [string, Record<string, unknown>][] = [
   ["mcp__tickets__close_ticket", { id: 7 }],
 ];
 
-/** Drives options.canUseTool and the PostToolUse hook the way the SDK does, then yields a result. */
+/** Drives options.canUseTool and the PostToolUse hook the way the SDK does, then yields a result, once per user message. */
 function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown>; calls?: [string, Record<string, unknown>][] } = {}) {
   const seen: Options[] = [];
   const decisions: (string | undefined)[] = [];
   const messages: (string | undefined)[] = [];
-  const fn = (({ options }: { prompt: string; options: Options }) => {
+  const fn = (({ prompt, options }: { prompt: string | AsyncIterable<unknown>; options: Options }) => {
     seen.push(options);
-    return (async function* () {
-      const signal = new AbortController().signal;
-      for (const [i, [name, input]] of (opts.calls ?? calls).entries()) {
-        const toolUseID = `tu-${i}`;
-        const r = await options.canUseTool!(name, input, { signal, toolUseID } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
-        decisions.push(r?.behavior);
-        if (r?.behavior === "deny") messages.push(r.message);
-        if (r?.behavior !== "allow") continue;
-        const common = { tool_name: name, tool_input: input, tool_use_id: toolUseID, session_id: "s-1", transcript_path: "", cwd: "" };
-        if (name === opts.failTool) {
-          const hook = options.hooks!.PostToolUseFailure![0]!.hooks[0] as HookCallback;
-          await hook({ ...common, hook_event_name: "PostToolUseFailure", error: "boom" } as PostToolUseFailureHookInput, toolUseID, { signal });
-        } else {
-          const hook = options.hooks!.PostToolUse![0]!.hooks[0] as HookCallback;
-          await hook({ ...common, hook_event_name: "PostToolUse", tool_response: "ok" } as PostToolUseHookInput, toolUseID, { signal });
+    const gen = (async function* () {
+      for await (const _ of typeof prompt === "string" ? [prompt] : prompt) {
+        const signal = new AbortController().signal;
+        for (const [i, [name, input]] of (opts.calls ?? calls).entries()) {
+          const toolUseID = `tu-${i}`;
+          const r = await options.canUseTool!(name, input, { signal, toolUseID } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+          decisions.push(r?.behavior);
+          if (r?.behavior === "deny") messages.push(r.message);
+          if (r?.behavior !== "allow") continue;
+          const common = { tool_name: name, tool_input: input, tool_use_id: toolUseID, session_id: "s-1", transcript_path: "", cwd: "" };
+          if (name === opts.failTool) {
+            const hook = options.hooks!.PostToolUseFailure![0]!.hooks[0] as HookCallback;
+            await hook({ ...common, hook_event_name: "PostToolUseFailure", error: "boom" } as PostToolUseFailureHookInput, toolUseID, { signal });
+          } else {
+            const hook = options.hooks!.PostToolUse![0]!.hooks[0] as HookCallback;
+            await hook({ ...common, hook_event_name: "PostToolUse", tool_response: "ok" } as PostToolUseHookInput, toolUseID, { signal });
+          }
         }
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 2, duration_ms: 10, is_error: false, ...opts.result };
       }
-      yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 2, duration_ms: 10, is_error: false, ...opts.result };
     })();
+    return Object.assign(gen, { close: () => {} });
   }) as unknown as typeof query;
   return { fn, seen, decisions, messages };
 }
@@ -529,5 +534,83 @@ describe("runTurn", () => {
     await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => void (requests.push(r), d.confirmations.resolve(r.actionId, person.id, "no")) });
     expect(Object.keys(q.seen[0]!.mcpServers!)).not.toContain("conn-desk");
     expect(requests).toHaveLength(1);
+  });
+
+  describe("live sessions", () => {
+    type Handler = (args: Record<string, string>) => Promise<{ isError?: boolean; content: { text: string }[] }>;
+    const toolsOf = (server: unknown) => (server as { instance: { _registeredTools: Record<string, { handler: Handler }> } }).instance._registeredTools;
+    const liveDeps = (db: Db, queryFn: typeof query) => ({ ...deps(db, queryFn), live: new LiveSessions(queryFn, { idleMs: 60_000, max: 5 }) });
+
+    it("a warm process acts for the person of each turn", async () => {
+      const db = await testDb();
+      const { definition, person: ann } = await setup(db);
+      await assignToChat(db, "c1", definition.id);
+      const bob = await upsertPerson(db, { tenantId: "t1", aadObjectId: "b1", name: "Bob" });
+      const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7 }]] });
+      const d = liveDeps(db, q.fn);
+      const answers: string[] = [];
+      const turn = (person: typeof ann, onCard: () => Promise<void> = async () => {}) =>
+        runTurn(d, {
+          tenantId: "t1", chatId: "c1", definition, person, text: "close 7",
+          askConfirmation: async (r) => {
+            await onCard();
+            answers.push(await d.confirmations.resolve(r.actionId, ann.id, "yes")); // Ann may confirm only her own write
+            if (person.id !== ann.id) answers.push(await d.confirmations.resolve(r.actionId, person.id, "yes"));
+          },
+        });
+      const first = await turn(ann);
+      const remind = toolsOf(q.seen[0]!.mcpServers!.routine).remind!.handler;
+      const second = await turn(bob, async () => void (await remind({ at: new Date(Date.now() + 3600_000).toISOString(), prompt: "x" })));
+
+      expect(q.seen).toHaveLength(1);
+      expect(first.timings.live).toBeUndefined();
+      expect(second.timings).toMatchObject({ live: true, tools: 0 });
+      expect(answers).toEqual(["confirmed", "not_allowed", "confirmed"]);
+      const tools = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
+      expect(tools.map((r) => [r.personId, r.authority])).toEqual(
+        expect.arrayContaining([[ann.id, { type: "confirmation", personId: ann.id }], [bob.id, { type: "confirmation", personId: bob.id }]]),
+      );
+      expect((await listRoutines(db, "t1")).map((r) => r.createdByPersonId)).toEqual([bob.id]);
+      // between turns the process acts for nobody
+      expect((await remind({ at: new Date(Date.now() + 3600_000).toISOString(), prompt: "y" })).isError).toBe(true);
+    });
+
+    it("an edited definition starts a new process that resumes the session", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const ask = async () => {};
+      await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
+      await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
+      const edited = { ...definition, persona: "You run billing.", updatedAt: new Date(definition.updatedAt.getTime() + 1000) };
+      await runTurn(d, { tenantId: "t1", chatId: "c1", definition: edited, person, text: "c", askConfirmation: ask });
+      expect(q.seen.map((o) => [o.systemPrompt, o.resume])).toEqual([["You run ops.", undefined], ["You run billing.", "s-1"]]);
+    });
+
+    it("a dead process falls back to a cold run", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      const q = fakeQuery({ calls: [] });
+      const dead = (() => Object.assign((async function* () { throw new Error("process died"); })(), { close: () => {} })) as unknown as typeof query;
+      const d = { ...deps(db, q.fn), live: new LiveSessions(dead, { idleMs: 60_000, max: 5 }) };
+      const result = await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: async () => {} });
+      err.mockRestore();
+      expect(result.text).toBe("Done.");
+      expect(result.timings.live).toBeUndefined();
+      expect(q.seen).toHaveLength(1);
+    });
+
+    it("a granted routine run never uses the live process", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const send = vi.spyOn(d.live, "send");
+      await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async () => {}, routine: { id: "r1", grantPersonId: person.id, post: async () => {} } });
+      expect(send).not.toHaveBeenCalled();
+      expect(q.seen).toHaveLength(1);
+    });
   });
 });

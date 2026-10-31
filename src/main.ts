@@ -9,6 +9,7 @@ import { loadEnvFile } from "./config/env-file.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { connect } from "./db/client.js";
 import { Confirmations } from "./engine/confirm.js";
+import { LiveSessions } from "./engine/live.js";
 import { systemSsh } from "./connections/ssh.js";
 import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
@@ -20,6 +21,8 @@ loadEnvFile();
 const config = loadConfig(process.env);
 const db = await connect(config.databaseUrl);
 const confirmations = new Confirmations();
+// operational limits: an idle chat's engine stops after 10 minutes, and at most 20 stay warm
+const live = new LiveSessions(query, { idleMs: 10 * 60_000, max: 20 });
 const runnerDeps: RunnerDeps = {
   db,
   queryFn: query,
@@ -31,6 +34,7 @@ const runnerDeps: RunnerDeps = {
   ssh: systemSsh(),
   publicUrl: config.publicUrl,
   fetchFn: fetch,
+  live,
 };
 const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
@@ -49,3 +53,6 @@ startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m) });
+
+for (const signal of ["SIGTERM", "SIGINT"] as const)
+  process.once(signal, () => void live.closeAll().finally(() => process.exit(0)));
