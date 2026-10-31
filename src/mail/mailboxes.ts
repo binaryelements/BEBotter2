@@ -8,11 +8,11 @@ import { MailError } from "./agentmail.js";
 export type MailDeps = { db: Db; secretsKey: Buffer; admin: ReturnType<typeof agentMailAdmin>; publicUrl: string };
 export type Mailbox = typeof mailboxes.$inferSelect;
 
-const LOCAL_PART = /^[a-z0-9._-]{1,36}$/;
+const LOCAL_PART = /^[a-z0-9][a-z0-9._-]{0,35}$/;
 const agentOf = (definitionId: string) => `bb2-${definitionId.slice(0, 12)}`;
 
 export class MailboxError extends Error {
-  constructor(readonly reason: "invalid" | "taken" | "removed", message: string) {
+  constructor(readonly reason: "invalid" | "taken" | "refused" | "removed", message: string) {
     super(message);
     this.name = "MailboxError";
   }
@@ -34,6 +34,8 @@ const patch = async (db: Db, id: string, set: Partial<Mailbox>): Promise<Mailbox
 const errName = (e: unknown) => (e instanceof Error ? e.name : "error");
 const isUniqueViolation = (e: unknown) => [e, (e as { cause?: unknown } | null)?.cause].some((x) => (x as { code?: unknown } | null)?.code === "23505");
 const inactive = (m: Mailbox) => m.status === "removed" || m.status === "removing";
+
+const gone = (fn: () => Promise<void>) => fn().catch((e) => { if (!(e instanceof MailError && e.status === 404)) throw e; });
 
 const complete = (m: Mailbox) => !!(m.inboxId && m.keyId && m.keyCipher && m.webhookId && m.webhookSecretCipher);
 
@@ -64,12 +66,9 @@ export async function requestMailbox(deps: MailDeps, definitionId: string, local
   const work = ensureMailbox(deps, definitionId).then(
     (m) => m?.address ?? undefined,
     async (e) => {
-      if (!(e instanceof MailboxError)) {
-        console.error("mailbox:", errName(e));
-        return undefined;
-      }
-      await db.delete(mailboxes).where(eq(mailboxes.definitionId, definitionId)); // nothing was created
-      throw e;
+      if (e instanceof MailboxError) throw e;
+      console.error("mailbox:", errName(e));
+      return undefined;
     },
   );
   let timer: number | undefined;
@@ -98,10 +97,18 @@ async function ensure({ db, secretsKey, admin, publicUrl }: MailDeps, id: string
       const made = await admin.createInbox(local, displayName, row.agent);
       row = await patch(db, id, { inboxId: made.id, address: made.address });
     } catch (e) {
+      const refused = e instanceof MailError && e.status !== undefined && e.status >= 400 && e.status < 500 && ![408, 409, 429].includes(e.status);
+      if (refused) {
+        await db.delete(mailboxes).where(eq(mailboxes.definitionId, id)); // nothing was created and retrying cannot help
+        throw new MailboxError("refused", `BE AgentMail refused that address${e.detail ? `: ${e.detail}` : ""}`);
+      }
       if (!(e instanceof MailError && e.status === 409)) throw e;
       // a lost response may mean the inbox is ours already: adopt it when this bot's agent owns it
       const found = await admin.findInbox(local);
-      if (found?.ownerAgent !== row.agent) throw new MailboxError("taken", `The address ${local} is already taken`);
+      if (found?.ownerAgent !== row.agent) {
+        await db.delete(mailboxes).where(eq(mailboxes.definitionId, id));
+        throw new MailboxError("taken", `The address ${local} is already taken`);
+      }
       row = await patch(db, id, { inboxId: found.id, address: found.address });
     }
   } else if (complete(row)) {
@@ -128,8 +135,11 @@ export function removeMailbox(deps: MailDeps, definitionId: string): Promise<voi
     if (!row || row.status === "removed") return;
     // marked first, so a failure part way cannot be revived by a save or a restart; a retry resumes here
     if (row.status !== "removing") row = await patch(db, definitionId, { status: "removing" });
-    if (row.keyId) row = await patch(db, definitionId, (await admin.revokeKey(row.keyId), { keyId: null, keyCipher: null }));
-    if (row.webhookId) row = await patch(db, definitionId, (await admin.removeWebhook(row.webhookId), { webhookId: null, webhookSecretCipher: null }));
+    // every live key and webhook of this bot's agent, not only the recorded ones; already gone counts as done
+    for (const k of await admin.listKeys(row.agent)) await gone(() => admin.revokeKey(k));
+    row = await patch(db, definitionId, { keyId: null, keyCipher: null });
+    for (const w of await admin.listWebhooks(row.agent)) await gone(() => admin.removeWebhook(w));
+    row = await patch(db, definitionId, { webhookId: null, webhookSecretCipher: null });
     if (row.inboxId) await admin.setInboxActive(row.inboxId, false);
     await patch(db, definitionId, { status: "removed" });
   });
@@ -147,10 +157,11 @@ export async function restoreMailbox(deps: MailDeps, definitionId: string): Prom
 /** Startup: finishes requested mailboxes that are incomplete (pending or missing a piece), one at a time, errors logged by name only. Never creates a row. */
 export async function ensureAllMailboxes(deps: MailDeps): Promise<void> {
   for (const m of await deps.db.select().from(mailboxes)) {
-    if (inactive(m) || (m.status === "active" && complete(m))) continue;
+    if (m.status === "removed" || (m.status === "active" && complete(m))) continue;
     const id = m.definitionId;
     try {
-      await ensureMailbox(deps, id);
+      if (m.status === "removing") await removeMailbox(deps, id); // removal is always safe to resume
+      else await ensureMailbox(deps, id);
     } catch (e) {
       console.error("mailbox:", errName(e));
     }

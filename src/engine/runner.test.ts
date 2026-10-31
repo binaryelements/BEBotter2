@@ -675,6 +675,15 @@ describe("runTurn", () => {
     expect(String(q.seen[1]!.systemPrompt)).toContain("an admin can add one on the admin page");
   });
 
+  it("a named bot states its name even without a mailbox", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, displayName: "Ada" }, person, text: "a", askConfirmation: async () => {} });
+    expect(String(q.seen[0]!.systemPrompt)).toContain("Your name is Ada.");
+    expect(String(q.seen[0]!.systemPrompt)).toContain("cannot send or receive email");
+  });
+
   it("a mailbox key that cannot be decrypted means no mail, and the turn still runs", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

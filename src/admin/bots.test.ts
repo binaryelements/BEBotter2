@@ -11,6 +11,7 @@ import { listConnectionsFor } from "../connections/store.js";
 import { listRoutines } from "../routines/store.js";
 import { eq } from "drizzle-orm";
 import type { MailDeps } from "../mail/mailboxes.js";
+import { MailError } from "../mail/agentmail.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -311,6 +312,28 @@ describe("bot names and email addresses", () => {
     expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Restore email address");
     expect((await post(`/admin/bots/${def.id}/mailbox/restore`, "Ann", [])).status).toBe(303);
     expect((await box(def.id))?.status).toBe("active");
+  });
+
+  it("a refused address shows the reason and leaves no mailbox", async () => {
+    const real = admin.createInbox;
+    admin.createInbox = async () => { throw new MailError("bad", 422, "reserved name"); };
+    const { res, def } = await create("refused", [["localPart", "admin"]]);
+    admin.createInbox = real;
+    expect(await res.text()).toContain("reserved name");
+    expect(await box(def.id)).toBeUndefined();
+  });
+
+  it("a pending mailbox offers Try again and a removing one Finish removing", async () => {
+    const { def } = await create("stuck");
+    await db.insert(mailboxes).values({ definitionId: def.id, tenantId: T, agent: "bb2-stuck", localPart: "stuck", status: "pending" });
+    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Try again");
+    expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("active");
+    await db.update(mailboxes).set({ status: "removing" }).where(eq(mailboxes.definitionId, def.id));
+    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Finish removing");
+    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("removed");
+    expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Hal", [])).status).toBe(403);
   });
 
   it("the company address is checked, requested, shown without secrets, and cleared", async () => {

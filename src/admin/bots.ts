@@ -14,7 +14,7 @@ import { knownTools, setToolRule, toolRulesFor, toolSource } from "../engine/too
 import { beginAction, completeAction } from "../audit/audit.js";
 import { chatAssignments, chats, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
-import { MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
+import { ensureMailbox, MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { DirectoryError, listDepartments } from "../org/directory.js";
 import { getTenantSettings } from "../org/org.js";
@@ -122,8 +122,8 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
       const localPart = field(req, "localPart").trim();
       if (mail && localPart) {
         try {
-          await requestMailbox(mail, def.id, localPart); // bounded wait; the bot page shows the address or that it is being created
-          await audit(actor, "mailbox", def.id, "done");
+          const address = await requestMailbox(mail, def.id, localPart); // bounded wait; the bot page shows the address or that it is being created
+          await audit(actor, "mailbox", def.id, address ? "done" : "failed", address ? "" : "still being created");
         } catch (e) {
           const msg = mailMessage(e) ?? "Something went wrong.";
           if (!mailMessage(e)) console.error("mailbox:", e instanceof Error ? e.name : "error");
@@ -158,7 +158,8 @@ ${domain ? html`<p><label>Email address <input name="localPart" maxlength="36" a
 <p>In Microsoft 365, forward the company address to ${box.address ?? ""} with a plain forward, and allow automatic forwarding in the outbound anti-spam policy.</p>`;
     }
     return html`<h2>Email</h2><p>${box.address ?? box.localPart ?? ""} (${label})</p>${
-      box.status === "active" ? act("mailbox/remove", "Remove email address") : box.status === "removed" ? act("mailbox/restore", "Restore email address") : ""
+      box.status === "active" ? act("mailbox/remove", "Remove email address") : box.status === "removed" ? act("mailbox/restore", "Restore email address")
+        : box.status === "pending" ? act("mailbox/retry", "Try again") : box.status === "removing" ? act("mailbox/remove", "Finish removing") : ""
     }${sendAs}`;
   };
 
@@ -293,6 +294,7 @@ ${mailSection}${actionsSection}<h2>MCP servers</h2>
     );
   mailAction("mailbox", async (req, id) => void (await requestMailbox(mail!, id, field(req, "localPart"))));
   mailAction("mailbox/remove", (_req, id) => removeMailbox(mail!, id));
+  mailAction("mailbox/retry", async (_req, id) => void (await ensureMailbox(mail!, id)));
   mailAction("mailbox/restore", async (_req, id) => void (await restoreMailbox(mail!, id)));
   const activeInbox = async (id: string) => {
     const box = await mailboxOf(id);

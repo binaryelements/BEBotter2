@@ -242,4 +242,46 @@ describe("mailboxes", () => {
     await removeMailbox(deps, id);
     await expect(requestMailbox(deps, id, "ada")).rejects.toMatchObject({ reason: "removed" });
   });
+
+  it("refuses an address BE AgentMail's own rule rejects, before any call", async () => {
+    const { deps, calls, def } = await setup();
+    const id = await def("bot");
+    for (const bad of [".iris", "-x", "_ops"]) await expect(requestMailbox(deps, id, bad)).rejects.toMatchObject({ reason: "invalid" });
+    expect(calls).toEqual([]);
+  });
+
+  it("a 422 from createInbox is refused with its reason and leaves no row", async () => {
+    const { deps, def, db } = await setup();
+    deps.admin.createInbox = async () => { throw new MailError("bad", 422, "local_part reserved"); };
+    const err = await requestMailbox(deps, await def("bot"), "admin").catch((e) => e);
+    expect(err).toMatchObject({ reason: "refused" });
+    expect(err.message).toContain("local_part reserved");
+    expect(await db.select().from(mailboxes)).toHaveLength(0);
+  });
+
+  it("remove revokes every live key and webhook of the agent and treats 404 as gone", async () => {
+    const { deps, def, db, keys, hooks } = await setup();
+    const id = await def("bot");
+    await make(deps, id, "ada");
+    const agent = `bb2-${id.slice(0, 12)}`;
+    keys.set("stray-key", agent);
+    hooks.set("stray-hook", agent);
+    keys.set("other", "bb2-other");
+    const real = deps.admin.revokeKey;
+    deps.admin.revokeKey = async (k) => { if (k === "stray-key") throw new MailError("gone", 404); return real(k); };
+    await removeMailbox(deps, id);
+    expect([...keys.keys()]).toEqual(["stray-key", "other"]); // the 404 one was already gone; the recorded one is revoked
+    expect(hooks.size).toBe(0);
+    expect((await db.select().from(mailboxes))[0]).toMatchObject({ status: "removed", keyId: null, webhookId: null });
+  });
+
+  it("startup finishes a removal that was left half done", async () => {
+    const { deps, def, db, keys } = await setup();
+    const id = await def("bot");
+    await make(deps, id, "ada");
+    await db.update(mailboxes).set({ status: "removing" }).where(eq(mailboxes.definitionId, id));
+    await ensureAllMailboxes(deps);
+    expect(keys.size).toBe(0);
+    expect((await db.select().from(mailboxes))[0]!.status).toBe("removed");
+  });
 });

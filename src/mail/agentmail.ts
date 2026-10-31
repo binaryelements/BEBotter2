@@ -1,6 +1,7 @@
 /** BE AgentMail's own explanation of a refusal: plain text, short, with anything that looks like a key removed. */
 export function cleanDetail(raw: unknown): string | undefined {
-  const text = typeof raw === "string" ? raw : "";
+  // FastAPI validation errors arrive as a list of {msg}
+  const text = typeof raw === "string" ? raw : Array.isArray(raw) ? raw.map((d) => (typeof (d as { msg?: unknown })?.msg === "string" ? (d as { msg: string }).msg : "")).filter(Boolean).join("; ") : "";
   const out = text.replace(/\b(?:bam|amwh)_\S*/g, "").replace(/\s+/g, " ").trim().slice(0, 200);
   return out || undefined;
 }
