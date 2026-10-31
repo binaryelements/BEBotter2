@@ -41,6 +41,11 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
   // longRunningMessages answers the HTTP request at once; a turn can wait minutes on a confirmation card
   // startServer reuses app.adapter, so proactive sends go through the same adapter as replies
   const app = new AgentApplication<TurnState>({ adapter: new CloudAdapter(), startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true });
+  // the SDK default posts "please fix the source code" into the chat and logs nothing we can see; handlers already tell the user
+  app.adapter.onTurnError = async (ctx, err) => {
+    const e = err as { name?: string; message?: string; statusCode?: number };
+    console.error(`turn error in ${ctx.activity.conversation?.id ?? "?"}: ${e?.name ?? "Error"} ${e?.statusCode ?? ""} ${String(e?.message ?? "").slice(0, 300)}`);
+  };
 
   app.onConversationUpdate("membersAdded", async (ctx) => {
     const botId = ctx.activity.recipient?.id;
