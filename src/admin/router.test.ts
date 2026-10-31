@@ -79,6 +79,7 @@ describe("admin router", () => {
     const ok = await get("/admin/theme?set=dark&next=" + encodeURIComponent("/admin/bots/x?tab=actions"));
     expect(ok.headers.get("location")).toBe("/admin/bots/x?tab=actions");
     expect((await get("/admin/theme?set=dark&next=" + encodeURIComponent("//evil.example/admin"))).headers.get("location")).toBe("/admin");
+    expect((await get("/admin/theme?set=dark&next=" + encodeURIComponent("/admin/../health"))).headers.get("location")).toBe("/admin");
   });
 
   it("the theme link sets a Lax cookie on /admin and returns to the page; bad input is ignored", async () => {
