@@ -1,0 +1,42 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.0.0",
+  "id": "e68b650a-fd8e-4086-b717-517d2631cc6f",
+  "developer": {
+    "name": "Binary Elements",
+    "websiteUrl": "https://www.binaryelements.com",
+    "privacyUrl": "https://www.binaryelements.com/privacy",
+    "termsOfUseUrl": "https://www.binaryelements.com/terms"
+  },
+  "name": {
+    "short": "BE Team Botter",
+    "full": "BE Team Botter by Binary Elements"
+  },
+  "description": {
+    "short": "Your team bots in Teams, by Binary Elements.",
+    "full": "BE Team Botter puts role bots such as IT Support and Marketing into Teams chats. They answer questions, use the systems they are given access to, and ask before changing anything."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#0A0D12",
+  "bots": [
+    {
+      "botId": "e68b650a-fd8e-4086-b717-517d2631cc6f",
+      "scopes": [
+        "personal",
+        "groupChat",
+        "team"
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": []
+}

@@ -11,6 +11,9 @@ import { connect } from "./db/client.js";
 import { Confirmations } from "./engine/confirm.js";
 import { LiveSessions } from "./engine/live.js";
 import { systemSsh } from "./connections/ssh.js";
+import { agentMailAdmin } from "./mail/agentmail.js";
+import { mountMailInbound } from "./mail/inbound.js";
+import { ensureAllMailboxes, ensureMailbox } from "./mail/mailboxes.js";
 import { prewarmRecent, runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startScheduler } from "./routines/scheduler.js";
@@ -35,27 +38,44 @@ const runnerDeps: RunnerDeps = {
   filesDir: config.filesDir,
   ssh: systemSsh(),
   publicUrl: config.publicUrl,
+  agentmailUrl: config.agentmail?.url,
   fetchFn: fetch,
   live,
 };
+const mail = config.agentmail
+  ? { db, secretsKey: config.secretsKey, admin: agentMailAdmin(config.agentmail, fetch), publicUrl: config.publicUrl }
+  : undefined;
 const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
 const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName });
+
+const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 
 // The Agents SDK reads clientId, tenantId and clientSecret from the environment; the agent SDK reads ANTHROPIC_API_KEY.
 startServer(app, {
   port: config.port,
   beforeListen: (express) => {
-    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, fetchUsers }));
+    mountMailInbound(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m) });
+    // a refused Teams delivery (auth, rate limit, handler error) is otherwise invisible
+    express.use("/api/messages", (req, res, next) => {
+      res.on("finish", () => {
+        if (res.statusCode >= 300) console.warn(`/api/messages answered ${res.statusCode} (${(req.body as { type?: string } | undefined)?.type ?? "?"})`);
+      });
+      next();
+    });
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, fetchUsers, mail,
+      // never fails or delays the save; a missed attempt is retried on the next save or start
+      onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
+    }));
     express.get("/health", (_req, res) => void res.json({ ok: true }));
   },
 });
 
+if (mail) void ensureAllMailboxes(mail);
 // chats used within the idle window would still be warm had the service not restarted
 void prewarmRecent(runnerDeps, { withinMs: warm.recentMs, max: warm.max });
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
-const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)

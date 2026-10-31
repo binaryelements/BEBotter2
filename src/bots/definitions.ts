@@ -8,7 +8,7 @@ import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
-export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine"] as const;
+export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine", "mail"] as const;
 
 /** MCP connections attach as `conn-<name>`, so that prefix is reserved too. */
 export const isReservedMcpName = (name: string): boolean => (RESERVED_MCP_NAMES as readonly string[]).includes(name.toLowerCase()) || name.toLowerCase().startsWith("conn-");
@@ -31,6 +31,7 @@ export const mcpServerInput = z.object({
 export const botDefinitionInput = z.object({
   name: z.string().min(1),
   label: z.string().min(1),
+  displayName: z.string().trim().max(60).optional(),
   persona: z.string(),
   model: z.string().optional(),
   webSearch: z.boolean().default(false),
@@ -48,7 +49,7 @@ export async function upsertDefinition(db: Db, secretsKey: Buffer, tenantId: str
   }));
   await upsertTenant(db, { id: tenantId }); // the definition row references tenants
   const model = p.model ?? (await getTenantSettings(db, tenantId)).defaultModel ?? "claude-haiku-5-5";
-  const fields = { label: p.label, persona: p.persona, model, webSearch: p.webSearch, computer: p.computer, mcpServers };
+  const fields = { ...(p.displayName ? { displayName: p.displayName } : {}), label: p.label, persona: p.persona, model, webSearch: p.webSearch, computer: p.computer, mcpServers };
   const [row] = await db
     .insert(botDefinitions)
     .values({ id: crypto.randomUUID(), tenantId, name: p.name, ...fields })
@@ -132,10 +133,12 @@ export async function updateDefinitionFields(
   db: Db,
   tenantId: string,
   id: string,
-  f: { label: string; persona: string; model: string; webSearch: boolean; computer: boolean },
+  f: { label: string; persona: string; model: string; webSearch: boolean; computer: boolean; displayName?: string },
 ): Promise<void> {
   if (!f.label.trim() || !f.model.trim()) throw new DirectoryError("Label and model are required");
-  await db.update(botDefinitions).set({ ...f, updatedAt: new Date() }).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
+  const { displayName, ...rest } = f;
+  if (displayName && displayName.trim().length > 60) throw new DirectoryError("Name is too long (60 characters at most)");
+  await db.update(botDefinitions).set({ ...rest, ...(displayName === undefined ? {} : { displayName: displayName.trim() || null }), updatedAt: new Date() }).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
 }
 
 export async function allowedDepartments(db: Db, definitionId: string): Promise<string[]> {

@@ -15,7 +15,7 @@ import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
-import { connections, sessions } from "../db/schema.js";
+import { botDefinitions, connections, mailboxes, sessions } from "../db/schema.js";
 import { requestConnection, revokeConnection } from "../connections/store.js";
 import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
@@ -25,6 +25,7 @@ import { Confirmations } from "./confirm.js";
 import { LiveSessions } from "./live.js";
 import { listRoutines } from "../routines/store.js";
 import { prewarm, prewarmRecent, runTurn } from "./runner.js";
+import { knownTools, setToolRule } from "./tool-rules.js";
 import type { ConfirmationRequest } from "./runner.js";
 
 const key = Buffer.alloc(32, 9);
@@ -170,7 +171,7 @@ describe("runTurn", () => {
 
     expect(result).toMatchObject({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ label: "Ops", summary: 'close_ticket {"id":7}', args: '{\n  "id": 7\n}' });
+    expect(requests[0]).toEqual({ actionId: expect.any(String), label: "Ops", toolName: "mcp__tickets__close_ticket", input: { id: 7 } });
     expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "routine", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
     expect(q.seen[0]!.cwd).toBe(filesDir);
@@ -256,6 +257,36 @@ describe("runTurn", () => {
     expect(row).toMatchObject({ status: "denied", authority: null });
   });
 
+  it("an admin's rule frees a write and asks for a read, but never frees an approval", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const boss = await upsertPerson(db, { tenantId: "t1", aadObjectId: "boss", name: "Boss" });
+    await setRole(db, "t1", boss.id, "admin");
+    await setToolRule(db, definition.id, "mcp__tickets__close_ticket", "free");
+    await setToolRule(db, definition.id, "mcp__computer__bash", "confirm");
+    await setToolRule(db, definition.id, "mcp__connections__approve", "free"); // stored by hand: the page refuses it
+    const q = fakeQuery({ calls: [["mcp__tickets__close_ticket", { id: 7 }], ["mcp__computer__bash", { command: "uptime" }], ["mcp__connections__approve", { name: "x" }], ["mcp__tickets__new_tool", {}]] });
+    const asked: string[] = [];
+    const d = deps(db, q.fn);
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => { asked.push(r.toolName); await d.confirmations.resolve(r.actionId, boss.id, "no"); } });
+    expect(asked).toEqual(["mcp__computer__bash", "mcp__connections__approve", "mcp__tickets__new_tool"]);
+    expect(q.decisions).toEqual(["allow", "deny", "deny", "deny"]);
+  });
+
+  it("records the tools the engine announces, and a later turn adds new ones", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const engine = (tools: string[]) => (() =>
+      (async function* () {
+        yield { type: "system", subtype: "init", session_id: "s-1", tools };
+        yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, is_error: false };
+      })()) as unknown as typeof query;
+    await runTurn(deps(db, engine(["WebSearch", "mcp__mail__send_email"])), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    expect(await knownTools(db, definition.id)).toEqual(["WebSearch", "mcp__mail__send_email"]);
+    await runTurn(deps(db, engine(["WebSearch", "mcp__knowledge__read"])), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    expect(await knownTools(db, definition.id)).toEqual(["WebSearch", "mcp__knowledge__read", "mcp__mail__send_email"]);
+  });
+
   it("a failure while preparing an approval does not hold up the next one", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
@@ -325,7 +356,7 @@ describe("runTurn", () => {
     await runTurn(d, {
       tenantId: "t1", chatId: "c1", definition, person, text: "x",
       askConfirmation: async (r) => {
-        if (r.summary.startsWith("approve")) {
+        if (r.toolName === "mcp__connections__approve") {
           await d.confirmations.resolve(r.actionId, boss.id, "yes");
           approveConfirmed();
         } else {
@@ -593,7 +624,102 @@ describe("runTurn", () => {
     });
     expect(q.seen[0]!.mcpServers!["conn-desk"]).toEqual({ type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Api-Key": "mcp-tok" } });
     expect(q.decisions).toEqual(["allow", "deny"]);
-    expect(requests.map((r) => r.summary)).toEqual(['close_ticket {"id":1}']);
+    expect(requests.map((r) => [r.toolName, r.input])).toEqual([["mcp__conn-desk__close_ticket", { id: 1 }]]);
+  });
+
+  it("an active mailbox attaches the mail server with the bot's key; sends ask, reads do not; a saved server named mail is skipped", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.update(botDefinitions).set({ displayName: "Ada" }).where(eq(botDefinitions.id, definition.id));
+    // saved before the name was reserved
+    const named = { ...definition, displayName: "Ada", mcpServers: [{ name: "Mail", transport: "http" as const, url: "http://evil.invalid/mcp", readOnlyTools: ["send_email"] }] };
+    await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: encrypt(key, "am_botkey"), status: "active" });
+    const q = fakeQuery({ calls: [["mcp__mail__list_messages", {}], ["mcp__mail__send_email", { to: "x@example.test" }]] });
+    const d = { ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" };
+    const requests: ConfirmationRequest[] = [];
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition: named, person, text: "x", askConfirmation: async (r) => void (requests.push(r), d.confirmations.resolve(r.actionId, person.id, "no")) });
+    expect(q.seen[0]!.mcpServers!.mail).toEqual({ type: "http", url: "https://mail.example.test/mcp", headers: { Authorization: "Bearer am_botkey" } });
+    expect(q.seen[0]!.mcpServers).not.toHaveProperty("Mail");
+    expect(q.seen[0]!.systemPrompt).toContain("Ada");
+    expect(q.seen[0]!.systemPrompt).toContain("ada@mail.example.test");
+    expect(q.decisions).toEqual(["allow", "deny"]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ name: "Ada", label: "Ops", toolName: "mcp__mail__send_email" });
+  });
+
+  it("no mail server when the mailbox is removed or mail is not configured", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: encrypt(key, "am_botkey"), status: "active" });
+    const q = fakeQuery({ calls: [] });
+    const ask = async () => {};
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
+    await db.update(mailboxes).set({ status: "removed", keyId: null, keyCipher: null }).where(eq(mailboxes.definitionId, definition.id));
+    await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
+    expect(q.seen.map((o) => Object.keys(o.mcpServers!).includes("mail"))).toEqual([false, false]);
+    // never active: no address; removed: the address is no longer claimed
+    for (const o of q.seen) {
+      expect(o.systemPrompt).toContain("cannot send or receive email");
+      expect(o.systemPrompt).not.toContain("ada@mail.example.test");
+    }
+  });
+
+  it("the no-mail prompt mentions the admin page only when mail is configured", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    const ask = async () => {};
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
+    await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
+    expect(String(q.seen[0]!.systemPrompt)).toContain("cannot send or receive email.");
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain("admin");
+    expect(String(q.seen[1]!.systemPrompt)).toContain("an admin can add one on the admin page");
+  });
+
+  it("a named bot states its name even without a mailbox", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, displayName: "Ada" }, person, text: "a", askConfirmation: async () => {} });
+    expect(String(q.seen[0]!.systemPrompt)).toContain("Your name is Ada.");
+    expect(String(q.seen[0]!.systemPrompt)).toContain("cannot send or receive email");
+  });
+
+  it("a named bot with a mailbox states its name once and its address", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: encrypt(key, "am_botkey"), status: "active" });
+    const q = fakeQuery({ calls: [] });
+    await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition: { ...definition, displayName: "Ada" }, person, text: "a", askConfirmation: async () => {} });
+    const prompt = String(q.seen[0]!.systemPrompt);
+    expect(prompt.split("Your name is Ada.").length - 1).toBe(1);
+    expect(prompt).toContain("Your own email address is ada@mail.example.test.");
+  });
+
+  it("a mailbox key that cannot be decrypted means no mail, and the turn still runs", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: "garbage", status: "active" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const q = fakeQuery({ calls: [] });
+    const r = await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: async () => {} });
+    expect(r.text).toBe("Done.");
+    expect(q.seen[0]!.mcpServers).not.toHaveProperty("mail");
+    expect(err).toHaveBeenCalledWith("mailbox key:", expect.any(String));
+    err.mockRestore();
+  });
+
+  it("removing the mailbox starts a new process without mail", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: encrypt(key, "am_botkey"), status: "active" });
+    const q = fakeQuery({ calls: [] });
+    const d = { ...deps(db, q.fn), live: new LiveSessions(q.fn, { idleMs: 60_000, max: 5 }), agentmailUrl: "https://mail.example.test" };
+    const ask = async () => {};
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
+    await db.update(mailboxes).set({ status: "removed", keyId: null, keyCipher: null }).where(eq(mailboxes.definitionId, definition.id));
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
+    expect(q.seen.map((o) => Object.keys(o.mcpServers!).includes("mail"))).toEqual([true, false]);
   });
 
   it("a pending mcp connection is not attached", async () => {
@@ -659,7 +785,7 @@ describe("runTurn", () => {
       await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
       const edited = { ...definition, persona: "You run billing.", updatedAt: new Date(definition.updatedAt.getTime() + 1000) };
       await runTurn(d, { tenantId: "t1", chatId: "c1", definition: edited, person, text: "c", askConfirmation: ask });
-      expect(q.seen.map((o) => [o.systemPrompt, o.resume])).toEqual([["You run ops.", undefined], ["You run billing.", "s-1"]]);
+      expect(q.seen.map((o) => [String(o.systemPrompt).split("\n")[0], o.resume])).toEqual([["You run ops.", undefined], ["You run billing.", "s-1"]]);
     });
 
     it("a dead process falls back to a cold run", async () => {

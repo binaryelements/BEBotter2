@@ -7,10 +7,10 @@ export async function beginAction(
   db: Db,
   input: {
     tenantId: string;
-    chatId: string;
+    chatId?: string;
     definitionId: string;
     personId?: string;
-    kind: "tool" | "message";
+    kind: "tool" | "message" | "admin";
     toolName?: string;
     toolInput?: unknown;
     summary: string;

@@ -5,10 +5,12 @@ import { loadConfig } from "../config/config.js";
 import { loadEnvFile } from "../config/env-file.js";
 import { connect } from "../db/client.js";
 import { botDefinitions, chats } from "../db/schema.js";
+import { agentMailAdmin } from "../mail/agentmail.js";
+import { requestMailbox } from "../mail/mailboxes.js";
 import { assignToChat, botDefinitionInput, upsertDefinition } from "./definitions.js";
 
 const usage = `Usage:
-  pnpm bot-def upsert --tenant <id> --file def.json
+  pnpm bot-def upsert --tenant <id> --file def.json [--email <local-part>]
   pnpm bot-def assign --chat <conversationId> --name <definitionName> --tenant <id>`;
 
 async function main(): Promise<void> {
@@ -20,6 +22,7 @@ async function main(): Promise<void> {
       file: { type: "string" },
       chat: { type: "string" },
       name: { type: "string" },
+      email: { type: "string" },
     },
   });
   const command = positionals[0];
@@ -34,7 +37,13 @@ async function main(): Promise<void> {
     // An explicit DEFAULT_MODEL wins over the tenant default; otherwise upsertDefinition picks tenant, then built-in.
     const fallback = process.env.DEFAULT_MODEL ? { model: config.defaultModel } : {};
     const input = botDefinitionInput.parse({ ...fallback, ...JSON.parse(readFileSync(values.file, "utf8")) });
-    console.log((await upsertDefinition(db, config.secretsKey, values.tenant, input)).id);
+    const def = await upsertDefinition(db, config.secretsKey, values.tenant, input);
+    console.log(def.id);
+    if (values.email) {
+      if (!config.agentmail) throw new Error("--email needs AGENTMAIL_ADMIN_KEY");
+      const mail = { db, secretsKey: config.secretsKey, admin: agentMailAdmin(config.agentmail, fetch), publicUrl: config.publicUrl };
+      console.log((await requestMailbox(mail, def.id, values.email)) ?? "mailbox pending: BE AgentMail did not answer, it finishes on the next service start or save");
+    }
   } else if (command === "assign") {
     if (!values.tenant || !values.chat || !values.name) throw new Error(usage);
     const [def] = await db

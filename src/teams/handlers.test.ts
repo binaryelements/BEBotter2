@@ -31,7 +31,7 @@ async function setup(assign: boolean) {
   const turns: RunTurnInput[] = [];
   const runTurn = vi.fn(async (turn: RunTurnInput) => {
     turns.push(turn);
-    await turn.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
+    await turn.askConfirmation({ actionId: "a1", label: "Helper", toolName: "mcp__tickets__close", input: {} });
     return { text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
   });
   const sent: string[] = [];
@@ -166,14 +166,14 @@ describe("handleMessage status message", () => {
         t.progress!({ kind: "text", text: "first" });
         t.progress!({ kind: "text", text: `  second\n\nline ${"x".repeat(300)}` });
         await wait(1999);
-        expect(x.log).toEqual(["send:**Helper**\n\nWorking: knowledge__search…"]);
+        expect(x.log).toEqual(["send:**Helper**\n\nWorking: search…"]);
         await wait(1);
         await wait(5000);
       });
       const timersBefore = vi.getTimerCount();
       await run(x, "groupChat");
       expect(x.log).toEqual([
-        "send:**Helper**\n\nWorking: knowledge__search…",
+        "send:**Helper**\n\nWorking: search…",
         `update:id1:**Helper**\n\nsecond line ${"x".repeat(200 - "second line ".length)}`,
         "update:id1:**Helper**\n\nfinal",
       ]);
@@ -204,7 +204,7 @@ describe("handleMessage status message", () => {
       const x = await slowSetup(async (t, wait) => {
         t.progress!({ kind: "text", text: "thinking" });
         await wait(3000);
-        await t.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
+        await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "mcp__tickets__close", input: {} });
       });
       await run(x);
       expect(x.log).toEqual(["send:thinking", "send:final"]);
@@ -336,9 +336,9 @@ describe("handleMessage streaming", () => {
           if (fail.chunk) throw new Error("gone");
           log.push(`chunk:${t}`);
         },
-        end: async (t: string) => {
+        end: async (t: string, card?: unknown) => {
           if (fail.end) throw new Error("gone");
-          log.push(`end:${t}`);
+          log.push(`end:${t}${card ? "+card" : ""}`);
         },
       },
     };
@@ -384,7 +384,7 @@ describe("handleMessage streaming", () => {
         t.progress!({ kind: "message-end" });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: knowledge__search…", "chunk:Let me check.", "chunk:\n\nAnswer", "end:final"]);
+      expect(x.log).toEqual(["info:Working: search…", "chunk:Let me check.", "chunk:\n\nAnswer", "end:final"]);
     }));
 
   it("ends the stream with the text so far before a confirmation card and sends the reply after it as a new message", () =>
@@ -393,19 +393,42 @@ describe("handleMessage streaming", () => {
         t.progress!({ kind: "tool", toolName: "WebSearch" });
         await wait(3000);
         t.progress!({ kind: "delta", text: "Checking" });
-        await t.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
+        await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "mcp__tickets__close", input: {} });
         t.progress!({ kind: "delta", text: "Done" });
         t.progress!({ kind: "message-end" });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking", "card", "send:final"]);
+      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking+card", "send:final"]);
+    }));
+
+  it("ends a stream that only showed progress with the card alone, so no progress line stays", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "tool", toolName: "mcp__mail__reply_to_email" });
+        await wait(3000);
+        await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "mcp__mail__reply_to_email", input: {} });
+      });
+      await run(x);
+      expect(x.log).toEqual(["info:Working: reply to email…", "end:+card", "send:final"]);
+    }));
+
+  it("sends the card as its own message when ending the stream with it fails", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "tool", toolName: "WebSearch" });
+        await wait(3000);
+        x.fail.end = true;
+        await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "WebSearch", input: {} });
+      });
+      await run(x);
+      expect(x.log).toEqual(["info:Working: WebSearch…", "card", "send:final"]);
     }));
 
   it("sends no status message around a confirmation card in a chat that streams", () =>
     timed(async () => {
       const x = await streamSetup(async (t, wait) => {
         t.progress!({ kind: "tool", toolName: "mcp__tickets__close" });
-        await t.askConfirmation({ actionId: "a1", label: "Helper", summary: "Do X", args: "{}" });
+        await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "mcp__tickets__close", input: {} });
         await wait(5000);
         t.progress!({ kind: "tool", toolName: "mcp__tickets__close" });
         await wait(5000);

@@ -63,6 +63,7 @@ export const botDefinitions = pgTable(
     id: text("id").primaryKey(),
     tenantId: text("tenant_id").notNull().references(() => tenants.id),
     name: text("name").notNull(),
+    displayName: text("display_name"), // the bot's name, shown to people and used for its mail address
     label: text("label").notNull(),
     persona: text("persona").notNull(),
     model: text("model").notNull(),
@@ -73,6 +74,52 @@ export const botDefinitions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [unique().on(t.tenantId, t.name)],
+);
+
+export const mailboxes = pgTable("mailboxes", {
+  definitionId: text("definition_id").primaryKey().references(() => botDefinitions.id),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  agent: text("agent").notNull(),
+  // ids and ciphers stay null until each step succeeds, so a half-finished create can resume
+  localPart: text("local_part").unique(), // the address name the admin asked for, kept so a retry uses the same one
+  inboxId: text("inbox_id"),
+  address: text("address"),
+  keyId: text("key_id"),
+  keyCipher: text("key_cipher"),
+  webhookId: text("webhook_id"),
+  webhookSecretCipher: text("webhook_secret_cipher"),
+  status: text("status").notNull(), // pending | active | removing | removed
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// delivery ids already handled, so a retry or replay of a webhook posts nothing twice; pruned after a day
+export const mailDeliveries = pgTable("mail_deliveries", {
+  id: text("id").primaryKey(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// an admin's choice per bot and tool; a tool with no row runs by its default class
+export const toolRules = pgTable(
+  "tool_rules",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    toolName: text("tool_name").notNull(),
+    rule: text("rule").$type<"free" | "confirm">().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.toolName] })],
+);
+
+// the tools the engine announced for a bot, so the admin page lists them without a hard-coded list
+export const definitionTools = pgTable(
+  "definition_tools",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    toolName: text("tool_name").notNull(),
+    firstSeen: timestamp("first_seen", { withTimezone: true }).notNull().defaultNow(),
+    lastSeen: timestamp("last_seen", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.toolName] })],
 );
 
 export const departments = pgTable(
@@ -136,10 +183,10 @@ export const computers = pgTable("computers", {
 export const auditEvents = pgTable("audit_events", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id),
-  chatId: text("chat_id").notNull().references(() => chats.id),
+  chatId: text("chat_id").references(() => chats.id), // null for admin actions
   definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
   personId: text("person_id").references(() => people.id),
-  kind: text("kind").notNull(), // tool | message
+  kind: text("kind").notNull(), // tool | message | admin
   toolName: text("tool_name"),
   toolInput: jsonb("tool_input"),
   summary: text("summary").notNull(),

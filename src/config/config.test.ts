@@ -17,6 +17,11 @@ describe("loadConfig", () => {
     expect(c.filesDir).toBe("/srv/files");
     expect(c.secretsKey.length).toBe(32);
   });
+  it("turns mailboxes on only with an admin key", () => {
+    expect(loadConfig(full).agentmail).toBeUndefined();
+    expect(loadConfig({ ...full, AGENTMAIL_ADMIN_KEY: "k", AGENTMAIL_URL: "https://m.test/" }).agentmail).toEqual({ url: "https://m.test", adminKey: "k" });
+    expect(loadConfig({ ...full, AGENTMAIL_ADMIN_KEY: "k" }).agentmail?.url).toBe("https://agentmail.a.sapautomate.com");
+  });
   it("names a missing variable", () => {
     expect(() => loadConfig({ ...full, SECRETS_KEY: undefined })).toThrow(/SECRETS_KEY/);
   });

@@ -2,6 +2,8 @@ import { isReservedMcpName } from "../bots/definitions.js";
 import type { BotDefinition } from "../db/schema.js";
 
 export type ToolClass = "read" | "write" | "approve";
+/** An admin's choice for one bot's tool: free runs it as a read, confirm asks as a write. */
+export type ToolRule = "free" | "confirm";
 
 const BUILT_IN: Record<string, ToolClass> = {
   ...Object.fromEntries(["list", "read", "search", "write"].map((t) => [`mcp__knowledge__${t}`, "read"])),
@@ -14,15 +16,27 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__computer__bash: "read",
 };
 
-/** connectionServers: approved `conn-*` MCP servers with the tools an admin marked read-only. */
-export function classify(toolName: string, def: BotDefinition, connectionServers: { name: string; readOnlyTools: string[] }[] = []): ToolClass {
+const MAIL_READS = new Set(["list_inboxes", "list_messages", "read_thread", "search_mail", "get_attachment", "mark_read"]);
+
+type ConnectionServers = { name: string; readOnlyTools: string[] }[];
+
+/** The class with no admin rule. connectionServers: approved `conn-*` MCP servers with the tools an admin marked read-only. */
+export function defaultClass(toolName: string, def: BotDefinition, connectionServers: ConnectionServers = []): ToolClass {
   if (toolName === "WebSearch" || toolName === "WebFetch") return "read";
   const m = /^mcp__(.+?)__(.+)$/.exec(toolName); // server names never contain "__" (validated on input)
   if (!m) return "write";
   // Built-ins first: a declared server cannot claim a reserved name (they are rejected on input), and anything else on one is a write.
   if (BUILT_IN[toolName]) return BUILT_IN[toolName]!;
+  if (m[1] === "mail") return MAIL_READS.has(m[2]!) ? "read" : "write"; // anything not known to be a read (sending, forwarding, new tools) asks
   if (m[1]!.startsWith("conn-")) return connectionServers.find((s) => s.name === m[1])?.readOnlyTools.includes(m[2]!) ? "read" : "write";
   if (isReservedMcpName(m[1]!)) return "write";
   const server = def.mcpServers.find((s) => s.name === m[1]);
   return server?.readOnlyTools.includes(m[2]!) ? "read" : "write";
+}
+
+/** The default with the bot's rule on top; approve-class (connection approval) always asks, whatever the rule. */
+export function classify(toolName: string, def: BotDefinition, connectionServers: ConnectionServers = [], rule?: ToolRule): ToolClass {
+  const base = defaultClass(toolName, def, connectionServers);
+  if (base === "approve" || !rule) return base;
+  return rule === "free" ? "read" : "write";
 }

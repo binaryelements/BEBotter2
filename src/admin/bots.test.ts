@@ -2,13 +2,16 @@ import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
-import { getDefinition, listDefinitions, setAllowedDepartments } from "../bots/definitions.js";
+import { getDefinition, listDefinitions, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
+import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { connections, chatAssignments, chats } from "../db/schema.js";
+import { connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
 import { listRoutines } from "../routines/store.js";
 import { eq } from "drizzle-orm";
+import type { MailDeps } from "../mail/mailboxes.js";
+import { MailError } from "../mail/agentmail.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -207,5 +210,256 @@ describe("bots screen", () => {
       expect(await (await post(`/admin/connections/${c}/revoke`, "Ann", [])).text()).not.toContain("BEGIN OPENSSH");
       for (const p of ["/admin/bots", `/admin/bots/${d.id}`, "/admin/settings"]) expect(await (await get(p, "Ann")).text()).not.toContain("BEGIN OPENSSH");
     });
+  });
+});
+
+describe("bot names and email addresses", () => {
+  let db: Db;
+  let url: string;
+  let close: () => Promise<void>;
+  const id: Record<string, string> = {};
+  const calls: string[] = [];
+  const taken = new Set(["busy"]);
+  let n = 0;
+  // BE AgentMail stand-in; the secrets it hands out are fake
+  const admin = {
+    mailDomain: async () => "mail.test",
+    inboxTaken: async (l: string) => taken.has(l),
+    findInbox: async (l: string) => (taken.has(l) ? { id: "x", address: `${l}@mail.test`, ownerAgent: "other" } : undefined),
+    createInbox: async (l: string) => ({ id: `inbox-${++n}`, address: `${l}@mail.test` }),
+    setInboxActive: async (i: string, on: boolean) => void calls.push(`active ${i} ${on}`),
+    setDisplayName: async () => undefined,
+    listKeys: async () => [],
+    listWebhooks: async () => [],
+    issueKey: async () => ({ id: `key-${++n}`, key: "bam_fake" }),
+    revokeKey: async (k: string) => void calls.push(`revoke ${k}`),
+    addWebhook: async () => ({ id: `hook-${++n}`, secret: "amwh_fake" }),
+    removeWebhook: async (h: string) => void calls.push(`unhook ${h}`),
+    checkSendAs: async (a: string) => (calls.push(`check ${a}`), a.endsWith("@bad.test") ? { ok: false, reasons: ["spf: not set up"] } : { ok: true, reasons: [] }),
+    requestSendAs: async (i: string, a: string) => (calls.push(`send-as ${i} ${a}`), {}),
+    getSendAs: async () => ({ status: "pending forward", key: "bam_leak" }),
+    removeSendAs: async (i: string) => void calls.push(`clear ${i}`),
+  };
+
+  beforeAll(async () => {
+    db = await testDb();
+    await upsertTenant(db, { id: T });
+    await upsertTenant(db, { id: "tenant-2" });
+    for (const name of ["Ann", "Hal"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
+    id.Zed = (await upsertPerson(db, { tenantId: "tenant-2", aadObjectId: "aad-Zed", name: "Zed" })).id;
+    await setRole(db, T, id.Ann, "admin");
+    await setRole(db, "tenant-2", id.Zed, "admin");
+    const sales = (await createDepartment(db, T, "Sales")).id;
+    await setMembership(db, T, sales, id.Hal, "head");
+    const mail = { db, secretsKey, admin: admin as unknown as MailDeps["admin"], publicUrl: "https://bot.example.test" };
+    const app = express();
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [], mail }));
+    ({ url, close } = await serve(app));
+  });
+  afterAll(() => close());
+
+  const get = (path: string, who: string) => fetch(url + path, { redirect: "manual", headers: { cookie: sessionCookie(secretsKey, id[who] === id.Zed ? "tenant-2" : T, id[who]) } });
+  const post = (path: string, who: string, body: [string, string][]) =>
+    fetch(url + path, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, id[who] === id.Zed ? "tenant-2" : T, id[who]) },
+      body: new URLSearchParams([["csrf", "csrf-1"], ...body]).toString(),
+    });
+  const box = async (definitionId: string) => (await db.select().from(mailboxes).where(eq(mailboxes.definitionId, definitionId)))[0];
+  const create = async (name: string, extra: [string, string][] = []) => {
+    const res = await post("/admin/bots", "Ann", [["name", name], ["displayName", "Iris"], ["label", name], ["persona", "p"], ...extra]);
+    return { res, def: (await listDefinitions(db, T)).find((d) => d.name === name)! };
+  };
+
+  it("the name saves, shows, and a blank address creates no mailbox", async () => {
+    const { res, def } = await create("plain");
+    expect(res.status).toBe(303);
+    expect(def.displayName).toBe("Iris");
+    expect(await box(def.id)).toBeUndefined();
+    expect(await (await get("/admin/bots", "Ann")).text()).toContain('name="localPart"');
+    await post(`/admin/bots/${def.id}`, "Ann", [["displayName", "Ines"], ["label", "plain"], ["model", "m"], ["persona", "p"]]);
+    expect((await getDefinition(db, T, def.id))!.displayName).toBe("Ines");
+    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    expect(page).toContain('value="Ines"');
+    expect(page).toContain("Create email address");
+  });
+
+  it("a typed address creates the mailbox and the page shows it without any key", async () => {
+    const { res, def } = await create("withmail", [["localPart", "Iris"]]);
+    expect(res.status).toBe(303);
+    expect((await box(def.id))?.address).toBe("iris@mail.test");
+    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    expect(page).toContain("iris@mail.test");
+    expect(page).toContain("Remove email address");
+    for (const secret of ["bam_", "amwh_"]) expect(page).not.toContain(secret);
+  });
+
+  it("a taken address says so, the bot stays saved and no mailbox exists", async () => {
+    const { res, def } = await create("clash", [["localPart", "busy"]]);
+    expect(await res.text()).toContain("That address is taken");
+    expect(def).toBeTruthy();
+    expect(await box(def.id)).toBeUndefined();
+    const page = await post(`/admin/bots/${def.id}/mailbox`, "Ann", [["localPart", "busy"]]);
+    expect(page.status).toBe(400);
+    expect(await page.text()).toContain("That address is taken");
+  });
+
+  it("remove and restore call the mailbox functions; removed offers restore", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("removed");
+    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Restore email address");
+    expect((await post(`/admin/bots/${def.id}/mailbox/restore`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("active");
+  });
+
+  it("a refused address shows the reason and leaves no mailbox", async () => {
+    const real = admin.createInbox;
+    admin.createInbox = async () => { throw new MailError("bad", 422, "reserved name"); };
+    const { res, def } = await create("refused", [["localPart", "admin"]]);
+    admin.createInbox = real;
+    expect(await res.text()).toContain("reserved name");
+    expect(await box(def.id)).toBeUndefined();
+  });
+
+  it("a pending mailbox offers Try again and a removing one Finish removing", async () => {
+    const { def } = await create("stuck");
+    await db.insert(mailboxes).values({ definitionId: def.id, tenantId: T, agent: "bb2-stuck", localPart: "stuck", status: "pending" });
+    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Try again");
+    expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("active");
+    await db.update(mailboxes).set({ status: "removing" }).where(eq(mailboxes.definitionId, def.id));
+    expect(await (await get(`/admin/bots/${def.id}`, "Ann")).text()).toContain("Finish removing");
+    expect((await post(`/admin/bots/${def.id}/mailbox/remove`, "Ann", [])).status).toBe(303);
+    expect((await box(def.id))?.status).toBe("removed");
+    expect((await post(`/admin/bots/${def.id}/mailbox/retry`, "Hal", [])).status).toBe(403);
+  });
+
+  it("the company address is checked, requested, shown without secrets, and cleared", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    expect((await post(`/admin/bots/${def.id}/send-as`, "Ann", [["address", "iris@company.test"]])).status).toBe(303);
+    expect(calls).toContain("check iris@company.test");
+    expect(calls.some((c) => c.startsWith("send-as ") && c.endsWith(" iris@company.test"))).toBe(true);
+    const page = await (await get(`/admin/bots/${def.id}`, "Ann")).text();
+    expect(page).toContain("pending forward");
+    expect(page).toContain("automatic forwarding");
+    expect(page).not.toContain("bam_");
+    expect((await post(`/admin/bots/${def.id}/send-as/remove`, "Ann", [])).status).toBe(303);
+    expect(calls.some((c) => c.startsWith("clear "))).toBe(true);
+  });
+
+  it("a negative send-as verdict stops before the request and shows the reason", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    const before = calls.length;
+    const res = await post(`/admin/bots/${def.id}/send-as`, "Ann", [["address", "iris@bad.test"]]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("spf: not set up");
+    expect(calls.slice(before)).toEqual(["check iris@bad.test"]);
+  });
+
+  it("an invalid local part is shown and creates nothing; a post without CSRF is refused", async () => {
+    const { def } = await create("badlocal");
+    const res = await post(`/admin/bots/${def.id}/mailbox`, "Ann", [["localPart", "no spaces!"]]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("letters, digits");
+    expect(await box(def.id)).toBeUndefined();
+    const noCsrf = await fetch(`${url}/admin/bots/${def.id}/mailbox`, {
+      method: "POST", redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, id.Ann) },
+      body: new URLSearchParams([["localPart", "fine"]]).toString(),
+    });
+    expect(noCsrf.status).toBe(403);
+    expect(await box(def.id)).toBeUndefined();
+  });
+
+  it("every action leaves an admin audit row, shown on the Activity page", async () => {
+    const rows = await db.select().from(auditEvents).where(eq(auditEvents.kind, "admin"));
+    expect(rows.length).toBeGreaterThan(4);
+    expect(rows.every((r) => r.chatId === null && r.personId === id.Ann)).toBe(true);
+    expect(rows.some((r) => r.toolName === "send-as" && r.status === "failed")).toBe(true);
+    expect(rows.some((r) => r.toolName === "mailbox/remove" && r.status === "done")).toBe(true);
+    expect(JSON.stringify(rows)).not.toMatch(/bam_|amwh_/);
+    const res = await get("/admin/activity", "Ann");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Admin: mailbox/remove");
+  });
+
+  it("heads and another tenant's admin are refused", async () => {
+    const def = (await listDefinitions(db, T)).find((d) => d.name === "withmail")!;
+    for (const path of ["mailbox", "mailbox/remove", "mailbox/restore", "send-as", "send-as/remove"]) {
+      expect((await post(`/admin/bots/${def.id}/${path}`, "Hal", [["localPart", "x"], ["address", "a@b.test"]])).status).toBe(403);
+      expect((await post(`/admin/bots/${def.id}/${path}`, "Zed", [["localPart", "x"], ["address", "a@b.test"]])).status).toBe(400);
+    }
+    expect((await box(def.id))?.status).toBe("active");
+  });
+});
+
+describe("action rules", () => {
+  let db: Db;
+  let url: string;
+  let close: () => Promise<void>;
+  const id: Record<string, string> = {};
+  let botId: string;
+
+  beforeAll(async () => {
+    db = await testDb();
+    await upsertTenant(db, { id: T });
+    await upsertTenant(db, { id: "tenant-2" });
+    for (const name of ["Ann", "Hal"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
+    id.Zed = (await upsertPerson(db, { tenantId: "tenant-2", aadObjectId: "aad-Zed", name: "Zed" })).id;
+    await setRole(db, T, id.Ann, "admin");
+    await setRole(db, "tenant-2", id.Zed, "admin");
+    const sales = (await createDepartment(db, T, "Sales")).id;
+    await setMembership(db, T, sales, id.Hal, "head");
+    const app = express();
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [] }));
+    ({ url, close } = await serve(app));
+    const def = await upsertDefinition(db, secretsKey, T, { name: "ops", label: "Ops", persona: "p", mcpServers: [{ name: "tickets", transport: "http", url: "https://mcp.example.test/", readOnlyTools: ["list_tickets"] }] });
+    botId = def.id;
+    await setAllowedDepartments(db, T, botId, [sales]);
+    await recordTools(db, botId, ["WebSearch", "mcp__mail__send_email", "mcp__connections__approve", "mcp__tickets__list_tickets", "mcp__tickets__close_ticket"]);
+  });
+  afterAll(() => close());
+
+  const cookie = (who: string) => sessionCookie(secretsKey, who === "Zed" ? "tenant-2" : T, id[who]);
+  const get = (path: string, who: string) => fetch(url + path, { redirect: "manual", headers: { cookie: cookie(who) } });
+  const post = (path: string, who: string, body: [string, string][]) =>
+    fetch(url + path, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded", cookie: cookie(who) }, body: new URLSearchParams([["csrf", "csrf-1"], ...body]).toString() });
+  const rules = async () => Object.fromEntries(await toolRulesFor(db, botId));
+
+  it("the page groups the bot's tools by source, marks defaults and locks approvals", async () => {
+    const page = await (await get(`/admin/bots/${botId}`, "Ann")).text();
+    expect(page).toContain("<h2>Actions</h2>");
+    for (const g of ["web", "mail", "connections", "tickets"]) expect(page).toContain(`<h3>${g}</h3>`);
+    expect(page).toMatch(/name="rule:WebSearch"[^]*?<option value="free" selected>Runs freely \(default\)/);
+    expect(page).toMatch(/name="rule:mcp__mail__send_email"[^]*?<option value="confirm" selected>Needs confirmation \(default\)/);
+    expect(page).toContain("Needs confirmation (locked)");
+    expect(page).not.toContain('name="rule:mcp__connections__approve"');
+  });
+
+  it("an admin's change is saved, shown and audited; choosing the default again clears it", async () => {
+    expect((await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__mail__send_email", "free"], ["rule:WebSearch", "free"]])).status).toBe(303);
+    expect(await rules()).toEqual({ mcp__mail__send_email: "free" });
+    expect(await (await get(`/admin/bots/${botId}`, "Ann")).text()).toMatch(/name="rule:mcp__mail__send_email"[^]*?<option value="free" selected>Runs freely</);
+    const rows = await db.select().from(auditEvents).where(eq(auditEvents.kind, "admin"));
+    expect(rows).toHaveLength(1); // the unchanged WebSearch writes no row
+    expect(rows[0]).toMatchObject({ chatId: null, personId: id.Ann, toolName: "mcp__mail__send_email", status: "done", summary: "Admin: mcp__mail__send_email (Needs confirmation → Runs freely)" });
+    await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__mail__send_email", "confirm"], ["rule:mcp__tickets__list_tickets", "confirm"]]);
+    expect(await rules()).toEqual({ mcp__tickets__list_tickets: "confirm" });
+  });
+
+  it("an approval cannot be set free, and an unknown tool is ignored", async () => {
+    const before = await rules();
+    expect((await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__connections__approve", "free"], ["rule:mcp__tickets__close_ticket", "free"]])).status).toBe(400);
+    expect((await post(`/admin/bots/${botId}/actions`, "Ann", [["rule:mcp__evil__anything", "free"]])).status).toBe(303);
+    expect(await rules()).toEqual(before);
+  });
+
+  it("heads get 403 and see no Actions; another tenant's admin is refused", async () => {
+    expect((await post(`/admin/bots/${botId}/actions`, "Hal", [["rule:mcp__tickets__close_ticket", "free"]])).status).toBe(403);
+    expect(await (await get(`/admin/bots/${botId}`, "Hal")).text()).not.toContain("<h2>Actions</h2>");
+    expect((await post(`/admin/bots/${botId}/actions`, "Zed", [["rule:mcp__tickets__close_ticket", "free"]])).status).toBe(400);
+    expect((await rules()).mcp__tickets__close_ticket).toBeUndefined();
   });
 });
