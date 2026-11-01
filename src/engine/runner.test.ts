@@ -772,6 +772,39 @@ describe("runTurn", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("a person definition gets m365 with only its capabilities' tools; a service definition gets none", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async () => {} });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: ["mail.read", "chats.read"] }, person, text: "x", askConfirmation: async () => {} });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: [] }, person, text: "x", askConfirmation: async () => {} });
+    expect(q.seen[0]!.mcpServers).not.toHaveProperty("m365");
+    const tools = (q.seen[1]!.mcpServers!.m365 as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools;
+    expect(Object.keys(tools).sort()).toEqual(["list_chats", "list_mail", "read_chat", "read_mail", "search_mail"]);
+    expect(q.seen[2]!.mcpServers).not.toHaveProperty("m365");
+  });
+
+  it("a Graph write always asks, even when an admin set it free, and its audit row keeps recipients and subject but never the body", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const personal = { ...definition, identity: "person" as const, graph: ["mail.send" as const] };
+    await setToolRule(db, definition.id, "mcp__m365__send_mail", "free"); // stored by hand: the page locks it
+    const input = { to: ["bea@example.test"], subject: "Quarterly figures", body: "the secret body text" };
+    const q = fakeQuery({ calls: [["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]] });
+    const asked: ConfirmationRequest[] = [];
+    // every card expires at once, so the test never waits for a click
+    await runTurn(deps(db, q.fn, new Confirmations((fn) => (fn(), 0))), { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", askConfirmation: async (r) => void asked.push(r) });
+    expect(asked.map((r) => [r.toolName, r.input])).toEqual([["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]]);
+    expect(q.decisions).toEqual(["deny", "deny"]);
+    const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
+    expect(rows).toHaveLength(2);
+    expect(JSON.stringify(rows)).not.toContain("secret body");
+    const send = rows.find((r) => r.toolName === "mcp__m365__send_mail")!;
+    expect(send.toolInput).toEqual({ to: ["bea@example.test"], subject: "Quarterly figures" });
+    expect(send.summary).toContain("Quarterly figures");
+  });
+
   describe("live sessions", () => {
     type Handler = (args: Record<string, string>) => Promise<{ isError?: boolean; content: { text: string }[] }>;
     const toolsOf = (server: unknown) => (server as { instance: { _registeredTools: Record<string, { handler: Handler }> } }).instance._registeredTools;
@@ -1001,6 +1034,29 @@ describe("runTurn", () => {
       await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async () => {}, routine: { id: "r1", grantPersonId: person.id, post: async () => {} } });
       expect(send).not.toHaveBeenCalled();
       expect(q.seen).toHaveLength(1);
+    });
+
+    it("a warm process calls Graph with the token of the turn running now, never the first turn's", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const personal = { ...definition, identity: "person" as const, graph: ["mail.read" as const, "mail.send" as const] };
+      const auth: string[] = [];
+      const fetchFn = (async (_u: unknown, init?: RequestInit) => {
+        auth.push((init?.headers as Record<string, string>).Authorization);
+        return new Response('{"value":[]}');
+      }) as typeof fetch;
+      const q = fakeQuery({ calls: [["mcp__m365__send_mail", { to: ["bea@example.test"], subject: "s", body: "b" }]] });
+      const d = { ...liveDeps(db, q.fn), fetchFn, confirmations: new Confirmations((fn) => (fn(), 0)) };
+      const search = () => toolsOf(q.seen[0]!.mcpServers!.m365).search_mail!.handler({ query: "x" });
+      const turn = (token: string) =>
+        runTurn(d, { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", graphToken: async () => token, askConfirmation: async () => void (await search()) });
+      await turn("tok-one");
+      await turn("tok-two");
+      expect(q.seen).toHaveLength(1);
+      expect(auth).toEqual(["Bearer tok-one", "Bearer tok-two"]);
+      // between turns there is no token at all
+      expect((await search()).content[0]!.text).toMatch(/sign in again/);
+      expect(auth).toHaveLength(2);
     });
   });
 });

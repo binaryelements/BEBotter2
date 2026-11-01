@@ -103,8 +103,18 @@ export function startAuditPruning(db: Db, intervalMs: number, log: (line: string
   return () => clearInterval(timer);
 }
 
-// shortcut: summaries are plain text cut at 200 characters, no redaction; revisit if tool inputs carry secrets.
-export function summarise(toolName: string, toolInput: unknown): string {
+// Graph tools act as a person: their audit keeps targets, recipients, subjects and file names, never message bodies or file content
+const PRIVATE_GRAPH_FIELDS = new Set(["body", "content", "comment"]);
+
+/** What the audit keeps of a tool call's arguments. */
+export function auditInput<T>(toolName: string, input: T): T {
+  if (!toolName.startsWith("mcp__m365__") || !input || typeof input !== "object") return input;
+  return Object.fromEntries(Object.entries(input).filter(([k]) => !PRIVATE_GRAPH_FIELDS.has(k))) as T;
+}
+
+// shortcut: summaries are plain text cut at 200 characters, no redaction beyond Graph bodies; revisit if tool inputs carry secrets.
+export function summarise(toolName: string, rawInput: unknown): string {
+  const toolInput = auditInput(toolName, rawInput);
   const input = toolInput as Record<string, unknown> | null;
   if (toolName === "mcp__computer__bash") {
     return typeof input?.command === "string" ? input.command.slice(0, 200) : toolName;

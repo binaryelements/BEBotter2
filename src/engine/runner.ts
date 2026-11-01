@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { and, desc, eq, gt } from "drizzle-orm";
 import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKMessage, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import { confirmerPolicy } from "../admin/access.js";
-import { beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
+import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { definitionsForChat, mcpServerConfigs } from "../bots/definitions.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
@@ -11,6 +11,7 @@ import { computerMcpServer } from "../computer/mcp.js";
 import { connectionsMcpServer } from "../connections/mcp.js";
 import type { SshRunner } from "../connections/ssh.js";
 import { connectionMcpConfigs } from "../connections/store.js";
+import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
 import type { Db } from "../db/client.js";
@@ -62,7 +63,7 @@ const NOT_DONE = {
 };
 
 /** What a turn's SDK options act for. A live process outlives its turns, so its options read the turn running now through this. */
-type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void> };
+type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void>; graphToken?: () => Promise<string | undefined> };
 // live pool → key → the turn running on that key
 const liveTurns = new WeakMap<LiveSessions, Map<string, TurnScope>>();
 const turnsOn = (pool: LiveSessions) => liveTurns.get(pool) ?? liveTurns.set(pool, new Map()).get(pool)!;
@@ -111,6 +112,8 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       // read when the servers are built too, so it is absent rather than an error with no turn; a chat process never posts
       get post() { return current()?.post; },
       confirmedBy: () => current()?.confirmedBy(),
+      // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
+      graphToken: async () => current()?.graphToken?.(),
     };
     const afterTool: HookCallback = async (...a) => current()?.afterTool(...a) ?? {};
     const canUseTool: CanUseTool = async (toolName, input, o) => {
@@ -143,6 +146,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         knowledge: knowledgeMcpServer(deps, ctx),
         connections: connectionsMcpServer(deps, ctx),
         routine: routineMcpServer(deps, ctx),
+        ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
         ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
         ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
         ...conn.servers,
@@ -277,12 +281,13 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   const canUseTool: CanUseTool = async (toolName, input, { toolUseID }) => {
     const run = attemptNo;
-    const json = JSON.stringify(input);
+    const audited = auditInput(toolName, input);
+    const json = JSON.stringify(audited);
     const auditId = await beginAction(db, {
       ...base,
       kind: "tool",
       toolName,
-      toolInput: json.length <= MAX_AUDIT_INPUT ? input : { truncated: true, preview: json.slice(0, MAX_AUDIT_INPUT) },
+      toolInput: json.length <= MAX_AUDIT_INPUT ? audited : { truncated: true, preview: json.slice(0, MAX_AUDIT_INPUT) },
       summary: summarise(toolName, input),
     });
     const stale = async () => {
@@ -354,7 +359,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return {};
   };
 
-  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post };
+  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken };
   let options: Options | undefined; // a cold run's, built only when one runs
 
   const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {

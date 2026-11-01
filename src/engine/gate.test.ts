@@ -56,4 +56,15 @@ describe("classify", () => {
     expect(classify("mcp__connections__approve", def, [], "free")).toBe("approve");
     expect(classify("mcp__someone__new_tool", def)).toBe("write");
   });
+
+  it("Graph reads run freely and Graph writes always ask, whatever an admin rule says", () => {
+    const reads = ["search_mail", "list_mail", "read_mail", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"];
+    const writes = ["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"];
+    for (const t of reads) expect(classify(`mcp__m365__${t}`, def)).toBe("read");
+    for (const t of writes) {
+      expect(classify(`mcp__m365__${t}`, def)).toBe("approve");
+      expect(classify(`mcp__m365__${t}`, def, [], "free")).toBe("approve");
+    }
+    expect(classify("mcp__m365__delete_everything", def)).toBe("write");
+  });
 });
