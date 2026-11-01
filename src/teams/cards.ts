@@ -51,14 +51,14 @@ export const withRoleLabel = (label: string, text: string): string => `**${label
 /** How a bot is named to people: `<name> · <label>`, or the label alone. */
 export const botTitle = (d: { displayName: string | null; label: string }): string => (d.displayName ? `${d.displayName} · ${d.label}` : d.label);
 
-/** One choose action per bot; with `chosenId`, the card also says which one the chat now talks to. */
-export const chooseBotCard = (defs: { id: string; displayName: string | null; label: string }[], chosenId?: string): AdaptiveCard => {
+/** One choose action per bot (Personal's always reads "My assistant"); with `chosenId`, the card also says which one the chat now talks to. */
+export const chooseBotCard = (defs: { id: string; displayName: string | null; label: string; identity: "service" | "person" }[], chosenId?: string): AdaptiveCard => {
   const chosen = defs.find((d) => d.id === chosenId);
   return card(
     [
       { type: "TextBlock", text: "Who would you like to talk to?", weight: "Bolder", wrap: true },
       ...(chosen ? [{ type: "TextBlock", text: `You're now talking to ${botTitle(chosen)}.`, wrap: true }] : []),
     ],
-    defs.map((d) => ({ type: "Action.Execute", title: botTitle(d), verb: "choose", data: { definitionId: d.id } })),
+    defs.map((d) => ({ type: "Action.Execute", title: d.identity === "person" ? "My assistant" : botTitle(d), verb: "choose", data: { definitionId: d.id } })),
   );
 };

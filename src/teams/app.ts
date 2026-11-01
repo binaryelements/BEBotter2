@@ -66,6 +66,9 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         title: "sign in",
         text: "Sign in so I can act as you in Microsoft 365.",
         invalidSignInRetryMessageFormat: "Finish signing in on the card above.", // what a message typed while the card waits gets
+        // a wrong code, or too many messages while the card waits: the SDK ends the sign-in, so the next message starts over
+        invalidSignInRetryMessage: signInFailed,
+        invalidSignInRetryMaxExceededMessage: signInFailed,
       },
     },
   });
@@ -136,6 +139,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     );
   };
   // a message that will run the sender's own Personal signs in first; the route order makes it win
+  // shortcut: 1.9.1 has no public way to drop a pending sign-in, so "switch" typed while the card waits counts as a wrong answer (the choose card shows once the retries run out), and a pending entry whose message no longer selects Personal (switched off, switched away) lingers until Personal is selected again and its retries run out; upgrade when the SDK exposes clearing it
   // the selector runs a few small queries, about twice per message (authorization, then routing)
   const personTurn = async (ctx: TurnContext) => {
     const { type, conversation, from, text } = ctx.activity;

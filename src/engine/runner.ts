@@ -144,8 +144,9 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       mcpServers: {
         ...mcpServerConfigs(definition, deps.secretsKey),
         ...(containerId ? { computer: computerMcpServer(deps.docker, containerId) } : {}),
-        knowledge: knowledgeMcpServer(deps, ctx),
-        connections: connectionsMcpServer(deps, ctx),
+        // Personal reads shared notes but stores nothing and reaches no company systems: what it saw in one person's mail must not reach others
+        knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
+        ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
         routine: routineMcpServer(deps, ctx),
         ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
         ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),

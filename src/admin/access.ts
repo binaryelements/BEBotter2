@@ -37,9 +37,11 @@ export async function mayManagePerson(db: Db, a: Actor, personId: string): Promi
 }
 
 export async function mayEditPersona(db: Db, a: Actor, definitionId: string): Promise<boolean> {
-  if (!(await inTenant(db, a.tenantId, botDefinitions, definitionId))) return false;
+  const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, a.tenantId)));
+  if (!def) return false;
   if (isAdmin(a)) return true;
-  if (a.headOf.length === 0) return false;
+  // Personal belongs to no department: only an admin shapes what acts as every person
+  if (a.headOf.length === 0 || def.identity === "person") return false;
   const rows = await db
     .select({ id: definitionDepartments.definitionId })
     .from(definitionDepartments)

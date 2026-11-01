@@ -72,6 +72,10 @@ describe("assignments screen", () => {
     const personal = await ensurePersonalDefinition(db, T, "m");
     expect((await post(path(teamsId), "Ann", [["definitionId", personal.id]])).status).toBe(400);
     expect(await assigned(teamsId)).toEqual([]);
+    // offered only on one-to-one chats
+    const rows = (await (await get("/admin/assignments", "Ann")).text()).split("<tr>");
+    expect(rows.find((r) => r.includes(path("chat-1")))).toContain(`value="${personal.id}"`);
+    expect(rows.find((r) => r.includes(path(teamsId)))).not.toContain(`value="${personal.id}"`);
   });
 
   it("refuses another tenant's chat and bot", async () => {

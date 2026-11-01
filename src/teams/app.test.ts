@@ -146,6 +146,23 @@ describe("sign-in for a person's own assistant", () => {
     expect(s.runTurn).not.toHaveBeenCalled();
   });
 
+  it("a wrong code and too many messages while the card waits end the sign-in with our copy, and the next message starts over", async () => {
+    const s = await signInApp();
+    await s.say("what's on my calendar?");
+    await s.say("123456"); // the token service knows no such code
+    expect(s.sent.map((a) => a.text)).toContain("Sign-in didn't work. Say anything to try again.");
+    expect(s.sent.map((a) => a.text).join(" ")).not.toContain("123456");
+    await s.say("what's on my calendar?");
+    expect(s.oauthCards()).toHaveLength(2); // the wrong code ended it, so this one starts over
+    for (const t of ["hello?", "still there?"]) await s.say(t);
+    s.sent.length = 0;
+    await s.say("anyone?");
+    expect(s.sent.map((a) => a.text)).toEqual(["Sign-in didn't work. Say anything to try again."]);
+    await s.say("what's on my calendar?");
+    expect(s.oauthCards()).toHaveLength(1);
+    expect(s.runTurn).not.toHaveBeenCalled();
+  });
+
   it("an expired token brings a fresh sign-in card and no turn", async () => {
     const s = await signInApp();
     await s.say("what's on my calendar?");

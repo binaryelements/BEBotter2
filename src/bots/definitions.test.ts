@@ -103,6 +103,17 @@ describe("bot definition admin helpers", () => {
     expect(await allowedDepartments(db, def.id)).toEqual([b]);
   });
 
+  it("Personal takes no departments and no computer", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const a = (await createDepartment(db, "t1", "A")).id;
+    const p = await ensurePersonalDefinition(db, "t1", "m");
+    await expect(setAllowedDepartments(db, "t1", p.id, [a])).rejects.toThrow("not by department");
+    expect(await allowedDepartments(db, p.id)).toEqual([]);
+    await updateDefinitionFields(db, "t1", p.id, { label: "My assistant", persona: "p", model: "m", webSearch: true, computer: true });
+    expect(await getDefinition(db, "t1", p.id)).toMatchObject({ computer: false, webSearch: true });
+  });
+
   it("adding and removing a server leaves the other servers' ciphertext alone and rejects duplicates", async () => {
     const db = await testDb();
     const key = Buffer.alloc(32, 3);

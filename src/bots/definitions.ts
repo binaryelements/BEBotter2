@@ -183,6 +183,9 @@ export async function updateDefinitionFields(
   if (!f.label.trim() || !f.model.trim()) throw new DirectoryError("Label and model are required");
   const { displayName, ...rest } = f;
   if (displayName && displayName.trim().length > 60) throw new DirectoryError("Name is too long (60 characters at most)");
+  // a person bot needs a computer per person, which does not exist yet
+  const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
+  if (def?.identity === "person") rest.computer = false;
   await db.update(botDefinitions).set({ ...rest, ...(displayName === undefined ? {} : { displayName: displayName.trim() || null }), updatedAt: new Date() }).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
 }
 
@@ -213,7 +216,10 @@ export async function allowedDepartments(db: Db, definitionId: string): Promise<
 }
 
 export async function setAllowedDepartments(db: Db, tenantId: string, id: string, departmentIds: string[]): Promise<void> {
-  if (!(await getDefinition(db, tenantId, id))) throw new DirectoryError("Bot not found");
+  const def = await getDefinition(db, tenantId, id);
+  if (!def) throw new DirectoryError("Bot not found");
+  // Personal is switched on per person (People page), never by department
+  if (def.identity === "person" && departmentIds.length) throw new DirectoryError("Personal is switched on per person, not by department");
   const valid = departmentIds.length
     ? await db.select({ id: departments.id }).from(departments).where(and(eq(departments.tenantId, tenantId), inArray(departments.id, departmentIds)))
     : [];

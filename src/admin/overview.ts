@@ -19,7 +19,7 @@ export async function visibleBots(db: Db, actor: Actor): Promise<{ defs: BotDefi
   const allowed = new Map<string, string[]>();
   for (const d of await listDefinitions(db, actor.tenantId)) {
     const a = await allowedDepartments(db, d.id);
-    if (!isAdmin(actor) && !a.some((x) => actor.headOf.includes(x))) continue;
+    if (!isAdmin(actor) && (d.identity === "person" || !a.some((x) => actor.headOf.includes(x)))) continue;
     defs.push(d);
     allowed.set(d.id, a);
   }

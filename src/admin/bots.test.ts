@@ -6,7 +6,7 @@ import { ensurePersonalDefinition, getDefinition, listDefinitions, setAllowedDep
 import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { GRAPH_CAPABILITIES, botDefinitions, people, connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
 import { listRoutines } from "../routines/store.js";
 import { eq } from "drizzle-orm";
@@ -95,7 +95,7 @@ describe("bots screen", () => {
     let pid: string;
     beforeAll(async () => {
       pid = (await ensurePersonalDefinition(db, T, "m")).id;
-      await setAllowedDepartments(db, T, pid, [sales]);
+      await db.insert(definitionDepartments).values({ definitionId: pid, departmentId: sales }); // a stale link, by hand: the save refuses one
       await db.update(people).set({ personalBot: true }).where(eq(people.id, id.Mo));
     });
 
@@ -130,10 +130,35 @@ describe("bots screen", () => {
       expect(m365).not.toContain('value="mail.send" checked');
     });
 
-    it("a head gets 403 on the post and sees only the persona form", async () => {
+    it("a head never edits it, even with a department link, and does not see it in the list", async () => {
       expect((await post(`/admin/bots/${pid}/m365`, "Hal", [["graph", "files.write"]])).status).toBe(403);
       expect((await getDefinition(db, T, pid))!.graph).toEqual(["mail.read", "calendar.read"]);
-      expect(await (await get(`/admin/bots/${pid}`, "Hal")).text()).not.toContain("m365");
+      expect((await get(`/admin/bots/${pid}`, "Hal")).status).toBe(403);
+      expect((await post(`/admin/bots/${pid}`, "Hal", [["persona", "By head."]])).status).toBe(403);
+      expect((await getDefinition(db, T, pid))!.persona).not.toBe("By head.");
+      expect(await (await get("/admin/bots", "Hal")).text()).not.toContain(`/admin/bots/${pid}`);
+    });
+
+    it("the overview has no departments or computer, and the save refuses departments and keeps computer off", async () => {
+      const page = await (await get(`/admin/bots/${pid}`, "Ann")).text();
+      expect(page).not.toContain("<legend>departments</legend>");
+      expect(page).not.toContain('name="computer"');
+      const fields: [string, string][] = [["label", "My assistant"], ["model", "m"], ["persona", "p"], ["computer", "on"]];
+      const refused = await post(`/admin/bots/${pid}`, "Ann", [...fields, ["departments", sales]]);
+      expect(refused.status).toBe(400);
+      expect((await getDefinition(db, T, pid))!.persona).not.toBe("p");
+      expect((await post(`/admin/bots/${pid}`, "Ann", fields)).status).toBe(303);
+      const after = (await getDefinition(db, T, pid))!;
+      expect([after.persona, after.computer]).toEqual(["p", false]);
+    });
+
+    it("refuses servers and connection links", async () => {
+      expect((await post(`/admin/bots/${pid}/servers`, "Ann", [["name", "x"], ["transport", "stdio"], ["command", "c"]])).status).toBe(400);
+      expect((await getDefinition(db, T, pid))!.mcpServers).toEqual([]);
+      const cid = crypto.randomUUID();
+      await db.insert(connections).values({ id: cid, tenantId: T, name: "personal-link", kind: "ssh", target: "host.example.test", config: { port: 22, username: "ops" }, mode: "read-only", status: "active" });
+      expect((await post(`/admin/bots/${pid}/connections/${cid}/link`, "Ann", [["linked", "on"]])).status).toBe(400);
+      expect(await listConnectionsFor(db, T, pid)).toEqual([]);
     });
 
     it("the list and the overview show it once, with how many people have it on", async () => {
@@ -367,6 +392,12 @@ describe("bot names and email addresses", () => {
     const page = await post(`/admin/bots/${def.id}/mailbox`, "Ann", [["localPart", "busy"]]);
     expect(page.status).toBe(400);
     expect(await page.text()).toContain("That address is taken");
+  });
+
+  it("Personal gets no mailbox", async () => {
+    const pid = (await ensurePersonalDefinition(db, T, "m")).id;
+    expect((await post(`/admin/bots/${pid}/mailbox`, "Ann", [["localPart", "mine"]])).status).toBe(400);
+    expect(await box(pid)).toBeUndefined();
   });
 
   it("remove and restore call the mailbox functions; removed offers restore", async () => {

@@ -57,7 +57,7 @@ describe("cards", () => {
 });
 
 describe("chooseBotCard", () => {
-  const defs = [{ id: "p", displayName: null, label: "My assistant" }, { id: "s", displayName: "Iris", label: "IT" }, { id: "t", displayName: null, label: "Sales" }];
+  const defs = [{ id: "p", displayName: "Max", label: "Mine", identity: "person" as const }, { id: "s", displayName: "Iris", label: "IT", identity: "service" as const }, { id: "t", displayName: null, label: "Sales", identity: "service" as const }];
 
   it("asks who, with one choose action per bot", () => {
     const card = chooseBotCard(defs) as any;

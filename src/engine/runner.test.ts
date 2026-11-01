@@ -785,6 +785,15 @@ describe("runTurn", () => {
     expect(q.seen[2]!.mcpServers).not.toHaveProperty("m365");
   });
 
+  it("a person definition gets read-only knowledge and no connections server", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: ["mail.read"] }, person, text: "x", askConfirmation: async () => {} });
+    expect(q.seen[0]!.mcpServers).not.toHaveProperty("connections");
+    expect(Object.keys((q.seen[0]!.mcpServers!.knowledge as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools).sort()).toEqual(["list", "read", "search"]);
+  });
+
   it("a Graph write always asks, even when an admin set it free, and its audit row keeps recipients and subject but never the body", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
