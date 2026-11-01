@@ -26,6 +26,7 @@ const schema = z.object({
   FILES_DIR: z.string().default("/srv/files"),
   AGENTMAIL_URL: z.string().default("https://agentmail.a.sapautomate.com").transform((s) => s.replace(/\/+$/, "")),
   AGENTMAIL_ADMIN_KEY: z.string().optional(),
+  GRAPH_OAUTH_CONNECTION: z.string().default("graph"),
 });
 
 export type Config = {
@@ -42,6 +43,8 @@ export type Config = {
   dockerSocket: string;
   filesDir: string;
   agentmail?: { url: string; adminKey: string };
+  /** The Azure Bot OAuth connection that signs a person in to Microsoft Graph. */
+  graphOAuthConnection: string;
 };
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -60,5 +63,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     dockerSocket: e.DOCKER_SOCKET,
     filesDir: e.FILES_DIR,
     agentmail: e.AGENTMAIL_ADMIN_KEY ? { url: e.AGENTMAIL_URL, adminKey: e.AGENTMAIL_ADMIN_KEY } : undefined,
+    graphOAuthConnection: e.GRAPH_OAUTH_CONNECTION,
   };
 }

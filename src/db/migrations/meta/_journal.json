@@ -71,6 +71,13 @@
       "when": 1793431811080,
       "tag": "0009_unusual_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793508947418,
+      "tag": "0010_lucky_carmella_unuscione",
+      "breakpoints": true
     }
   ]
 }

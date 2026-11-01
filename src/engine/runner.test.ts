@@ -91,6 +91,30 @@ function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()
 afterEach(() => vi.useRealTimers());
 
 describe("runTurn", () => {
+  it("carries the person's token closure but never puts the token in options, prompt, audit or logs", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const token = "eyJ0b2stc2VjcmV0";
+    const graphToken = vi.fn(async () => token);
+    const logged: unknown[] = [];
+    const spies = (["log", "warn", "error"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a) => void logged.push(...a)));
+    const q = fakeQuery();
+    const confirmations = new Confirmations();
+    await runTurn(deps(db, q.fn, confirmations), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "hi", graphToken,
+      askConfirmation: async (req) => void confirmations.resolve(req.actionId, person.id, "yes"),
+    });
+    spies.forEach((s) => s.mockRestore());
+    expect(q.seen).toHaveLength(1);
+    const seen = new WeakSet<object>(); // options hold live MCP server objects, which are circular
+    const flat = JSON.stringify(q.seen, (_k, v: unknown) => (v && typeof v === "object" ? (seen.has(v) ? undefined : (seen.add(v), v)) : v));
+    expect(flat).not.toContain(token);
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain(token);
+    expect(Object.values(q.seen[0]!)).not.toContain(graphToken);
+    expect(JSON.stringify(await listActions(db, { tenantId: "t1" }))).not.toContain(token);
+    expect(JSON.stringify(logged)).not.toContain(token);
+  });
+
   it("a throwing progress callback is logged and the turn still finishes", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
@@ -627,6 +651,18 @@ describe("runTurn", () => {
     expect(requests.map((r) => [r.toolName, r.input])).toEqual([["mcp__conn-desk__close_ticket", { id: 1 }]]);
   });
 
+  it("a person definition gets no linked connection, even one linked before Personal refused links", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const { connection } = await requestConnection({ db, ssh: fakeSsh(), secretsKey: key }, "t1", {
+      kind: "mcp", name: "desk", target: "https://mcp.example.test/mcp", mode: "read-only", config: { headerName: "X-Api-Key", readOnlyTools: ["list_tickets"] }, definitionId: definition.id, personId: person.id,
+    });
+    await db.update(connections).set({ status: "active", secretCipher: encrypt(key, "mcp-tok") }).where(eq(connections.id, connection.id));
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: [] }, person, text: "x", askConfirmation: async () => {} });
+    expect(Object.keys(q.seen[0]!.mcpServers!)).not.toContain("conn-desk");
+  });
+
   it("an active mailbox attaches the mail server with the bot's key; sends ask, reads do not; a saved server named mail is skipped", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
@@ -746,6 +782,48 @@ describe("runTurn", () => {
     await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => void (requests.push(r), d.confirmations.resolve(r.actionId, person.id, "no")) });
     expect(Object.keys(q.seen[0]!.mcpServers!)).not.toContain("conn-desk");
     expect(requests).toHaveLength(1);
+  });
+
+  it("a person definition gets m365 with only its capabilities' tools; a service definition gets none", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async () => {} });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: ["mail.read", "chats.read"] }, person, text: "x", askConfirmation: async () => {} });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: [] }, person, text: "x", askConfirmation: async () => {} });
+    expect(q.seen[0]!.mcpServers).not.toHaveProperty("m365");
+    const tools = (q.seen[1]!.mcpServers!.m365 as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools;
+    expect(Object.keys(tools).sort()).toEqual(["list_chats", "list_mail", "read_chat", "read_mail", "search_mail"]);
+    expect(q.seen[2]!.mcpServers).not.toHaveProperty("m365");
+  });
+
+  it("a person definition gets read-only knowledge and no connections server", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: ["mail.read"] }, person, text: "x", askConfirmation: async () => {} });
+    expect(q.seen[0]!.mcpServers).not.toHaveProperty("connections");
+    expect(Object.keys((q.seen[0]!.mcpServers!.knowledge as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools).sort()).toEqual(["list", "read", "search"]);
+  });
+
+  it("a Graph write always asks, even when an admin set it free, and its audit row keeps recipients and subject but never the body", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const personal = { ...definition, identity: "person" as const, graph: ["mail.send" as const] };
+    await setToolRule(db, definition.id, "mcp__m365__send_mail", "free"); // stored by hand: the page locks it
+    const input = { to: ["bea@example.test"], subject: "Quarterly figures", body: "the secret body text" };
+    const q = fakeQuery({ calls: [["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]] });
+    const asked: ConfirmationRequest[] = [];
+    // every card expires at once, so the test never waits for a click
+    await runTurn(deps(db, q.fn, new Confirmations((fn) => (fn(), 0))), { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", askConfirmation: async (r) => void asked.push(r) });
+    expect(asked.map((r) => [r.toolName, r.input])).toEqual([["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]]);
+    expect(q.decisions).toEqual(["deny", "deny"]);
+    const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
+    expect(rows).toHaveLength(2);
+    expect(JSON.stringify(rows)).not.toContain("secret body");
+    const send = rows.find((r) => r.toolName === "mcp__m365__send_mail")!;
+    expect(send.toolInput).toEqual({ to: ["bea@example.test"], subject: "Quarterly figures" });
+    expect(send.summary).toContain("Quarterly figures");
   });
 
   describe("live sessions", () => {
@@ -977,6 +1055,59 @@ describe("runTurn", () => {
       await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async () => {}, routine: { id: "r1", grantPersonId: person.id, post: async () => {} } });
       expect(send).not.toHaveBeenCalled();
       expect(q.seen).toHaveLength(1);
+    });
+
+    it("changing a person definition's capabilities starts a new process even when updatedAt did not move", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const turn = (graph: ("mail.read" | "files.read")[]) =>
+        runTurn(d, { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph }, person, text: "x", graphToken: async () => "t", askConfirmation: async () => {} });
+      await turn(["mail.read"]);
+      await turn(["mail.read"]);
+      await turn(["mail.read", "files.read"]);
+      expect(q.seen).toHaveLength(2);
+    });
+
+    it("a Graph 401 in a turn marks it so the person is signed out; a turn without one is not marked", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const personal = { ...definition, identity: "person" as const, graph: ["mail.read" as const, "mail.send" as const] };
+      let status = 401;
+      const fetchFn = (async () => new Response('{"value":[]}', { status })) as typeof fetch;
+      const q = fakeQuery({ calls: [["mcp__m365__send_mail", { to: ["bea@example.test"], subject: "s", body: "b" }]] });
+      const d = { ...liveDeps(db, q.fn), fetchFn, confirmations: new Confirmations((fn) => (fn(), 0)) };
+      const search = () => toolsOf(q.seen[0]!.mcpServers!.m365).search_mail!.handler({ query: "x" });
+      const turn = () => runTurn(d, { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", graphToken: async () => "tok", askConfirmation: async () => void (await search()) });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      expect((await turn()).signInLost).toBe(true);
+      status = 200;
+      expect((await turn()).signInLost).toBeFalsy();
+      vi.mocked(console.error).mockRestore();
+    });
+
+    it("a warm process calls Graph with the token of the turn running now, never the first turn's", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const personal = { ...definition, identity: "person" as const, graph: ["mail.read" as const, "mail.send" as const] };
+      const auth: string[] = [];
+      const fetchFn = (async (_u: unknown, init?: RequestInit) => {
+        auth.push((init?.headers as Record<string, string>).Authorization);
+        return new Response('{"value":[]}');
+      }) as typeof fetch;
+      const q = fakeQuery({ calls: [["mcp__m365__send_mail", { to: ["bea@example.test"], subject: "s", body: "b" }]] });
+      const d = { ...liveDeps(db, q.fn), fetchFn, confirmations: new Confirmations((fn) => (fn(), 0)) };
+      const search = () => toolsOf(q.seen[0]!.mcpServers!.m365).search_mail!.handler({ query: "x" });
+      const turn = (token: string) =>
+        runTurn(d, { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", graphToken: async () => token, askConfirmation: async () => void (await search()) });
+      await turn("tok-one");
+      await turn("tok-two");
+      expect(q.seen).toHaveLength(1);
+      expect(auth).toEqual(["Bearer tok-one", "Bearer tok-two"]);
+      // between turns there is no token at all
+      expect((await search()).content[0]!.text).toMatch(/sign in again/);
+      expect(auth).toHaveLength(2);
     });
   });
 });

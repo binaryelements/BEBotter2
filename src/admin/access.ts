@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { botDefinitions, definitionDepartments, departmentMembers, departments, people } from "../db/schema.js";
+import { botDefinitions, chats, definitionDepartments, departmentMembers, departments, people } from "../db/schema.js";
 
 export type Actor = { personId: string; tenantId: string; name: string; role: "user" | "admin"; headOf: string[] };
 
@@ -37,9 +37,11 @@ export async function mayManagePerson(db: Db, a: Actor, personId: string): Promi
 }
 
 export async function mayEditPersona(db: Db, a: Actor, definitionId: string): Promise<boolean> {
-  if (!(await inTenant(db, a.tenantId, botDefinitions, definitionId))) return false;
+  const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, a.tenantId)));
+  if (!def) return false;
   if (isAdmin(a)) return true;
-  if (a.headOf.length === 0) return false;
+  // Personal belongs to no department: only an admin shapes what acts as every person
+  if (a.headOf.length === 0 || def.identity === "person") return false;
   const rows = await db
     .select({ id: definitionDepartments.definitionId })
     .from(definitionDepartments)
@@ -50,11 +52,15 @@ export async function mayEditPersona(db: Db, a: Actor, definitionId: string): Pr
 export async function mayUseDefinition(db: Db, tenantId: string, personId: string, definitionId: string): Promise<boolean> {
   // One row per linked department, or one row with a null department when there are none; no rows means not in this tenant.
   const links = await db
-    .select({ id: definitionDepartments.departmentId })
+    .select({ id: definitionDepartments.departmentId, identity: botDefinitions.identity })
     .from(botDefinitions)
     .leftJoin(definitionDepartments, eq(definitionDepartments.definitionId, botDefinitions.id))
     .where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, tenantId)));
   if (links.length === 0) return false;
+  if (links[0].identity === "person") {
+    const [p] = await db.select({ on: people.personalBot }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
+    return !!p?.on;
+  }
   const linked = links.flatMap((l) => (l.id ? [l.id] : []));
   if (linked.length === 0) return true;
   const [p] = await db.select({ role: people.role }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
@@ -67,15 +73,25 @@ export async function mayUseDefinition(db: Db, tenantId: string, personId: strin
   return mine.length > 0;
 }
 
-/** Who may click yes on a card: the asker (writes only), an admin, or a head of a department allowed to use the definition. */
+/**
+ * Who may click yes on a card: the asker (writes only), an admin, or a head of a department allowed to use the definition.
+ * A person definition acts as its owner, so only the asker who owns chatId may confirm, whoever else sees the card.
+ */
 export function confirmerPolicy(
   db: Db,
   tenantId: string,
   definitionId: string,
   askerPersonId: string | null,
   kind: "write" | "approve",
+  chatId?: string,
 ): (clickerPersonId: string) => Promise<boolean> {
   return async (clickerPersonId) => {
+    const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, tenantId)));
+    if (def?.identity === "person") {
+      if (!chatId || clickerPersonId !== askerPersonId) return false;
+      const [chat] = await db.select({ owner: chats.ownerPersonId }).from(chats).where(and(eq(chats.id, chatId), eq(chats.tenantId, tenantId)));
+      return chat?.owner === clickerPersonId;
+    }
     const actor = await loadActor(db, tenantId, clickerPersonId);
     if (!actor) return false;
     if (kind === "write" && clickerPersonId === askerPersonId) return true;

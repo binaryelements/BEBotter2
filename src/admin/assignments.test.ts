@@ -2,7 +2,7 @@ import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
-import { definitionsForChat, upsertDefinition } from "../bots/definitions.js";
+import { definitionsForChat, ensurePersonalDefinition, upsertDefinition } from "../bots/definitions.js";
 import { chats } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
@@ -66,6 +66,16 @@ describe("assignments screen", () => {
     expect(html).toMatch(new RegExp(`value="${b}" selected`));
     await post(path("chat-1"), "Ann", [["definitionId", ""]]);
     expect(await assigned("chat-1")).toEqual([]);
+  });
+
+  it("refuses Personal on a group chat with a 400 and changes nothing", async () => {
+    const personal = await ensurePersonalDefinition(db, T, "m");
+    expect((await post(path(teamsId), "Ann", [["definitionId", personal.id]])).status).toBe(400);
+    expect(await assigned(teamsId)).toEqual([]);
+    // offered only on one-to-one chats
+    const rows = (await (await get("/admin/assignments", "Ann")).text()).split("<tr>");
+    expect(rows.find((r) => r.includes(path("chat-1")))).toContain(`value="${personal.id}"`);
+    expect(rows.find((r) => r.includes(path(teamsId)))).not.toContain(`value="${personal.id}"`);
   });
 
   it("refuses another tenant's chat and bot", async () => {

@@ -1,12 +1,14 @@
 import { recordSent } from "../audit/audit.js";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
+import { chats } from "../db/schema.js";
 import type { TurnTimings } from "../db/schema.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { ProgressEvent, RunResult, RunTurnInput } from "../engine/runner.js";
-import { definitionsForChat } from "../bots/definitions.js";
+import { assignToChat, definitionsForChat, setChatDefinition, usableDefinitions } from "../bots/definitions.js";
 import { mayUseDefinition } from "../admin/access.js";
-import { getTenantSettings, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { confirmationCard, toolWords, withRoleLabel } from "./cards.js";
+import { findPersonId, getTenantSettings, recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { botTitle, chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
 import type { AdaptiveCard } from "./cards.js";
 
 export type IncomingMessage = {
@@ -45,6 +47,10 @@ export type TeamsIo = {
   sendCard: (card: AdaptiveCard) => Promise<void>;
   /** A reply typed out as it is written (one-to-one chats); end's text is the whole final message. */
   stream?: TeamsStream;
+  /** The sender's Graph token, asked for per call; present only on a turn that signed in. */
+  graphToken?: () => Promise<string | undefined>;
+  /** Signs the sender out of Graph, so their next message brings the sign-in card. */
+  signOut?: () => Promise<void>;
 };
 /** end's card, when given, goes out with the final message; finalText may then be empty. */
 export type TeamsStream = { informative(text: string): void; chunk(text: string): void; end(finalText: string, card?: AdaptiveCard): Promise<void> };
@@ -119,7 +125,28 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
   return { progress, stop, finish, supersede };
 }
 
-export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string };
+const ownerOf = async (db: Db, chatId: string) => (await db.select({ owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.owner;
+
+export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string; defaultModel: string };
+
+export const signInFailed = "Sign-in didn't work. Say anything to try again.";
+
+/** Whether this message will run its sender's own Personal, so the turn must sign in first; read-only, mirrors handleMessage's choice. */
+export async function needsSignIn(
+  deps: Pick<HandlerDeps, "db" | "defaultModel">,
+  m: { tenantId: string; chatId: string; conversationType: string; aadObjectId: string; text: string },
+): Promise<boolean> {
+  const { db } = deps;
+  if (m.conversationType !== "personal" || m.text.trim().toLowerCase() === "switch") return false;
+  const personId = await findPersonId(db, m.tenantId, m.aadObjectId);
+  if (!personId) return false;
+  const owner = await ownerOf(db, m.chatId);
+  if (owner && owner !== personId) return false;
+  const usable = await usableDefinitions(db, m.tenantId, personId, deps.defaultModel);
+  const [assigned] = await definitionsForChat(db, m.chatId);
+  const definition = assigned ?? (usable.length === 1 ? usable[0] : undefined);
+  return definition?.identity === "person" && usable.some((d) => d.id === definition.id);
+}
 
 export async function handleMessage(
   deps: HandlerDeps,
@@ -131,13 +158,34 @@ export async function handleMessage(
   const person = await upsertPerson(db, { tenantId: msg.tenantId, aadObjectId: msg.from.aadObjectId, name: msg.from.name });
   await upsertChat(db, { id: msg.chatId, tenantId: msg.tenantId, conversationType: msg.conversationType });
   await saveConversationReference(db, msg.chatId, msg.conversationReference);
-  const [definition] = await definitionsForChat(db, msg.chatId);
+  let [definition] = await definitionsForChat(db, msg.chatId);
+  if (msg.conversationType === "personal") {
+    await recordChatOwner(db, msg.chatId, person.id);
+    const usable = await usableDefinitions(db, msg.tenantId, person.id, deps.defaultModel);
+    if (msg.text.trim().toLowerCase() === "switch" && usable.length) return void (await io.sendCard(chooseBotCard(usable)));
+    if (definition && !usable.some((d) => d.id === definition!.id)) {
+      await io.send(`You no longer have access to ${botTitle(definition)}.`);
+      return void (usable.length && (await io.sendCard(chooseBotCard(usable))));
+    }
+    if (!definition) {
+      if (!usable.length) return void (await io.send("No bot is available to you yet. Ask an admin."));
+      if (usable.length > 1) return void (await io.sendCard(chooseBotCard(usable)));
+      await assignToChat(db, msg.chatId, usable[0]!.id);
+      definition = usable[0];
+    }
+  }
   if (!definition) return void (await io.send("No bot is set up for this chat yet."));
+  // Personal acts as one person: only in their own one-to-one chat, whatever the assignment says
+  if (definition.identity === "person" && (msg.conversationType !== "personal" || (await ownerOf(db, msg.chatId)) !== person.id)) return void (await io.send("This assistant is private to its owner."));
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
+  // the token goes only to the owner's own Personal turn; any other turn never sees it
+  const graphToken = definition.identity === "person" ? io.graphToken : undefined;
+  // the route was chosen before the assignment or flag changed; the next message goes through sign-in
+  if (definition.identity === "person" && !graphToken) return void (await io.send("Say that again, please."));
   await serialize(`${msg.chatId}:${definition.id}`, async () => {
     const personal = msg.conversationType === "personal";
     // the reply's first line names the bot, in one-to-one chats too: every bot shares the one Teams identity
-    const name = definition.displayName ? `${definition.displayName} · ${definition.label}` : definition.label;
+    const name = botTitle(definition);
     // group chats never stream; a stream that fails hands the rest of the turn to the status message
     let stream = personal ? io.stream : undefined;
     let streamed = false; // the stream showed something, so it must be ended
@@ -201,6 +249,7 @@ export async function handleMessage(
         person,
         text: msg.text,
         receivedAt: msg.receivedAt,
+        ...(graphToken ? { graphToken } : {}),
         askConfirmation: async (req) => {
           status.supersede();
           // a stream must not stay open through a wait of up to 10 minutes: the card ends it, replacing any progress line;
@@ -212,6 +261,9 @@ export async function handleMessage(
         progress,
       });
       await deliver(withRoleLabel(name, result.text));
+      // a revoked token can keep coming back from the token service until the person is signed out
+      if (result.signInLost)
+        await io.signOut?.().catch((e: unknown) => console.error("graph sign-out failed:", e instanceof Error ? e.name : "unknown"));
       try {
         await recordSent(db, result.auditId, new Date());
       } catch (err) {
@@ -230,6 +282,47 @@ export function clickPayload(action: unknown): { actionId: string; answer: "yes"
   const obj = (action ?? {}) as { data?: unknown; actionId?: unknown; answer?: unknown };
   const src = obj.data && typeof obj.data === "object" ? (obj.data as typeof obj) : obj;
   return { actionId: String(src.actionId ?? ""), answer: src.answer === "yes" ? "yes" : "no" };
+}
+
+export const choosePayload = (action: unknown): string => {
+  const obj = (action ?? {}) as { data?: unknown; definitionId?: unknown };
+  const src = obj.data && typeof obj.data === "object" ? (obj.data as typeof obj) : obj;
+  return String(src.definitionId ?? "");
+};
+
+/** The owner picks the bot for their one-to-one chat; anything else (another person, a bot they may not use) changes nothing. */
+export async function handleChoose(
+  deps: Pick<HandlerDeps, "db" | "defaultModel">,
+  who: { tenantId: string; chatId: string; personId: string | undefined },
+  definitionId: string,
+): Promise<AdaptiveCard> {
+  const { db } = deps;
+  const refused = resultCard("You can't choose this bot.");
+  if (!who.personId) return refused;
+  const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(and(eq(chats.id, who.chatId), eq(chats.tenantId, who.tenantId)));
+  if (chat?.type !== "personal" || chat.owner !== who.personId) return refused;
+  const usable = await usableDefinitions(db, who.tenantId, who.personId, deps.defaultModel);
+  if (!usable.some((d) => d.id === definitionId)) return refused;
+  await setChatDefinition(db, who.tenantId, who.chatId, definitionId);
+  return chooseBotCard(usable, definitionId);
+}
+
+/** Added to a chat: a one-to-one chat with several usable bots opens with the choice, otherwise the greeting. */
+export async function handleInstall(
+  deps: HandlerDeps,
+  chat: { tenantId: string; chatId: string; conversationType: string; from?: { aadObjectId: string; name: string } },
+  io: Pick<TeamsIo, "send" | "sendCard">,
+): Promise<void> {
+  const { db } = deps;
+  if (chat.conversationType === "personal" && chat.from) {
+    await upsertTenant(db, { id: chat.tenantId });
+    const person = await upsertPerson(db, { tenantId: chat.tenantId, aadObjectId: chat.from.aadObjectId, name: chat.from.name });
+    await upsertChat(db, { id: chat.chatId, tenantId: chat.tenantId, conversationType: chat.conversationType });
+    await recordChatOwner(db, chat.chatId, person.id);
+    const usable = await usableDefinitions(db, chat.tenantId, person.id, deps.defaultModel);
+    if (usable.length > 1) return io.sendCard(chooseBotCard(usable));
+  }
+  await io.send(membersAddedGreeting(await tenantBotName(db, chat.tenantId, deps.botName)));
 }
 
 export async function handleConfirmClick(

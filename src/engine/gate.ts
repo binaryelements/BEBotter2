@@ -14,6 +14,9 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__routine__remind: "read",
   mcp__routine__post: "read",
   mcp__computer__bash: "read",
+  ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
+  // Graph writes act as the person, so like an approval they always ask and no admin rule can free them
+  ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"].map((t) => [`mcp__m365__${t}`, "approve"])),
 };
 
 const MAIL_READS = new Set(["list_inboxes", "list_messages", "read_thread", "search_mail", "get_attachment", "mark_read"]);
@@ -26,7 +29,8 @@ export function defaultClass(toolName: string, def: BotDefinition, connectionSer
   const m = /^mcp__(.+?)__(.+)$/.exec(toolName); // server names never contain "__" (validated on input)
   if (!m) return "write";
   // Built-ins first: a declared server cannot claim a reserved name (they are rejected on input), and anything else on one is a write.
-  if (BUILT_IN[toolName]) return BUILT_IN[toolName]!;
+  // m365 is ours only on a person definition; anywhere else the name is reserved, so its tools are writes
+  if (BUILT_IN[toolName] && (m[1] !== "m365" || def.identity === "person")) return BUILT_IN[toolName]!;
   if (m[1] === "mail") return MAIL_READS.has(m[2]!) ? "read" : "write"; // anything not known to be a read (sending, forwarding, new tools) asks
   if (m[1]!.startsWith("conn-")) return connectionServers.find((s) => s.name === m[1])?.readOnlyTools.includes(m[2]!) ? "read" : "write";
   if (isReservedMcpName(m[1]!)) return "write";
@@ -34,7 +38,7 @@ export function defaultClass(toolName: string, def: BotDefinition, connectionSer
   return server?.readOnlyTools.includes(m[2]!) ? "read" : "write";
 }
 
-/** The default with the bot's rule on top; approve-class (connection approval) always asks, whatever the rule. */
+/** The default with the bot's rule on top; approve-class (connection approval, Graph writes) always asks, whatever the rule. */
 export function classify(toolName: string, def: BotDefinition, connectionServers: ConnectionServers = [], rule?: ToolRule): ToolClass {
   const base = defaultClass(toolName, def, connectionServers);
   if (base === "approve" || !rule) return base;

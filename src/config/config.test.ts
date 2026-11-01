@@ -16,6 +16,8 @@ describe("loadConfig", () => {
     expect(c.dockerSocket).toBe("/var/run/docker.sock");
     expect(c.filesDir).toBe("/srv/files");
     expect(c.secretsKey.length).toBe(32);
+    expect(c.graphOAuthConnection).toBe("graph");
+    expect(loadConfig({ ...full, GRAPH_OAUTH_CONNECTION: "m365" }).graphOAuthConnection).toBe("m365");
   });
   it("turns mailboxes on only with an admin key", () => {
     expect(loadConfig(full).agentmail).toBeUndefined();

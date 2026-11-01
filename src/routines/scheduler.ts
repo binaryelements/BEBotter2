@@ -15,6 +15,8 @@ export type SchedulerDeps = {
   db: Db;
   runTurn: (turn: RunTurnInput) => Promise<RunResult>;
   send: (chatId: string, m: string | AdaptiveCard) => Promise<void>;
+  /** The owner's Graph token for a one-to-one chat, outside any turn; a personal bot's routine needs it. */
+  personToken?: (chatId: string) => Promise<string | undefined>;
 };
 
 /** Runs one claimed routine headless and posts to its chat. A run that cannot happen is audited as failed, never thrown. */
@@ -48,6 +50,17 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
   const grantPersonId = granter?.role === "admin" ? routine.grantPersonId : null;
 
   const post = (text: string) => deps.send(chatId, chat.conversationType === "personal" ? text : withRoleLabel(definition.label, text));
+  let graphToken: (() => Promise<string | undefined>) | undefined;
+  if (definition.identity === "person") {
+    if (chat.conversationType !== "personal" || chat.ownerPersonId !== creator.id) return fail("its bot is private to its owner");
+    const { personToken } = deps;
+    graphToken = personToken && (() => personToken(chatId));
+    const signedIn = await graphToken?.().then((t) => !!t, (e) => void console.error(`routine ${routine.id}: token`, e instanceof Error ? e.name : "error"));
+    if (!signedIn) {
+      await post("Sign in again to let me run this routine.").catch(() => {});
+      return fail("its owner is not signed in");
+    }
+  }
   await serialize(`${chatId}:${definitionId}`, async () => {
     let result: RunResult;
     try {
@@ -60,6 +73,7 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
         receivedAt: due,
         askConfirmation: (req) => deps.send(chatId, confirmationCard(req)),
         routine: { id: routine.id, grantPersonId, post },
+        ...(graphToken ? { graphToken } : {}),
       });
     } catch (err) {
       console.error(err);

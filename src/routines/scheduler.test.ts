@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HookCallback, Options, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
 import { beginAction, completeAction, listActions } from "../audit/audit.js";
-import { assignToChat, setAllowedDepartments, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, ensurePersonalDefinition, setAllowedDepartments, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
@@ -12,8 +12,8 @@ import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import { runTurn } from "../engine/runner.js";
 import type { RunTurnInput } from "../engine/runner.js";
-import { createDepartment, setRole } from "../org/directory.js";
-import { saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { createDepartment, setPersonalBot, setRole } from "../org/directory.js";
+import { recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { AdaptiveCard } from "../teams/cards.js";
 import { serialize } from "../teams/handlers.js";
 import { runRoutine, startScheduler } from "./scheduler.js";
@@ -197,5 +197,47 @@ describe("scheduler", () => {
     const tool = (await listActions(db, { tenantId: "t1" })).find((a) => a.kind === "tool")!;
     expect(tool).toMatchObject({ status: "done", authority: { type: "grant", personId: annId, routineId: r1.id } });
     expect(sent).toEqual([["c1", "**Ops**\n\nClosed 7."]]);
+  });
+
+  describe("a personal bot's routine", () => {
+    const token = "tok-ann-secret";
+    async function personal() {
+      await setPersonalBot(db, "t1", annId, true);
+      const def = await ensurePersonalDefinition(db, "t1", "m");
+      await upsertChat(db, { id: "p1", tenantId: "t1", conversationType: "personal" });
+      await recordChatOwner(db, "p1", annId);
+      await saveConversationReference(db, "p1", { conversation: { id: "p1" } });
+      await assignToChat(db, "p1", def.id);
+      return createRoutine(db, "t1", { definitionId: def.id, chatId: "p1", prompt: "summarise my inbox", runAt: later, createdByPersonId: annId });
+    }
+
+    it("runs with the owner's token, fetched per call, and never records it", async () => {
+      const r1 = await personal();
+      const personToken = vi.fn(async (_chatId: string) => token);
+      const r = fakeRunTurn(async (turn) => ((await turn.graphToken!()) === token ? "Inbox done." : "no token"));
+      await runRoutine({ db, runTurn: r.run, send, personToken }, r1);
+      expect(sent).toEqual([["p1", "Inbox done."]]);
+      expect(personToken).toHaveBeenCalledWith("p1");
+      expect(JSON.stringify(await listActions(db, { tenantId: "t1" }))).not.toContain(token);
+    });
+
+    it("without the owner's token posts the sign-in line and stops", async () => {
+      const r1 = await personal();
+      const r = fakeRunTurn();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await runRoutine({ db, runTurn: r.run, send, personToken: async () => undefined }, r1);
+      vi.mocked(console.error).mockRestore();
+      expect(r.run).not.toHaveBeenCalled();
+      expect(sent).toEqual([["p1", "Sign in again to let me run this routine."]]);
+      expect((await listActions(db, { tenantId: "t1", chatId: "p1" }))[0]).toMatchObject({ status: "failed" });
+    });
+
+    it("a service bot's routine never asks for a token", async () => {
+      const personToken = vi.fn(async () => token);
+      const r = fakeRunTurn();
+      await runRoutine({ db, runTurn: r.run, send, personToken }, await routine());
+      expect(personToken).not.toHaveBeenCalled();
+      expect(r.turns[0]!.graphToken).toBeUndefined();
+    });
   });
 });

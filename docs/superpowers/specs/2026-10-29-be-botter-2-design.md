@@ -273,6 +273,15 @@ knowledge base per tenant, read and written by all its bots. Knowledge must be k
 - The admin page shows each bot's address and can **remove** the mailbox (revoke the key, remove the webhook, switch the inbox off) and **restore** it. BE AgentMail cannot delete an inbox, so a removed address stays reserved.
 - Personal bots keep the person's own Microsoft 365 mail and calendar through Graph SSO (4.4); this section is about role bots' own addresses.
 
+### 4.13 Choosing a bot in a one-to-one chat (Martin, 2026-11-01)
+
+Martin: "how can that person choose the personal bot when he/she adds the app to teams" … "ok this is correct go ahead".
+
+- When a person adds the app, their one-to-one chat shows a card listing the bots they may use: "My assistant" (their personal bot, if the personal-bot flag is on) and the role bots their departments may use. One click sets the chat; with only one bot available there is no card. **[M]**
+- Typing "switch" shows the card again. Replies always start with who is answering. **[M]**
+- Next step, after this: a message that starts with a bot's name goes to that bot for that message, so several bots can share a chat (as 4.3 intends), in one-to-one and group chats. **[M]**
+- Admins still decide who has a personal bot (People) and which role bots each department may use (the bot's Departments); Assignments stays for group chats and for overriding a person's choice. **[M]**
+
 ## 5. Architecture
 
 One Node service, one Postgres, N bot containers, on one host. **[C]**

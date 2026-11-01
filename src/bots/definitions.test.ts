@@ -1,9 +1,11 @@
+import { eq, sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
-import { tenants } from "../db/schema.js";
+import { mayUseDefinition } from "../admin/access.js";
+import { botDefinitions, chats, people, tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
-import { upsertChat, upsertTenant } from "../org/org.js";
+import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { createDepartment } from "../org/directory.js";
-import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, updateDefinitionFields, upsertDefinition } from "./definitions.js";
+import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, ensurePersonalDefinition, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, setChatDefinition, usableDefinitions, updateDefinitionFields, upsertDefinition } from "./definitions.js";
 
 describe("bot definitions", () => {
   it("stores MCP headers encrypted and gives them back decrypted", async () => {
@@ -101,6 +103,17 @@ describe("bot definition admin helpers", () => {
     expect(await allowedDepartments(db, def.id)).toEqual([b]);
   });
 
+  it("Personal takes no departments and no computer", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const a = (await createDepartment(db, "t1", "A")).id;
+    const p = await ensurePersonalDefinition(db, "t1", "m");
+    await expect(setAllowedDepartments(db, "t1", p.id, [a])).rejects.toThrow("not by department");
+    expect(await allowedDepartments(db, p.id)).toEqual([]);
+    await updateDefinitionFields(db, "t1", p.id, { label: "My assistant", persona: "p", model: "m", webSearch: true, computer: true });
+    expect(await getDefinition(db, "t1", p.id)).toMatchObject({ computer: false, webSearch: true });
+  });
+
   it("adding and removing a server leaves the other servers' ciphertext alone and rejects duplicates", async () => {
     const db = await testDb();
     const key = Buffer.alloc(32, 3);
@@ -147,5 +160,81 @@ describe("reserved MCP names", () => {
     expect(Object.keys(mcpServerConfigs(legacy, key))).toEqual(["docs"]);
     expect(errors).toHaveBeenCalledTimes(3);
     errors.mockRestore();
+  });
+});
+
+describe("the Personal definition", () => {
+  it("is created once per tenant, even when ensured twice at the same time", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const [a, b] = await Promise.all([ensurePersonalDefinition(db, "t1", "m"), ensurePersonalDefinition(db, "t1", "m")]);
+    expect(a.id).toBe(b.id);
+    expect((await db.select().from(botDefinitions).where(eq(botDefinitions.name, "personal"))).length).toBe(1);
+    expect(a).toMatchObject({ label: "My assistant", identity: "person", computer: false });
+    expect(a.graph).toHaveLength(7);
+  });
+
+  it("takes the tenant default model, else the one passed in", async () => {
+    const db = await testDb();
+    await db.insert(tenants).values({ id: "t2", name: "", defaultModel: "m-tenant" });
+    expect((await ensurePersonalDefinition(db, "t2", "m-config")).model).toBe("m-tenant");
+    await db.insert(tenants).values({ id: "t3", name: "" });
+    expect((await ensurePersonalDefinition(db, "t3", "m-config")).model).toBe("m-config");
+  });
+
+  it("reads rows saved before identity existed as service", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    await db.execute(sql`insert into bot_definitions (id, tenant_id, name, label, persona, model, web_search, computer, mcp_servers) values ('old', 't1', 'old', 'Old', 'p', 'm', false, false, '[]'::jsonb)`);
+    expect(await getDefinition(db, "t1", "old")).toMatchObject({ identity: "service", graph: [] });
+  });
+
+  it("refuses to adopt a service bot that already took the name", async () => {
+    const db = await testDb();
+    await upsertDefinition(db, Buffer.alloc(32), "t1", { name: "personal", label: "Mine", persona: "p" });
+    await expect(ensurePersonalDefinition(db, "t1", "m")).rejects.toThrow(/already exists/);
+  });
+
+  it("is usable only by people with the flag on", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const def = await ensurePersonalDefinition(db, "t1", "m");
+    const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
+    expect(await mayUseDefinition(db, "t1", p.id, def.id)).toBe(false);
+    await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
+    expect(await mayUseDefinition(db, "t1", p.id, def.id)).toBe(true);
+  });
+
+  it("is assigned only to a one-to-one chat whose owner has the flag", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const def = await ensurePersonalDefinition(db, "t1", "m");
+    const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
+    await upsertChat(db, { id: "g", tenantId: "t1", conversationType: "groupChat" });
+    await upsertChat(db, { id: "dm", tenantId: "t1", conversationType: "personal" });
+    await expect(assignToChat(db, "g", def.id)).rejects.toThrow(/one-to-one/);
+    await db.update(chats).set({ ownerPersonId: p.id }).where(eq(chats.id, "dm"));
+    await expect(assignToChat(db, "dm", def.id)).rejects.toThrow(/no personal assistant/);
+    await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
+    await assignToChat(db, "dm", def.id);
+    expect((await definitionsForChat(db, "dm")).map((d) => d.id)).toEqual([def.id]);
+  });
+
+  it("setChatDefinition refuses Personal on a group chat and leaves the assignment alone", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const def = await ensurePersonalDefinition(db, "t1", "m");
+    await upsertChat(db, { id: "g", tenantId: "t1", conversationType: "groupChat" });
+    await expect(setChatDefinition(db, "t1", "g", def.id)).rejects.toThrow(/one-to-one/);
+    expect(await definitionsForChat(db, "g")).toEqual([]);
+  });
+
+  it("usableDefinitions lets an unexpected error from creating Personal propagate", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
+    await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
+    const broken = Object.assign(Object.create(db), { insert: () => { throw new Error("db down"); } });
+    await expect(usableDefinitions(broken, "t1", p.id, "m")).rejects.toThrow("db down");
   });
 });

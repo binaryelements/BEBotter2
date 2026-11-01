@@ -2,13 +2,14 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
-import { botDefinitions, chatAssignments, chats, definitionDepartments, departments } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionDepartments, departments, people } from "../db/schema.js";
 import type { BotDefinition, McpServerRecord } from "../db/schema.js";
+import { mayUseDefinition } from "../admin/access.js";
 import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
-export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine", "mail"] as const;
+export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine", "mail", "m365"] as const;
 
 /** MCP connections attach as `conn-<name>`, so that prefix is reserved too. */
 export const isReservedMcpName = (name: string): boolean => (RESERVED_MCP_NAMES as readonly string[]).includes(name.toLowerCase()) || name.toLowerCase().startsWith("conn-");
@@ -58,7 +59,36 @@ export async function upsertDefinition(db: Db, secretsKey: Buffer, tenantId: str
   return row;
 }
 
+export const PERSONAL_PERSONA =
+  "You are the personal assistant of the person you are talking to. You act as them in Microsoft 365: their mail, calendar, files and Teams chats. Be brief. Before you send, reply, book, accept or save anything, say exactly what you will do; the person confirms it in the chat.";
+
+/** One built-in Personal definition per tenant; safe to call again and concurrently. */
+export async function ensurePersonalDefinition(db: Db, tenantId: string, defaultModel: string): Promise<BotDefinition> {
+  const model = (await getTenantSettings(db, tenantId)).defaultModel ?? defaultModel;
+  await db
+    .insert(botDefinitions)
+    .values({ id: crypto.randomUUID(), tenantId, name: "personal", label: "My assistant", persona: PERSONAL_PERSONA, model, webSearch: false, computer: false, identity: "person", graph: [...GRAPH_CAPABILITIES], mcpServers: [] })
+    .onConflictDoNothing({ target: [botDefinitions.tenantId, botDefinitions.name] });
+  const [row] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.name, "personal")));
+  if (row.identity !== "person") throw new DirectoryError('A bot named "personal" already exists; rename it so the built-in Personal assistant can be created');
+  return row;
+}
+
+/** A Personal assistant works only in its owner's one-to-one chat; the owner is checked once it is recorded. */
+async function checkPersonDefinition(db: Db, chatId: string, definitionId: string): Promise<void> {
+  const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(eq(botDefinitions.id, definitionId));
+  if (def?.identity !== "person") return;
+  // a personal chat with no recorded owner passes until the owner is recorded on the first message
+  const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId));
+  if (chat?.type !== "personal") throw new DirectoryError("A personal assistant works only in a one-to-one chat");
+  if (chat.owner) {
+    const [p] = await db.select({ on: people.personalBot }).from(people).where(eq(people.id, chat.owner));
+    if (!p?.on) throw new DirectoryError("The chat owner has no personal assistant");
+  }
+}
+
 export async function assignToChat(db: Db, chatId: string, definitionId: string): Promise<void> {
+  await checkPersonDefinition(db, chatId, definitionId);
   await db.insert(chatAssignments).values({ chatId, definitionId }).onConflictDoNothing();
 }
 
@@ -71,6 +101,7 @@ export async function setChatLabel(db: Db, tenantId: string, chatId: string, lab
 
 /** One bot per chat: replaces any existing link, or clears it when definitionId is null. */
 export async function setChatDefinition(db: Db, tenantId: string, chatId: string, definitionId: string | null): Promise<void> {
+  if (definitionId) await checkPersonDefinition(db, chatId, definitionId);
   await db.transaction(async (tx) => {
     const [chat] = await tx.select({ id: chats.id }).from(chats).where(and(eq(chats.id, chatId), eq(chats.tenantId, tenantId)));
     if (!chat) throw new DirectoryError("Chat not found");
@@ -87,6 +118,20 @@ export async function definitionsForChat(db: Db, chatId: string): Promise<BotDef
     .innerJoin(botDefinitions, eq(chatAssignments.definitionId, botDefinitions.id))
     .where(eq(chatAssignments.chatId, chatId));
   return rows.map((r) => r.def);
+}
+
+/** The bots a person may talk to: their Personal assistant first (when switched on), then the others by label. */
+export async function usableDefinitions(db: Db, tenantId: string, personId: string, defaultModel: string): Promise<BotDefinition[]> {
+  const [p] = await db.select({ on: people.personalBot }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
+  if (p?.on) await ensurePersonalDefinition(db, tenantId, defaultModel).catch((e) => {
+      if (!(e instanceof DirectoryError)) throw e;
+      console.error(`personal assistant for tenant ${tenantId}:`, e.message);
+    });
+  const all = await db.select().from(botDefinitions).where(eq(botDefinitions.tenantId, tenantId));
+  const usable: BotDefinition[] = [];
+  for (const d of all) if (await mayUseDefinition(db, tenantId, personId, d.id)) usable.push(d);
+  const rank = (d: BotDefinition) => (d.identity === "person" ? 0 : 1);
+  return usable.sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));
 }
 
 // stdio servers get no service secrets, only what a command needs to start
@@ -138,7 +183,31 @@ export async function updateDefinitionFields(
   if (!f.label.trim() || !f.model.trim()) throw new DirectoryError("Label and model are required");
   const { displayName, ...rest } = f;
   if (displayName && displayName.trim().length > 60) throw new DirectoryError("Name is too long (60 characters at most)");
+  // a person bot needs a computer per person, which does not exist yet
+  const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
+  if (def?.identity === "person") rest.computer = false;
   await db.update(botDefinitions).set({ ...rest, ...(displayName === undefined ? {} : { displayName: displayName.trim() || null }), updatedAt: new Date() }).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
+}
+
+/** Saves a Personal assistant's Microsoft 365 capabilities; unknown names are dropped and identity is never touched. */
+export async function setGraph(db: Db, tenantId: string, id: string, graph: string[]): Promise<void> {
+  const rows = await db
+    .update(botDefinitions)
+    .set({ graph: GRAPH_CAPABILITIES.filter((c) => graph.includes(c)), updatedAt: new Date() })
+    .where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.identity, "person")))
+    .returning({ id: botDefinitions.id });
+  if (!rows.length) throw new DirectoryError("Bot not found");
+}
+
+/** Switching a person's assistant off: their own one-to-one chat goes back to the choose card; nothing else moves. */
+export async function clearPersonalChat(db: Db, tenantId: string, personId: string): Promise<void> {
+  const rows = await db
+    .select({ id: chats.id })
+    .from(chats)
+    .innerJoin(chatAssignments, eq(chatAssignments.chatId, chats.id))
+    .innerJoin(botDefinitions, eq(botDefinitions.id, chatAssignments.definitionId))
+    .where(and(eq(chats.tenantId, tenantId), eq(chats.ownerPersonId, personId), eq(botDefinitions.identity, "person")));
+  for (const r of rows) await setChatDefinition(db, tenantId, r.id, null);
 }
 
 export async function allowedDepartments(db: Db, definitionId: string): Promise<string[]> {
@@ -147,7 +216,10 @@ export async function allowedDepartments(db: Db, definitionId: string): Promise<
 }
 
 export async function setAllowedDepartments(db: Db, tenantId: string, id: string, departmentIds: string[]): Promise<void> {
-  if (!(await getDefinition(db, tenantId, id))) throw new DirectoryError("Bot not found");
+  const def = await getDefinition(db, tenantId, id);
+  if (!def) throw new DirectoryError("Bot not found");
+  // Personal is switched on per person (People page), never by department
+  if (def.identity === "person" && departmentIds.length) throw new DirectoryError("Personal is switched on per person, not by department");
   const valid = departmentIds.length
     ? await db.select({ id: departments.id }).from(departments).where(and(eq(departments.tenantId, tenantId), inArray(departments.id, departmentIds)))
     : [];

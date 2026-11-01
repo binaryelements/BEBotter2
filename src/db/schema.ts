@@ -10,6 +10,9 @@ export type McpServerRecord = {
   readOnlyTools: string[];
 };
 
+export const GRAPH_CAPABILITIES = ["mail.read", "mail.send", "calendar.read", "calendar.write", "chats.read", "files.read", "files.write"] as const;
+export type GraphCapability = (typeof GRAPH_CAPABILITIES)[number];
+
 export type Authority = { type: "confirmation"; personId: string } | { type: "grant"; personId: string; routineId: string };
 
 /** Per-turn phase times as ISO strings; rows from before timings existed have none. */
@@ -53,6 +56,7 @@ export const chats = pgTable("chats", {
   conversationType: text("conversation_type").notNull(), // personal | groupChat | channel
   conversationReference: jsonb("conversation_reference"),
   label: text("label"),
+  ownerPersonId: text("owner_person_id").references(() => people.id), // whose 1:1 chat it is
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
   createdAt: createdAt(),
 });
@@ -69,6 +73,8 @@ export const botDefinitions = pgTable(
     model: text("model").notNull(),
     webSearch: boolean("web_search").notNull(),
     computer: boolean("computer").notNull(),
+    identity: text("identity").$type<"service" | "person">().notNull().default("service"), // person: acts as whoever is talking, through Graph
+    graph: jsonb("graph").$type<GraphCapability[]>().notNull().default([]),
     mcpServers: jsonb("mcp_servers").$type<McpServerRecord[]>().notNull(),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

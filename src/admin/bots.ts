@@ -1,7 +1,7 @@
 import express from "express";
 import type { Request, Response, Router } from "express";
 import {
-  addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setPersona,
+  addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setGraph, setPersona,
   updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
 import { count, eq } from "drizzle-orm";
@@ -12,7 +12,7 @@ import { defaultClass } from "../engine/gate.js";
 import type { ToolRule } from "../engine/gate.js";
 import { knownTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
 import { beginAction, completeAction } from "../audit/audit.js";
-import { botDefinitions, chatAssignments, chats, definitionConnections, mailboxes, people } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionConnections, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
 import { ensureMailbox, MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
 import type { MailDeps } from "../mail/mailboxes.js";
@@ -45,8 +45,10 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
     const { actor, csrf } = adminOf(res);
     res.type("html").send(layout({ title, body, actor, csrf }));
   };
-  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "chats"] as const;
+  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "chats", "m365"] as const;
   type Tab = (typeof TABS)[number];
+  // Personal acts as the person: it has no mailbox or connections, and only it has Microsoft 365 capabilities
+  const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" && t !== "connections" : t !== "m365"));
   const csrfField = (res: Response, tab?: Tab) => html`<input type="hidden" name="csrf" value="${adminOf(res).csrf}">${tab ? html`<input type="hidden" name="tab" value="${tab}">` : ""}`;
   // actions return to the tab they were made on
   const back = (req: Request, id: string) => `/admin/bots/${id}${(TABS as readonly string[]).includes(field(req, "tab")) ? `?tab=${field(req, "tab")}` : ""}`;
@@ -65,6 +67,10 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
     const def = await getDefinition(db, tenantId, id);
     if (!def) throw new DirectoryError("Bot not found");
     return def;
+  };
+  // Personal acts as each person: it gets no mailbox, servers or connections of its own
+  const serviceBot = async (tenantId: string, id: string) => {
+    if ((await ownBot(tenantId, id)).identity === "person") throw new DirectoryError("Not available for Personal");
   };
   // one audit row per action, with its outcome; a failed write never fails the action
   const audit = async (actor: { tenantId: string; personId: string }, what: string, definitionId: string, outcome: "done" | "failed", note = "") => {
@@ -225,7 +231,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
       const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div></header>${
-        tab ? html`<nav class="be-tabs" aria-label="bot">${TABS.map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t}</a>`)}</nav>` : ""
+        tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
       const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
       let body: SafeHtml;
@@ -233,7 +239,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         body = html`${head()}<form method="post" action="/admin/bots/${def.id}">${csrfField(res)}${personaBox}<button class="be-btn primary">save</button></form>`;
       } else {
         const asked = typeof req.query.tab === "string" ? req.query.tab : "";
-        const tab = TABS.find((t) => t === asked) ?? "overview";
+        const tab = tabsOf(def).find((t) => t === asked) ?? "overview";
         const csrf = csrfField(res, tab);
         const [depts, allowed, conns, linked, rts, assigned, ppl] = await Promise.all([
           listDepartments(db, actor.tenantId), allowedDepartments(db, def.id), listConnections(db, actor.tenantId), listConnectionsFor(db, actor.tenantId, def.id),
@@ -246,17 +252,20 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         const chatLabel = new Map(assigned.map((c) => [c.id, c.label ?? c.id.slice(-12)]));
         const personName = new Map(ppl.map((p) => [p.id, p.name]));
         // one endpoint saves the whole definition, so each of the two forms carries the other's fields unchanged
+        const person = def.identity === "person";
         const hide = (name: string, value: string) => html`<input type="hidden" name="${name}" value="${value}">`;
         const settings = (on: "overview" | "persona") => html`<form method="post" action="/admin/bots/${def.id}">${csrf}${
           on === "overview"
             ? html`<p><label>name <input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label> <label>label <input name="label" value="${def.label}" required></label> <label>model <input name="model" value="${def.model}" required></label></p>
-<p><label><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search</label> <label><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> computer</label></p>
-<fieldset><legend>departments</legend>${depts.map((d) => html`<label><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</fieldset>${hide("persona", def.persona)}`
-            : html`${personaBox}${hide("displayName", def.displayName ?? "")}${hide("label", def.label)}${hide("model", def.model)}${def.webSearch ? hide("webSearch", "on") : ""}${def.computer ? hide("computer", "on") : ""}${allowed.map((d) => hide("departments", d))}`
+<p><label><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search</label>${person ? "" : html` <label><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> computer</label>`}</p>
+${person ? "" : html`<fieldset><legend>departments</legend>${depts.map((d) => html`<label><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</fieldset>`}${hide("persona", def.persona)}`
+            : html`${personaBox}${hide("displayName", def.displayName ?? "")}${hide("label", def.label)}${hide("model", def.model)}${def.webSearch ? hide("webSearch", "on") : ""}${def.computer ? hide("computer", "on") : ""}${person ? "" : allowed.map((d) => hide("departments", d))}`
         }<p><button class="be-btn primary">save</button></p></form>`;
         let section: SafeHtml;
         if (tab === "overview") {
-          section = html`<dl class="be-kv"><div><dt>model</dt><dd>${def.model}</dd></div><div><dt>web search</dt><dd>${yesNo(def.webSearch)}</dd></div><div><dt>computer</dt><dd>${yesNo(def.computer)}</dd></div><div><dt>departments</dt><dd>${depts.filter((d) => allowed.includes(d.id)).map((d) => d.name).join(", ") || "none"}</dd></div></dl>${settings("overview")}`;
+          section = html`<dl class="be-kv"><div><dt>model</dt><dd>${def.model}</dd></div><div><dt>web search</dt><dd>${yesNo(def.webSearch)}</dd></div>${person ? "" : html`<div><dt>computer</dt><dd>${yesNo(def.computer)}</dd></div><div><dt>departments</dt><dd>${depts.filter((d) => allowed.includes(d.id)).map((d) => d.name).join(", ") || "none"}</dd></div>`}</dl>${person ? html`<p>acts as each person who uses it</p>` : ""}${settings("overview")}`;
+        } else if (tab === "m365") {
+          section = html`<form method="post" action="/admin/bots/${def.id}/m365">${csrf}<p>${GRAPH_CAPABILITIES.map((c) => html`<label><input type="checkbox" name="graph" value="${c}" ${def.graph.includes(c) ? "checked" : ""}> ${c}</label> `)}</p><p><button class="be-btn primary">save</button></p></form>`;
         } else if (tab === "persona") {
           section = settings("persona");
         } else if (tab === "email") {
@@ -320,14 +329,26 @@ ${scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th
       if (!isAdmin(actor)) {
         await setPersona(db, actor.tenantId, id, field(req, "persona"));
       } else {
+        // first, so a refused save changes nothing
+        await setAllowedDepartments(db, actor.tenantId, id, many(req, "departments"));
         await updateDefinitionFields(db, actor.tenantId, id, {
           displayName: "displayName" in ((req.body as object) ?? {}) ? field(req, "displayName") : undefined, label: field(req, "label").trim(), persona: field(req, "persona"), model: field(req, "model").trim(),
           webSearch: field(req, "webSearch") === "on", computer: field(req, "computer") === "on",
         });
-        await setAllowedDepartments(db, actor.tenantId, id, many(req, "departments"));
         onSaved?.(id);
       }
       res.redirect(303, back(req, id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/m365",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await setGraph(db, actor.tenantId, req.params.id, many(req, "graph"));
+      onSaved?.(req.params.id);
+      res.redirect(303, `/admin/bots/${req.params.id}?tab=m365`);
     }),
   );
 
@@ -339,7 +360,7 @@ ${scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th
         const { actor } = adminOf(res);
         if (!isAdmin(actor)) return deny(res);
         if (!mail) throw new DirectoryError("Email is not set up");
-        await ownBot(actor.tenantId, req.params.id);
+        await serviceBot(actor.tenantId, req.params.id);
         if ((path === "mailbox/remove" || path === "send-as/remove") && !isArmed(req)) return armed(res, req, path === "send-as/remove" ? "Clear company address?" : "Remove email address?", path === "send-as/remove" ? "confirm clear?" : "confirm remove?", back(req, req.params.id));
         try {
           await run(req, req.params.id, actor.tenantId);
@@ -400,6 +421,7 @@ ${scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
+      await serviceBot(actor.tenantId, req.params.id);
       const headerName = field(req, "headerName").trim();
       const headerValue = field(req, "headerValue");
       if (!headerName !== !headerValue) throw new DirectoryError("Header name and value go together");
@@ -435,6 +457,7 @@ ${scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
+      await serviceBot(actor.tenantId, req.params.id);
       await setLinked(db, actor.tenantId, req.params.id, req.params.connectionId, field(req, "linked") === "on");
       res.redirect(303, back(req, req.params.id));
     }),

@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { and, desc, eq, gt } from "drizzle-orm";
 import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKMessage, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import { confirmerPolicy } from "../admin/access.js";
-import { beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
+import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { definitionsForChat, mcpServerConfigs } from "../bots/definitions.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
@@ -11,6 +11,7 @@ import { computerMcpServer } from "../computer/mcp.js";
 import { connectionsMcpServer } from "../connections/mcp.js";
 import type { SshRunner } from "../connections/ssh.js";
 import { connectionMcpConfigs } from "../connections/store.js";
+import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
 import type { Db } from "../db/client.js";
@@ -47,7 +48,7 @@ export type RunnerDeps = {
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
 export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
-export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string };
+export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean };
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
 export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string } | { kind: "delta"; text: string } | { kind: "message-end" };
 
@@ -62,7 +63,7 @@ const NOT_DONE = {
 };
 
 /** What a turn's SDK options act for. A live process outlives its turns, so its options read the turn running now through this. */
-type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void> };
+type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void>; graphToken?: () => Promise<string | undefined>; signInLost: () => void };
 // live pool → key → the turn running on that key
 const liveTurns = new WeakMap<LiveSessions, Map<string, TurnScope>>();
 const turnsOn = (pool: LiveSessions) => liveTurns.get(pool) ?? liveTurns.set(pool, new Map()).get(pool)!;
@@ -111,6 +112,9 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       // read when the servers are built too, so it is absent rather than an error with no turn; a chat process never posts
       get post() { return current()?.post; },
       confirmedBy: () => current()?.confirmedBy(),
+      // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
+      graphToken: async () => current()?.graphToken?.(),
+      signInLost: () => current()?.signInLost(),
     };
     const afterTool: HookCallback = async (...a) => current()?.afterTool(...a) ?? {};
     const canUseTool: CanUseTool = async (toolName, input, o) => {
@@ -140,19 +144,21 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       mcpServers: {
         ...mcpServerConfigs(definition, deps.secretsKey),
         ...(containerId ? { computer: computerMcpServer(deps.docker, containerId) } : {}),
-        knowledge: knowledgeMcpServer(deps, ctx),
-        connections: connectionsMcpServer(deps, ctx),
+        // Personal reads shared notes but stores nothing and reaches no company systems: what it saw in one person's mail must not reach others
+        knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
+        ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
         routine: routineMcpServer(deps, ctx),
+        ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
         ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
         ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
-        ...conn.servers,
+        ...(definition.identity === "person" ? {} : conn.servers),
       },
       canUseTool,
       hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
     };
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, containerId ?? null, conn, routine, rules, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, buildOptions, fingerprint };
 }
 
@@ -174,6 +180,8 @@ export type RunTurnInput = {
   receivedAt?: Date;
   progress?: (event: ProgressEvent) => void;
   routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void> };
+  /** The person's Microsoft Graph token, asked for per call; only for person definitions. Never stored, logged or shown to the model. */
+  graphToken?: () => Promise<string | undefined>;
 };
 
 export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
@@ -275,12 +283,13 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   const canUseTool: CanUseTool = async (toolName, input, { toolUseID }) => {
     const run = attemptNo;
-    const json = JSON.stringify(input);
+    const audited = auditInput(toolName, input);
+    const json = JSON.stringify(audited);
     const auditId = await beginAction(db, {
       ...base,
       kind: "tool",
       toolName,
-      toolInput: json.length <= MAX_AUDIT_INPUT ? input : { truncated: true, preview: json.slice(0, MAX_AUDIT_INPUT) },
+      toolInput: json.length <= MAX_AUDIT_INPUT ? audited : { truncated: true, preview: json.slice(0, MAX_AUDIT_INPUT) },
       summary: summarise(toolName, input),
     });
     const stale = async () => {
@@ -315,7 +324,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         releaseApprove(toolUseID);
         return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
       }
-      const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind) });
+      const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId) });
       let o: Outcome | { result: "failed" };
       try {
         await turn.askConfirmation({ actionId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input });
@@ -352,7 +361,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return {};
   };
 
-  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post };
+  let signInLost = false;
+  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true) };
   let options: Options | undefined; // a cold run's, built only when one runs
 
   const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
@@ -457,7 +467,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now })
         .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now } });
     const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings);
-    return { text, costUsd, sessionId: msg.session_id, changed, timings, auditId };
+    return { text, costUsd, sessionId: msg.session_id, changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
     await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
     await toolsRecorded;

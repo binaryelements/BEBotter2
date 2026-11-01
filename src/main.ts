@@ -7,7 +7,9 @@ import { dockerodeClient } from "./computer/docker.js";
 import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
+import { ensurePersonalDefinition } from "./bots/definitions.js";
 import { connect } from "./db/client.js";
+import { tenants } from "./db/schema.js";
 import { Confirmations } from "./engine/confirm.js";
 import { LiveSessions } from "./engine/live.js";
 import { systemSsh } from "./connections/ssh.js";
@@ -17,12 +19,15 @@ import { ensureAllMailboxes, ensureMailbox } from "./mail/mailboxes.js";
 import { prewarmRecent, runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startScheduler } from "./routines/scheduler.js";
-import { createTeamsApp } from "./teams/app.js";
-import { sendToChat } from "./teams/proactive.js";
+import { createTeamsApp, graphToken } from "./teams/app.js";
+import { personToken, sendToChat } from "./teams/proactive.js";
 
 loadEnvFile();
 const config = loadConfig(process.env);
 const db = await connect(config.databaseUrl);
+for (const t of await db.select({ id: tenants.id }).from(tenants)) {
+  await ensurePersonalDefinition(db, t.id, config.defaultModel).catch((e) => console.error(`personal assistant for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
+}
 const confirmations = new Confirmations();
 // operational limits: an idle chat's engine stops after 60 minutes, and at most 20 stay warm
 // engines stay up until `max` evicts the least recently used (~310 MB each); restarts re-warm chats used in the last day
@@ -47,7 +52,7 @@ const mail = config.agentmail
   : undefined;
 const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
-const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName });
+const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection });
 
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 
@@ -77,7 +82,7 @@ if (mail) void ensureAllMailboxes(mail);
 void prewarmRecent(runnerDeps, { withinMs: warm.recentMs, max: warm.max });
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
-startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m) });
+startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
   process.once(signal, () => void live.closeAll().finally(() => process.exit(0)));
