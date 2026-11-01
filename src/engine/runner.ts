@@ -48,7 +48,7 @@ export type RunnerDeps = {
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
 export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
-export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string };
+export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean };
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
 export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string } | { kind: "delta"; text: string } | { kind: "message-end" };
 
@@ -63,7 +63,7 @@ const NOT_DONE = {
 };
 
 /** What a turn's SDK options act for. A live process outlives its turns, so its options read the turn running now through this. */
-type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void>; graphToken?: () => Promise<string | undefined> };
+type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void>; graphToken?: () => Promise<string | undefined>; signInLost: () => void };
 // live pool → key → the turn running on that key
 const liveTurns = new WeakMap<LiveSessions, Map<string, TurnScope>>();
 const turnsOn = (pool: LiveSessions) => liveTurns.get(pool) ?? liveTurns.set(pool, new Map()).get(pool)!;
@@ -114,6 +114,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       confirmedBy: () => current()?.confirmedBy(),
       // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
       graphToken: async () => current()?.graphToken?.(),
+      signInLost: () => current()?.signInLost(),
     };
     const afterTool: HookCallback = async (...a) => current()?.afterTool(...a) ?? {};
     const canUseTool: CanUseTool = async (toolName, input, o) => {
@@ -156,7 +157,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     };
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, containerId ?? null, conn, routine, rules, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, buildOptions, fingerprint };
 }
 
@@ -359,7 +360,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return {};
   };
 
-  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken };
+  let signInLost = false;
+  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true) };
   let options: Options | undefined; // a cold run's, built only when one runs
 
   const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
@@ -464,7 +466,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now })
         .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now } });
     const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings);
-    return { text, costUsd, sessionId: msg.session_id, changed, timings, auditId };
+    return { text, costUsd, sessionId: msg.session_id, changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
     await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
     await toolsRecorded;

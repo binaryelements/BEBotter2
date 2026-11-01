@@ -86,6 +86,7 @@ describe("sign-in for a person's own assistant", () => {
     const tokenService = {
       getTokenOrSignInResource: vi.fn(async () => (token ? { tokenResponse: { token } } : { signInResource: { signInLink: "https://signin.example.test" } })),
       exchangeTokenAsync: vi.fn(async () => ({ token: (token = "tok-ann-secret") })),
+      signOut: vi.fn(async () => void (token = undefined)),
     };
     const turnOf = (activity: object) => {
       const ctx = new TurnContext(app.adapter, Object.assign(MessageFactory.text(""), activity));
@@ -165,6 +166,25 @@ describe("sign-in for a person's own assistant", () => {
     expect(s.sent.map((a) => a.text)).toContain("Sign-in didn't work. Say anything to try again.");
     expect(s.runTurn).not.toHaveBeenCalled();
     expect(JSON.stringify(err.mock.calls)).not.toContain("tok-ann-secret");
+  });
+
+  it("a turn whose Graph call was refused signs the person out of graph, so the next message brings the card", async () => {
+    const s = await signInApp();
+    await s.say("what's on my calendar?");
+    await s.invoke("signin/tokenExchange", { id: "x1", connectionName: "graph", token: "sso-from-teams" });
+    await vi.waitFor(() => expect(s.runTurn).toHaveBeenCalledTimes(1));
+    expect(s.tokenService.signOut).not.toHaveBeenCalled();
+    // the token service still hands out the revoked token until the sign-out
+    s.runTurn.mockImplementationOnce(async (turn: RunTurnInput) => {
+      s.turns.push(turn);
+      return { text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 }, signInLost: true };
+    });
+    await s.say("and tomorrow?");
+    await vi.waitFor(() => expect(s.tokenService.signOut).toHaveBeenCalledWith("29:ann", "graph", "msteams"));
+    await s.say("and Friday?");
+    await vi.waitFor(() => expect(s.oauthCards()).toHaveLength(2));
+    await new Promise((res) => setTimeout(res, 20));
+    expect(s.runTurn).toHaveBeenCalledTimes(2);
   });
 
   it("a service turn never asks", async () => {

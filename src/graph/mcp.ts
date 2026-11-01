@@ -5,8 +5,11 @@ import type { GraphCapability } from "../db/schema.js";
 import { GraphError, graphFetch } from "./client.js";
 import type { GraphDeps } from "./client.js";
 
-/** graphToken: the token of the turn running now, read on every call; a warm engine outlives the turn that started it. */
-type Ctx = { graphToken: () => Promise<string | undefined> };
+/**
+ * graphToken: the token of the turn running now, read on every call; a warm engine outlives the turn that started it.
+ * signInLost: Graph refused the token, so the turn signs the person out and their next message brings the sign-in card.
+ */
+type Ctx = { graphToken: () => Promise<string | undefined>; signInLost?: () => void };
 
 const PREVIEW = 300;
 const BODY = 20_000;
@@ -31,6 +34,28 @@ const fail = (e: unknown) => {
 
 const qs = (p: Record<string, string | number>) => Object.entries(p).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 const enc = encodeURIComponent;
+const READ_LIMIT = BODY * 4; // bytes: 4 per character at most
+
+/** A Graph id as a path segment; "." or ".." would climb the path once the URL is normalised. */
+const idPart = (id: string) => {
+  if (/^\.*$/.test(id)) throw new Refusal("Not done: not an id.");
+  return enc(id);
+};
+
+/** At most `max` bytes of a body, then the stream is dropped, whatever the host does with Range. */
+async function readCapped(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (reader && size < max) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.length;
+  }
+  await reader?.cancel();
+  return Buffer.concat(chunks).subarray(0, max).toString("utf8");
+}
 
 type Address = { emailAddress?: { name?: string; address?: string } };
 const who = (r?: Address) => {
@@ -87,6 +112,7 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
     try {
       return ok(await f(a));
     } catch (e) {
+      if (e instanceof GraphError && e.status === 401) ctx.signInLost?.();
       return fail(e);
     }
   };
@@ -98,7 +124,7 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
     ["mail.read", tool("list_mail", "List the newest mail in the person's inbox or sent folder.", { folder: z.enum(["inbox", "sent"]).optional(), top: top(25) }, run(async ({ folder, top }) =>
       (await get<{ value: Message[] }>(`/me/mailFolders/${folder === "sent" ? "sentitems" : "inbox"}/messages?${qs({ $top: top ?? 10, $select: MAIL_FIELDS, $orderby: "receivedDateTime desc" })}`)).value.map(mail)))],
     ["mail.read", tool("read_mail", "Read one email with its body as text.", { id: z.string().min(1) }, run(async ({ id }) => {
-      const m = await get<Message>(`/me/messages/${enc(id)}?${qs({ $select: "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body" })}`, { Prefer: 'outlook.body-content-type="text"' });
+      const m = await get<Message>(`/me/messages/${idPart(id)}?${qs({ $select: "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body" })}`, { Prefer: 'outlook.body-content-type="text"' });
       return { ...mail(m), preview: undefined, cc: m.ccRecipients?.map(who), body: m.body?.content?.slice(0, BODY) };
     }))],
     ["mail.send", tool("send_mail", "Send an email as the person; they confirm it in the chat first.", { to: z.array(z.string()).min(1), cc: z.array(z.string()).optional(), subject: z.string(), body: z.string() }, run(async (a) => {
@@ -109,7 +135,7 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       return "Sent.";
     }))],
     ["mail.send", tool("reply_mail", "Reply to an email as the person (all: reply to everyone); they confirm it in the chat first.", { id: z.string().min(1), body: z.string(), all: z.boolean().optional() }, run(async ({ id, body, all }) => {
-      await post(`/me/messages/${enc(id)}/${all ? "replyAll" : "reply"}`, { comment: body });
+      await post(`/me/messages/${idPart(id)}/${all ? "replyAll" : "reply"}`, { comment: body });
       return "Sent.";
     }))],
     ["calendar.read", tool("list_events", `List the person's calendar between from and to, at most 31 days apart (${times}). Times come back in UTC.`, { from: z.string(), to: z.string() }, run(async ({ from, to }) => {
@@ -143,23 +169,26 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       return event(e);
     }))],
     ["calendar.write", tool("respond_event", "Accept, decline or tentatively accept an invitation as the person; they confirm it in the chat first.", { id: z.string().min(1), response: z.enum(["accept", "decline", "tentative"]), comment: z.string().optional() }, run(async ({ id, response, comment }) => {
-      await post(`/me/events/${enc(id)}/${response === "tentative" ? "tentativelyAccept" : response}`, { ...(comment ? { comment } : {}), sendResponse: true });
+      await post(`/me/events/${idPart(id)}/${response === "tentative" ? "tentativelyAccept" : response}`, { ...(comment ? { comment } : {}), sendResponse: true });
       return "Done.";
     }))],
     ["files.read", tool("search_files", "Search the person's OneDrive and the files shared with them.", { query: z.string().min(1), top: top(25) }, run(async ({ query, top }) =>
       (await get<{ value: DriveItem[] }>(`/me/drive/root/search(q='${enc(query.replace(/'/g, "''"))}')?${qs({ $top: top ?? 10, $select: FILE_FIELDS })}`)).value.map(item)))],
     ["files.read", tool("read_file", "Read a file's text; other formats give its details only.", { id: z.string().min(1) }, run(async ({ id }) => {
-      const f = await get<DriveItem>(`/me/drive/items/${enc(id)}`);
+      const f = await get<DriveItem>(`/me/drive/items/${idPart(id)}`);
       const url = f["@microsoft.graph.downloadUrl"];
       if (f.folder || !url || !(TEXT_TYPE.test(f.file?.mimeType ?? "") || TEXT_NAME.test(f.name))) return { ...item(f), note: "not readable as text" };
-      // the download URL is pre-authenticated and outside Graph, so the token never goes there; 4 bytes per character at most
-      const res = await deps.fetchFn(url, { headers: { Range: `bytes=0-${BODY * 4 - 1}` } });
-      if (!res.ok) throw new GraphError(res.status, "download");
-      return { ...item(f), text: (await res.text()).slice(0, BODY) };
+      // the download URL is pre-authenticated and outside Graph, so the token never goes there, and its 401 says nothing about the token
+      const res = await deps.fetchFn(url, { headers: { Range: `bytes=0-${READ_LIMIT - 1}` } });
+      if (!res.ok) {
+        await res.body?.cancel();
+        throw new Refusal(`Not done: the file could not be downloaded (${res.status}).`);
+      }
+      return { ...item(f), text: (await readCapped(res, READ_LIMIT)).slice(0, BODY) };
     }))],
     ["files.write", tool("upload_file", "Save a text file (at most 4 MB) in a folder of the person's OneDrive; an existing file of that name is kept and the new one renamed. They confirm it in the chat first.", { folder: z.string(), name: z.string().min(1), content: z.string() }, run(async ({ folder, name, content }) => {
       const parts = [...folder.split("/"), name].map((s) => s.trim()).filter(Boolean);
-      if (/[/\\]/.test(name) || parts.some((p) => p === "." || p === "..")) throw new Refusal("Not done: name must be a file name and folder a path without . or .. parts.");
+      if (name.includes("/") || parts.some((p) => p === "." || p === ".." || /[\\:]/.test(p))) throw new Refusal("Not done: name must be a file name and folder a path, without . or .. parts, \\ or :.");
       if (Buffer.byteLength(content) > MAX_UPLOAD) throw new Refusal("Not done: files over 4 MB cannot be saved.");
       const res = await graphFetch(g, `/me/drive/root:/${parts.map(enc).join("/")}:/content?@microsoft.graph.conflictBehavior=rename`, { method: "PUT", body: content, headers: { "Content-Type": "text/plain" } });
       return item((await res.json()) as DriveItem);
@@ -174,7 +203,7 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
     }))],
     ["chats.read", tool("read_chat", "Read the newest messages of one of the person's Teams chats, as short text.", { id: z.string().min(1), top: top(50) }, run(async ({ id, top }) => {
       type ChatMessage = { id: string; createdDateTime?: string; from?: ChatFrom; body?: { content?: string } };
-      const r = await get<{ value: ChatMessage[] }>(`/me/chats/${enc(id)}/messages?${qs({ $top: top ?? 20, $orderby: "createdDateTime desc" })}`);
+      const r = await get<{ value: ChatMessage[] }>(`/me/chats/${idPart(id)}/messages?${qs({ $top: top ?? 20, $orderby: "createdDateTime desc" })}`);
       return r.value.map((m) => ({ id: m.id, from: sender(m.from), date: m.createdDateTime, text: plain(m.body?.content) }));
     }))],
   ];

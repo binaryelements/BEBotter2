@@ -49,6 +49,8 @@ export type TeamsIo = {
   stream?: TeamsStream;
   /** The sender's Graph token, asked for per call; present only on a turn that signed in. */
   graphToken?: () => Promise<string | undefined>;
+  /** Signs the sender out of Graph, so their next message brings the sign-in card. */
+  signOut?: () => Promise<void>;
 };
 /** end's card, when given, goes out with the final message; finalText may then be empty. */
 export type TeamsStream = { informative(text: string): void; chunk(text: string): void; end(finalText: string, card?: AdaptiveCard): Promise<void> };
@@ -259,6 +261,9 @@ export async function handleMessage(
         progress,
       });
       await deliver(withRoleLabel(name, result.text));
+      // a revoked token can keep coming back from the token service until the person is signed out
+      if (result.signInLost)
+        await io.signOut?.().catch((e: unknown) => console.error("graph sign-out failed:", e instanceof Error ? e.name : "unknown"));
       try {
         await recordSent(db, result.auditId, new Date());
       } catch (err) {

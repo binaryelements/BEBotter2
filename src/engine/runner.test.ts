@@ -1036,6 +1036,36 @@ describe("runTurn", () => {
       expect(q.seen).toHaveLength(1);
     });
 
+    it("changing a person definition's capabilities starts a new process even when updatedAt did not move", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const q = fakeQuery({ calls: [] });
+      const d = liveDeps(db, q.fn);
+      const turn = (graph: ("mail.read" | "files.read")[]) =>
+        runTurn(d, { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph }, person, text: "x", graphToken: async () => "t", askConfirmation: async () => {} });
+      await turn(["mail.read"]);
+      await turn(["mail.read"]);
+      await turn(["mail.read", "files.read"]);
+      expect(q.seen).toHaveLength(2);
+    });
+
+    it("a Graph 401 in a turn marks it so the person is signed out; a turn without one is not marked", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const personal = { ...definition, identity: "person" as const, graph: ["mail.read" as const, "mail.send" as const] };
+      let status = 401;
+      const fetchFn = (async () => new Response('{"value":[]}', { status })) as typeof fetch;
+      const q = fakeQuery({ calls: [["mcp__m365__send_mail", { to: ["bea@example.test"], subject: "s", body: "b" }]] });
+      const d = { ...liveDeps(db, q.fn), fetchFn, confirmations: new Confirmations((fn) => (fn(), 0)) };
+      const search = () => toolsOf(q.seen[0]!.mcpServers!.m365).search_mail!.handler({ query: "x" });
+      const turn = () => runTurn(d, { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", graphToken: async () => "tok", askConfirmation: async () => void (await search()) });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      expect((await turn()).signInLost).toBe(true);
+      status = 200;
+      expect((await turn()).signInLost).toBeFalsy();
+      vi.mocked(console.error).mockRestore();
+    });
+
     it("a warm process calls Graph with the token of the turn running now, never the first turn's", async () => {
       const db = await testDb();
       const { definition, person } = await setup(db);

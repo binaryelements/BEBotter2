@@ -29,7 +29,8 @@ export function defaultClass(toolName: string, def: BotDefinition, connectionSer
   const m = /^mcp__(.+?)__(.+)$/.exec(toolName); // server names never contain "__" (validated on input)
   if (!m) return "write";
   // Built-ins first: a declared server cannot claim a reserved name (they are rejected on input), and anything else on one is a write.
-  if (BUILT_IN[toolName]) return BUILT_IN[toolName]!;
+  // m365 is ours only on a person definition; anywhere else the name is reserved, so its tools are writes
+  if (BUILT_IN[toolName] && (m[1] !== "m365" || def.identity === "person")) return BUILT_IN[toolName]!;
   if (m[1] === "mail") return MAIL_READS.has(m[2]!) ? "read" : "write"; // anything not known to be a read (sending, forwarding, new tools) asks
   if (m[1]!.startsWith("conn-")) return connectionServers.find((s) => s.name === m[1])?.readOnlyTools.includes(m[2]!) ? "read" : "write";
   if (isReservedMcpName(m[1]!)) return "write";

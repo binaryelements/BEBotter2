@@ -101,7 +101,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     await ctx.sendActivity(signInFailed);
   });
 
-  const onMessage = (signedIn: boolean) => async (ctx: TurnContext) => {
+  const onMessage = (signedIn: boolean) => async (ctx: TurnContext, state: TurnState) => {
     const receivedAt = new Date();
     const { conversation, from } = ctx.activity;
     if (!conversation?.tenantId || !from?.aadObjectId) {
@@ -131,7 +131,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
         // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
         ...(conversationType === "personal" ? { stream: teamsStream(ctx) } : {}),
-        ...(signedIn ? { graphToken: () => graphToken(app, ctx) } : {}),
+        ...(signedIn ? { graphToken: () => graphToken(app, ctx), signOut: () => app.authorization.signOut(ctx, state, "graph") } : {}),
       },
     );
   };

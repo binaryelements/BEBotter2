@@ -23,9 +23,11 @@ function graph(answers: Record<string, () => Response> = {}) {
 const json = (v: unknown, status = 200) => () => new Response(JSON.stringify(v), { status });
 
 function server(fetchFn: typeof fetch, capabilities: readonly GraphCapability[] = GRAPH_CAPABILITIES, token: () => Promise<string | undefined> = async () => TOKEN) {
-  const s = m365McpServer({ fetchFn, sleep: async () => {} }, { graphToken: token }, capabilities);
+  const signInLost = vi.fn();
+  const s = m365McpServer({ fetchFn, sleep: async () => {} }, { graphToken: token, signInLost }, capabilities);
   const tools = (s.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
   return {
+    signInLost,
     names: Object.keys(tools).sort(),
     call: (name: string, args: Record<string, unknown> = {}) => tools[name]!.handler(args),
   };
@@ -71,6 +73,17 @@ describe("m365 mcp", () => {
     expect(g.seen[3]!.headers.Prefer).toBe('outlook.body-content-type="text"');
     expect(read.body).toHaveLength(20_000);
     expect(read.preview).toBeUndefined();
+  });
+
+  it("refuses . and .. as ids, which would climb the Graph path", async () => {
+    const g = graph();
+    const s = server(g.fetchFn);
+    for (const id of [".", ".."]) {
+      for (const [name, args] of [["read_mail", { id }], ["reply_mail", { id, body: "b" }], ["respond_event", { id, response: "accept" }], ["read_file", { id }], ["read_chat", { id }]] as const) {
+        await expect(s.call(name, args).then((r) => r.isError ?? false, () => true)).resolves.toBe(true);
+      }
+    }
+    expect(g.seen).toHaveLength(0);
   });
 
   it("send and reply post to Graph as the person", async () => {
@@ -164,8 +177,29 @@ describe("m365 mcp", () => {
     const before = g.seen.length;
     expect((await s.call("upload_file", { folder: "a", name: "x/y.txt", content: "x" })).isError).toBe(true);
     expect((await s.call("upload_file", { folder: "../a", name: "y.txt", content: "x" })).isError).toBe(true);
+    expect((await s.call("upload_file", { folder: "a\\b", name: "y.txt", content: "x" })).isError).toBe(true);
+    expect((await s.call("upload_file", { folder: "c:/a", name: "y.txt", content: "x" })).isError).toBe(true);
+    expect((await s.call("upload_file", { folder: "a", name: "y:z.txt", content: "x" })).isError).toBe(true);
     expect((await s.call("upload_file", { folder: "a", name: "big.txt", content: "x".repeat(4 * 1024 * 1024 + 1) })).isError).toBe(true);
     expect(g.seen).toHaveLength(before);
+  });
+
+  it("a download host that ignores Range is read only to about 80 KB, and its 401 is no reason to sign in again", async () => {
+    const doc = { id: "f1", name: "big.log", size: 1e9, file: { mimeType: "text/plain" }, "@microsoft.graph.downloadUrl": "https://download.example.test/f1" };
+    let pulled = 0;
+    const endless = () =>
+      new Response(new ReadableStream({ pull: (c) => void (pulled++, c.enqueue(new TextEncoder().encode("a".repeat(16_384)))) }), { status: 200 });
+    const g = graph({ "GET /me/drive/items/f1": json(doc), "GET https://download.example.test/f1": endless });
+    const s = server(g.fetchFn);
+    expect(((out(await s.call("read_file", { id: "f1" })) as { text: string }).text)).toHaveLength(20_000);
+    expect(pulled).toBeLessThan(10);
+
+    const denied = graph({ "GET /me/drive/items/f1": json(doc), "GET https://download.example.test/f1": () => new Response("no", { status: 401 }) });
+    const d = server(denied.fetchFn);
+    const r = await d.call("read_file", { id: "f1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).not.toMatch(/sign in/);
+    expect(d.signInLost).not.toHaveBeenCalled();
   });
 
   it("chats: lists recent chats and reads a chat's messages as short text", async () => {
@@ -186,8 +220,9 @@ describe("m365 mcp", () => {
     const spies = (["log", "warn", "error"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a) => void logged.push(...a)));
     const body = JSON.stringify({ error: { code: "InvalidAuthenticationToken", message: `Bearer ${TOKEN} expired` } });
     const g = graph({ "GET /me/messages": () => new Response(body, { status: 401 }), "POST /me/sendMail": () => new Response(body, { status: 500 }) });
+    const first = server(g.fetchFn);
     const results = [
-      await server(g.fetchFn).call("search_mail", { query: "x" }),
+      await first.call("search_mail", { query: "x" }),
       await server(g.fetchFn, GRAPH_CAPABILITIES, async () => undefined).call("search_mail", { query: "x" }),
       await server(g.fetchFn).call("send_mail", { to: ["a@example.test"], subject: "s", body: "b" }),
       await server((async () => { throw new TypeError(`fetch failed ${TOKEN}`); }) as typeof fetch).call("list_chats"),
@@ -195,6 +230,7 @@ describe("m365 mcp", () => {
     spies.forEach((s) => s.mockRestore());
     expect(g.seen.filter((r) => r.url.pathname === "/v1.0/me/messages")).toHaveLength(1);
     expect(results.map((r) => r.isError)).toEqual([true, true, true, true]);
+    expect(first.signInLost).toHaveBeenCalledTimes(1); // the turn signs the person out, so the next message brings the card
     expect(results[0]!.content[0]!.text).toMatch(/sign in again/);
     expect(results[1]!.content[0]!.text).toBe(results[0]!.content[0]!.text);
     expect(results[2]!.content[0]!.text).toContain("500");
