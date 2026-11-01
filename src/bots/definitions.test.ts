@@ -1,9 +1,11 @@
+import { eq } from "drizzle-orm";
+import { mayUseDefinition } from "../admin/access.js";
 import { describe, expect, it, vi } from "vitest";
-import { tenants } from "../db/schema.js";
+import { botDefinitions, chats, people, tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
-import { upsertChat, upsertTenant } from "../org/org.js";
+import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { createDepartment } from "../org/directory.js";
-import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, updateDefinitionFields, upsertDefinition } from "./definitions.js";
+import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, ensurePersonalDefinition, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, updateDefinitionFields, upsertDefinition } from "./definitions.js";
 
 describe("bot definitions", () => {
   it("stores MCP headers encrypted and gives them back decrypted", async () => {
@@ -147,5 +149,57 @@ describe("reserved MCP names", () => {
     expect(Object.keys(mcpServerConfigs(legacy, key))).toEqual(["docs"]);
     expect(errors).toHaveBeenCalledTimes(3);
     errors.mockRestore();
+  });
+});
+
+describe("the Personal definition", () => {
+  it("is created once per tenant, even when ensured twice at the same time", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const [a, b] = await Promise.all([ensurePersonalDefinition(db, "t1"), ensurePersonalDefinition(db, "t1")]);
+    expect(a.id).toBe(b.id);
+    expect((await db.select().from(botDefinitions).where(eq(botDefinitions.name, "personal"))).length).toBe(1);
+    expect(a).toMatchObject({ label: "My assistant", identity: "person", computer: false });
+    expect(a.graph).toHaveLength(7);
+  });
+
+  it("takes the tenant default model, else the one passed in", async () => {
+    const db = await testDb();
+    await db.insert(tenants).values({ id: "t2", name: "", defaultModel: "m-tenant" });
+    expect((await ensurePersonalDefinition(db, "t2", "m-config")).model).toBe("m-tenant");
+    await upsertTenant(db, { id: "t3" });
+    await db.delete(botDefinitions).where(eq(botDefinitions.tenantId, "t3"));
+    expect((await ensurePersonalDefinition(db, "t3", "m-config")).model).toBe("m-config");
+  });
+
+  it("reads ordinary definitions as service", async () => {
+    const db = await testDb();
+    const def = await upsertDefinition(db, Buffer.alloc(32), "t1", { name: "plain", label: "Plain", persona: "p" });
+    expect(def).toMatchObject({ identity: "service", graph: [] });
+  });
+
+  it("is usable only by people with the flag on", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const def = await ensurePersonalDefinition(db, "t1");
+    const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
+    expect(await mayUseDefinition(db, "t1", p.id, def.id)).toBe(false);
+    await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
+    expect(await mayUseDefinition(db, "t1", p.id, def.id)).toBe(true);
+  });
+
+  it("is assigned only to a one-to-one chat whose owner has the flag", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const def = await ensurePersonalDefinition(db, "t1");
+    const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
+    await upsertChat(db, { id: "g", tenantId: "t1", conversationType: "groupChat" });
+    await upsertChat(db, { id: "dm", tenantId: "t1", conversationType: "personal" });
+    await expect(assignToChat(db, "g", def.id)).rejects.toThrow(/one-to-one/);
+    await db.update(chats).set({ ownerPersonId: p.id }).where(eq(chats.id, "dm"));
+    await expect(assignToChat(db, "dm", def.id)).rejects.toThrow(/no personal assistant/);
+    await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
+    await assignToChat(db, "dm", def.id);
+    expect((await definitionsForChat(db, "dm")).map((d) => d.id)).toEqual([def.id]);
   });
 });
