@@ -12,7 +12,7 @@ import { defaultClass } from "../engine/gate.js";
 import type { ToolRule } from "../engine/gate.js";
 import { knownTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
 import { beginAction, completeAction } from "../audit/audit.js";
-import { chatAssignments, chats, mailboxes, people } from "../db/schema.js";
+import { botDefinitions, chatAssignments, chats, definitionConnections, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
 import { ensureMailbox, MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
 import type { MailDeps } from "../mail/mailboxes.js";
@@ -84,6 +84,29 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
   // free-form answer from BE AgentMail, shown as plain fields; nothing that looks like a key
   const plainFields = (r: Record<string, unknown>) =>
     Object.entries(r).filter(([k, v]) => SEND_AS_SHOWN.includes(k) && ["string", "boolean"].includes(typeof v) && !/\b(bam_|amwh_)/.test(String(v))).map(([k, v]) => `${k}: ${v}`).join("; ");
+
+  // every connection and the bots that use it, so an admin sees who can reach what in one place
+  router.get(
+    "/connections",
+    wrap(async (_req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const [conns, links] = await Promise.all([
+        listConnections(db, actor.tenantId),
+        db.select({ connectionId: definitionConnections.connectionId, id: botDefinitions.id, label: botDefinitions.label, name: botDefinitions.displayName })
+          .from(definitionConnections).innerJoin(botDefinitions, eq(botDefinitions.id, definitionConnections.definitionId))
+          .where(eq(botDefinitions.tenantId, actor.tenantId)),
+      ]);
+      const rows = conns.map((c) => {
+        const bots = links.filter((l) => l.connectionId === c.id);
+        return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}</td>
+<td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
+<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrfField(res)}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
+      });
+      render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1></div></header>
+${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Used by</th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : html`<div class="be-empty">no connections yet: a bot sets one up when asked in chat</div>`}`);
+    }),
+  );
 
   router.get(
     "/bots",
@@ -241,20 +264,35 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         } else if (tab === "actions") {
           section = await actionsSectionFor(res, def, linked);
         } else if (tab === "connections") {
-          const connRows = conns.map((c) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}</td><td>${c.secretCipher ? "set" : "none"}</td>
-<td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${linkedIds.has(c.id) ? "off" : "on"}"><button class="be-btn sm">${linkedIds.has(c.id) ? "unlink" : "link"}</button></form></td>
-<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger">revoke</button></form>`}${
-            c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td></tr>`);
-          section = html`<h2>MCP servers</h2>
-${scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th></tr></thead><tbody>${def.mcpServers.map(
-            (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ")}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm danger">remove</button></form></td></tr>`,
-          )}</tbody></table>`)}
+          // the company's connections, split by whether this bot uses them: one list per question an admin asks
+          const connRow = (c: Connection, uses: boolean) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}</td>
+<td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${uses ? "off" : "on"}"><button class="be-btn sm${uses ? "" : " primary"}">${uses ? "take away" : "give to this bot"}</button></form>${
+            c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td>
+<td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
+          const connTable = (list: Connection[], uses: boolean) =>
+            scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
+          const mine = conns.filter((c) => linkedIds.has(c.id));
+          const others = conns.filter((c) => !linkedIds.has(c.id) && c.status !== "revoked");
+          section = html`<h2>Connections this bot uses</h2>
+${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: give it one below, or ask the bot in chat to set one up</div>`}
+${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}
+<h2>MCP servers</h2>
+${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th></tr></thead><tbody>${def.mcpServers.map(
+            (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ") || "none"}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm danger">remove</button></form></td></tr>`,
+          )}</tbody></table>`) : html`<div class="be-empty">no MCP servers</div>`}
+<details class="add"><summary>add an MCP server…</summary>
 <form method="post" action="/admin/bots/${def.id}/servers">${csrf}
-<p><label>name <input name="name" required></label> <label>transport <select name="transport"><option>http</option><option>stdio</option></select></label> <label>url <input name="url"></label> <label>command <input name="command"></label> <label>args <input name="args"></label></p>
-<p><label>header name <input name="headerName"></label> <label>header value <input type="password" name="headerValue" autocomplete="off"></label> <label>read-only tools <input name="readOnlyTools"></label></p>
-<button class="be-btn">add server</button></form>
-<h2>Connections</h2>
-${scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Secret</th><th>This bot</th><th></th></tr></thead><tbody>${connRows}</tbody></table>`)}`;
+<div class="fields">
+<label>name<input name="name" required></label>
+<label>transport<select name="transport"><option>http</option><option>stdio</option></select></label>
+<label>url<span class="hint">http only</span><input name="url" placeholder="https://…"></label>
+<label>command<span class="hint">stdio only</span><input name="command"></label>
+<label>args<span class="hint">stdio only, space separated</span><input name="args"></label>
+<label>header name<span class="hint">optional, e.g. Authorization</span><input name="headerName"></label>
+<label>header value<span class="hint">stored encrypted, never shown again</span><input type="password" name="headerValue" autocomplete="off"></label>
+<label>read-only tools<span class="hint">comma separated; these run without a card</span><input name="readOnlyTools"></label>
+</div>
+<button class="be-btn primary">add server</button></form></details>`;
         } else if (tab === "routines") {
           const routineRows = rts.map((r) => html`<tr><td>${r.prompt.slice(0, 80)}</td><td>${r.schedule ?? r.runAt?.toISOString() ?? ""}</td><td>${chatLabel.get(r.chatId) ?? r.chatId.slice(-12)}</td><td>${yesNo(r.quiet)}</td><td>${yesNo(r.enabled)}</td><td>${r.grantPersonId ? (personName.get(r.grantPersonId) ?? "—") : "—"}</td>
 <td><form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="be-btn sm">${r.enabled ? "disable" : "enable"}</button></form>
@@ -407,13 +445,13 @@ ${scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      if (!isArmed(req)) return armed(res, req, "Revoke connection?", "confirm revoke?", "/admin/bots");
+      if (!isArmed(req)) return armed(res, req, "Revoke connection?", "confirm revoke?", "/admin/connections");
       const c = await revokeConnection(db, actor.tenantId, req.params.connectionId);
       render(res, "Revoked", html`<h1>Revoked ${c.name}</h1>${
         c.kind === "ssh" && c.publicKey
           ? html`<p>Remove this line from the target's authorized_keys:</p><pre>${c.publicKey}</pre>`
           : html`<p>Revoke the token at its source.</p>`
-      }<p><a href="/admin/bots">Back</a></p>`);
+      }<p><a href="/admin/connections">Back</a></p>`);
     }),
   );
 
