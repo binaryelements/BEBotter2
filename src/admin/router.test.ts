@@ -122,7 +122,7 @@ describe("admin router", () => {
     const res = await get("/admin/sign-in");
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toContain("BE Team Botter");
+    expect(body).toContain("BE Teammate");
     expect(body).toContain('href="/admin/auth/login"');
   });
 
