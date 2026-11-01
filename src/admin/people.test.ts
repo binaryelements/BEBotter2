@@ -1,5 +1,7 @@
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ensurePersonalDefinition, definitionsForChat, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
+import { chats } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { createDepartment, listDepartments, listPeople, setMembership, setRole } from "../org/directory.js";
@@ -186,6 +188,35 @@ describe("people and departments screens", () => {
     res = await post(`/admin/people/${id.Ola}/personal-bot`, "Hal", { personalBot: "on" });
     expect(res.status).toBe(403);
     expect((await person(id.Ola)).personalBot).toBe(false);
+  });
+
+  it("turning the switch off clears only the person's own chat on Personal", async () => {
+    const personal = await ensurePersonalDefinition(db, T, "m");
+    const other = await upsertDefinition(db, secretsKey, T, { name: "helper", label: "Helper", persona: "p" });
+    const chat = async (cid: string, owner: string | null, type = "personal") => {
+      await db.insert(chats).values({ id: cid, tenantId: T, conversationType: type, ownerPersonId: owner });
+    };
+    await chat("c-mo", id.Mo);
+    await chat("c-mo-other", id.Mo);
+    await chat("c-ola", id.Ola);
+    await chat("c-group", null, "groupChat");
+    await post(`/admin/people/${id.Mo}/personal-bot`, "Ann", { personalBot: "on" });
+    await post(`/admin/people/${id.Ola}/personal-bot`, "Ann", { personalBot: "on" });
+    await setChatDefinition(db, T, "c-mo", personal.id);
+    await setChatDefinition(db, T, "c-ola", personal.id);
+    await setChatDefinition(db, T, "c-mo-other", other.id);
+    await setChatDefinition(db, T, "c-group", other.id);
+    expect((await post(`/admin/people/${id.Mo}/personal-bot`, "Ann", {})).status).toBe(303);
+    expect(await definitionsForChat(db, "c-mo")).toEqual([]);
+    expect((await definitionsForChat(db, "c-ola")).map((d) => d.id)).toEqual([personal.id]);
+    expect((await definitionsForChat(db, "c-mo-other")).map((d) => d.id)).toEqual([other.id]);
+    expect((await definitionsForChat(db, "c-group")).map((d) => d.id)).toEqual([other.id]);
+  });
+
+  it("the people list calls the column My assistant", async () => {
+    const body = await (await get("/admin/people", "Ann")).text();
+    expect(body).toContain("<th>My assistant</th>");
+    expect(body).not.toContain("Personal bot");
   });
 
   it("an admin syncs people from the directory and sees the counts", async () => {

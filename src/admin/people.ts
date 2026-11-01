@@ -1,5 +1,6 @@
 import express from "express";
 import type { Request, Response, Router } from "express";
+import { clearPersonalChat } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import {
   DirectoryError, createDepartment, deleteDepartment, listDepartments, listPeople, renameDepartment, setMembership, setPersonalBot, setRole,
@@ -56,7 +57,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
         html`${pageHead("People", admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button class="be-btn primary">sync from Microsoft 365</button></form>` : undefined)}${
           synced ? html`<div class="be-notice"><span>Added ${synced[1]}, updated ${synced[2]}.</span></div>` : ""
         }${
-          rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Personal bot</th><th>Departments</th></tr></thead><tbody>${rows.map((p) => {
+          rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>My assistant</th><th>Departments</th></tr></thead><tbody>${rows.map((p) => {
           // Heads see only their own departments' people; none may edit their own row.
           const editable = admin || p.id !== actor.personId;
           return html`<tr><td>${p.name}</td><td>${p.email ?? ""}</td><td>${
@@ -65,7 +66,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
               : p.role
           }</td><td>${
             editable
-              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/personal-bot">${csrf}<input type="checkbox" name="personalBot" aria-label="Personal bot" ${p.personalBot ? "checked" : ""}> <button class="be-btn sm">save</button></form>`
+              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/personal-bot">${csrf}<input type="checkbox" name="personalBot" aria-label="My assistant" ${p.personalBot ? "checked" : ""}> <button class="be-btn sm">save</button></form>`
               : p.personalBot ? "On" : "Off"
           }</td><td>${p.memberships.filter((m) => admin || actor.headOf.includes(m.departmentId)).map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
         })}</tbody></table>`)
@@ -105,7 +106,9 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if ((!isAdmin(actor) && req.params.id === actor.personId) || !(await mayManagePerson(db, actor, req.params.id))) return deny(res);
-      await setPersonalBot(db, actor.tenantId, req.params.id, field(req, "personalBot") === "on");
+      const on = field(req, "personalBot") === "on";
+      await setPersonalBot(db, actor.tenantId, req.params.id, on);
+      if (!on) await clearPersonalChat(db, actor.tenantId, req.params.id);
       res.redirect(303, "/admin/people");
     }),
   );

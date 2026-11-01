@@ -186,6 +186,27 @@ export async function updateDefinitionFields(
   await db.update(botDefinitions).set({ ...rest, ...(displayName === undefined ? {} : { displayName: displayName.trim() || null }), updatedAt: new Date() }).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
 }
 
+/** Saves a Personal assistant's Microsoft 365 capabilities; unknown names are dropped and identity is never touched. */
+export async function setGraph(db: Db, tenantId: string, id: string, graph: string[]): Promise<void> {
+  const rows = await db
+    .update(botDefinitions)
+    .set({ graph: GRAPH_CAPABILITIES.filter((c) => graph.includes(c)), updatedAt: new Date() })
+    .where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.identity, "person")))
+    .returning({ id: botDefinitions.id });
+  if (!rows.length) throw new DirectoryError("Bot not found");
+}
+
+/** Switching a person's assistant off: their own one-to-one chat goes back to the choose card; nothing else moves. */
+export async function clearPersonalChat(db: Db, tenantId: string, personId: string): Promise<void> {
+  const rows = await db
+    .select({ id: chats.id })
+    .from(chats)
+    .innerJoin(chatAssignments, eq(chatAssignments.chatId, chats.id))
+    .innerJoin(botDefinitions, eq(botDefinitions.id, chatAssignments.definitionId))
+    .where(and(eq(chats.tenantId, tenantId), eq(chats.ownerPersonId, personId), eq(botDefinitions.identity, "person")));
+  for (const r of rows) await setChatDefinition(db, tenantId, r.id, null);
+}
+
 export async function allowedDepartments(db: Db, definitionId: string): Promise<string[]> {
   const rows = await db.select({ id: definitionDepartments.departmentId }).from(definitionDepartments).where(eq(definitionDepartments.definitionId, definitionId));
   return rows.map((r) => r.id);

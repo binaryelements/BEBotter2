@@ -1,10 +1,10 @@
-import { and, eq, gte, inArray, max } from "drizzle-orm";
+import { and, count, eq, gte, inArray, max } from "drizzle-orm";
 import express from "express";
 import type { Router } from "express";
 import { allowedDepartments, listDefinitions } from "../bots/definitions.js";
 import { listActions } from "../audit/audit.js";
 import type { Db } from "../db/client.js";
-import { auditEvents, chatAssignments, departmentMembers, mailboxes } from "../db/schema.js";
+import { auditEvents, chatAssignments, departmentMembers, mailboxes, people } from "../db/schema.js";
 import type { BotDefinition } from "../db/schema.js";
 import type { Actor } from "./access.js";
 import { isAdmin } from "./access.js";
@@ -36,10 +36,11 @@ export async function botsTable(db: Db, tenantId: string, defs: BotDefinition[])
     db.select({ id: mailboxes.definitionId, address: mailboxes.address }).from(mailboxes).where(and(eq(mailboxes.tenantId, tenantId), inArray(mailboxes.definitionId, ids))),
     db.select({ id: auditEvents.definitionId, at: max(auditEvents.startedAt) }).from(auditEvents).where(and(eq(auditEvents.tenantId, tenantId), inArray(auditEvents.definitionId, ids))).groupBy(auditEvents.definitionId),
   ]);
+  const [{ on }] = await db.select({ on: count() }).from(people).where(and(eq(people.tenantId, tenantId), eq(people.personalBot, true)));
   const address = new Map(boxes.map((b) => [b.id, b.address]));
   const active = new Map(last.map((l) => [l.id, l.at]));
   return scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Model</th><th>Last active</th></tr></thead><tbody>${defs.map(
-    (d) => html`<tr><td class="nm"><a href="/admin/bots/${d.id}">${d.displayName ?? d.name}</a></td><td>${d.label}</td><td>${address.get(d.id) ?? ""}</td><td>${d.model}</td><td>${stamp(active.get(d.id))}</td></tr>`,
+    (d) => html`<tr><td class="nm"><a href="/admin/bots/${d.id}">${d.displayName ?? d.name}</a></td><td>${d.label}${d.identity === "person" ? ` · ${on} on` : ""}</td><td>${address.get(d.id) ?? ""}</td><td>${d.model}</td><td>${stamp(active.get(d.id))}</td></tr>`,
   )}</tbody></table>`);
 }
 
