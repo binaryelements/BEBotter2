@@ -102,7 +102,7 @@ describe("admin router", () => {
   });
 
   it("every screen renders inside the shell with its title and an active menu item", async () => {
-    for (const [path, title] of [["people", "People"], ["departments", "Departments"], ["assignments", "Assignments"], ["activity", "Activity"], ["knowledge", "Shared notes"], ["settings", "Settings"], ["bots", "Bots"]]) {
+    for (const [path, title] of [["people", "People"], ["departments", "Departments"], ["assignments", "Assignments"], ["activity", "Activity"], ["knowledge", "Shared notes"], ["settings", "Settings"], ["bots", "Bots"], ["connections", "Connections"]]) {
       const page = await (await get(`/admin/${path}`, as(admin))).text();
       expect(page).toContain('<body class="be">');
       expect(page).toContain(`<h1>${title}</h1>`);

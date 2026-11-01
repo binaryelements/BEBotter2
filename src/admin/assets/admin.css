@@ -53,3 +53,9 @@ main form.inline-edit { display: flex; gap: var(--space-6); align-items: center;
 /* Theme picker: icon-only buttons, square. */
 .be-btn.icon { padding: 4px 6px; line-height: 0; }
 .be-btn.icon svg { display: block; }
+/* A form of labelled fields in a grid that wraps on a phone; each label stacks its name, hint and input. */
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-12) var(--space-16); margin: var(--space-12) 0; }
+.fields label { display: flex; flex-direction: column; gap: var(--space-4); font: 500 12px var(--font-sans); color: var(--lbl); }
+.fields .hint { font: 11px var(--font-mono); color: var(--muted); }
+details.add { margin: var(--space-12) 0; }
+details.add > summary { cursor: pointer; font: 500 12.5px var(--font-mono); color: var(--cyan); }

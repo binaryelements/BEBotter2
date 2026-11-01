@@ -148,6 +148,10 @@ describe("bots screen", () => {
       const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
       expect(page).toContain("lnk");
       expect(page).not.toContain("CIPHER-SECRET");
+      expect(page).toContain("Connections this bot uses");
+      const all = await (await get(`/admin/connections`, "Ann")).text();
+      expect(all).toMatch(/lnk<\/td>[\s\S]*?Helper/); // the Connections screen names the bot that uses it
+      expect((await get(`/admin/connections`, "Hal")).status).toBe(403);
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
       expect(await listConnectionsFor(db, T, d.id)).toHaveLength(0);
     });
