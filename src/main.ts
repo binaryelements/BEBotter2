@@ -19,8 +19,8 @@ import { ensureAllMailboxes, ensureMailbox } from "./mail/mailboxes.js";
 import { prewarmRecent, runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startScheduler } from "./routines/scheduler.js";
-import { createTeamsApp } from "./teams/app.js";
-import { sendToChat } from "./teams/proactive.js";
+import { createTeamsApp, graphToken } from "./teams/app.js";
+import { personToken, sendToChat } from "./teams/proactive.js";
 
 loadEnvFile();
 const config = loadConfig(process.env);
@@ -52,7 +52,7 @@ const mail = config.agentmail
   : undefined;
 const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
-const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel });
+const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection });
 
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 
@@ -82,7 +82,7 @@ if (mail) void ensureAllMailboxes(mail);
 void prewarmRecent(runnerDeps, { withinMs: warm.recentMs, max: warm.max });
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
-startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m) });
+startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
   process.once(signal, () => void live.closeAll().finally(() => process.exit(0)));

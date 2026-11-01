@@ -91,6 +91,30 @@ function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()
 afterEach(() => vi.useRealTimers());
 
 describe("runTurn", () => {
+  it("carries the person's token closure but never puts the token in options, prompt, audit or logs", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const token = "eyJ0b2stc2VjcmV0";
+    const graphToken = vi.fn(async () => token);
+    const logged: unknown[] = [];
+    const spies = (["log", "warn", "error"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a) => void logged.push(...a)));
+    const q = fakeQuery();
+    const confirmations = new Confirmations();
+    await runTurn(deps(db, q.fn, confirmations), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "hi", graphToken,
+      askConfirmation: async (req) => void confirmations.resolve(req.actionId, person.id, "yes"),
+    });
+    spies.forEach((s) => s.mockRestore());
+    expect(q.seen).toHaveLength(1);
+    const seen = new WeakSet<object>(); // options hold live MCP server objects, which are circular
+    const flat = JSON.stringify(q.seen, (_k, v: unknown) => (v && typeof v === "object" ? (seen.has(v) ? undefined : (seen.add(v), v)) : v));
+    expect(flat).not.toContain(token);
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain(token);
+    expect(Object.values(q.seen[0]!)).not.toContain(graphToken);
+    expect(JSON.stringify(await listActions(db, { tenantId: "t1" }))).not.toContain(token);
+    expect(JSON.stringify(logged)).not.toContain(token);
+  });
+
   it("a throwing progress callback is logged and the turn still finishes", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

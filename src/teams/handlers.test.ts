@@ -13,8 +13,9 @@ import type { RunTurnInput } from "../engine/runner.js";
 import { setAllowedDepartments } from "../bots/definitions.js";
 import { auditEvents, chatAssignments, chats } from "../db/schema.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
-import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, tenantBotName } from "./handlers.js";
+import { recordChatOwner, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
+import { confirmerPolicy } from "../admin/access.js";
 import type { IncomingMessage } from "./handlers.js";
 
 const msg = (conversationType: string): IncomingMessage => ({
@@ -738,13 +739,78 @@ describe("choosing the bot in a one-to-one chat", () => {
     await setPersonalBot(s.db, "t1", s.bob.id, true);
     await upsertChat(s.db, { id: "g1", tenantId: "t1", conversationType: "groupChat" });
     await s.db.insert(chatAssignments).values({ chatId: "g1", definitionId: personal.id });
-    await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1" }, s.io);
-    await s.say("hi"); // Ann's own chat: Personal is her only bot, so it is assigned and answers
+    await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1" }, { ...s.io, graphToken: async () => "t" });
+    await handleMessage(s.deps, { ...msg("personal"), text: "hi" }, { ...s.io, graphToken: async () => "t" }); // Ann's own chat: Personal is her only bot, so it is assigned and answers
     await s.say("hello", "u2");
     const refusal = "This assistant is private to its owner.";
     expect(s.sent).toEqual([refusal, "**My assistant**\n\nreply", refusal]);
     expect(s.runTurn).toHaveBeenCalledTimes(1); // Ann's only
     expect(await s.db.select().from(auditEvents)).toEqual([]);
+  });
+
+  describe("the person's token", () => {
+    const token = "tok-ann-secret";
+    async function mine() {
+      const s = await chat();
+      const personal = await ensurePersonalDefinition(s.db, "t1", "m");
+      await setPersonalBot(s.db, "t1", s.ann.id, true);
+      const graphToken = vi.fn(async () => token);
+      const signedIn = { ...s.io, graphToken };
+      return { ...s, personal, graphToken, signedIn };
+    }
+    const check = (m: Partial<Parameters<typeof needsSignIn>[1]> = {}) => ({ tenantId: "t1", chatId: "c1", conversationType: "personal", aadObjectId: "u1", text: "hi", ...m });
+
+    it("a person turn gets the turn's token closure; a service turn never does", async () => {
+      const s = await mine();
+      await handleMessage(s.deps, { ...msg("personal"), text: "hi" }, s.signedIn);
+      const helper = await s.service("helper", "Helper");
+      await upsertChat(s.db, { id: "g1", tenantId: "t1", conversationType: "groupChat" });
+      await assignToChat(s.db, "g1", helper.id);
+      await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1" }, s.signedIn);
+      const turns = s.runTurn.mock.calls.map((c) => (c as unknown as [RunTurnInput])[0]);
+      expect(turns.map((t) => t.definition.id)).toEqual([s.personal.id, helper.id]);
+      expect(turns[0]!.graphToken).toBe(s.graphToken);
+      expect(turns[1]!.graphToken).toBeUndefined();
+      expect(s.graphToken).not.toHaveBeenCalled(); // fetched per Graph call, not up front
+    });
+
+    it("a person turn without a token runs no engine", async () => {
+      const s = await mine();
+      await s.say("hi");
+      expect(s.runTurn).not.toHaveBeenCalled();
+      expect(s.sent).toEqual(["Sign-in didn't work. Say anything to try again."]);
+    });
+
+    it("signs in only for the owner's own turn of Personal", async () => {
+      const s = await mine();
+      expect(await needsSignIn(s.deps, check())).toBe(true); // Personal is her only bot: the first message assigns it
+      await s.service("helper", "Helper");
+      expect(await needsSignIn(s.deps, check())).toBe(false); // two usable, none assigned: the card, no turn
+      await upsertChat(s.db, { id: "c1", tenantId: "t1", conversationType: "personal" });
+      await recordChatOwner(s.db, "c1", s.ann.id);
+      await setChatDefinition(s.db, "t1", "c1", s.personal.id);
+      expect(await needsSignIn(s.deps, check())).toBe(true);
+      expect(await needsSignIn(s.deps, check({ text: " switch " }))).toBe(false);
+      expect(await needsSignIn(s.deps, check({ aadObjectId: "u2" }))).toBe(false);
+      expect(await needsSignIn(s.deps, check({ aadObjectId: "nobody" }))).toBe(false);
+      expect(await needsSignIn(s.deps, check({ conversationType: "groupChat" }))).toBe(false);
+      await setPersonalBot(s.db, "t1", s.ann.id, false);
+      expect(await needsSignIn(s.deps, check())).toBe(false);
+    });
+
+    it("only the owner may confirm a personal bot's action; a forwarded card stays pending", async () => {
+      const s = await mine();
+      await s.say("hi");
+      await setRole(s.db, "t1", s.bob.id, "admin");
+      const c = new Confirmations();
+      for (const kind of ["write", "approve"] as const) {
+        const a = c.create({ auditId: "x", mayConfirm: confirmerPolicy(s.db, "t1", s.personal.id, s.ann.id, kind, "c1") });
+        await expect(handleConfirmClick(c, { actionId: a.actionId, answer: "yes" }, s.bob.id, "Bob")).resolves.toBe("You can't confirm this.");
+        await expect(handleConfirmClick(c, { actionId: a.actionId, answer: "yes" }, s.ann.id, "Ann")).resolves.toBe("Confirmed by Ann");
+      }
+      const elsewhere = c.create({ auditId: "y", mayConfirm: confirmerPolicy(s.db, "t1", s.personal.id, s.ann.id, "write") });
+      await expect(handleConfirmClick(c, { actionId: elsewhere.actionId, answer: "yes" }, s.ann.id, "Ann")).resolves.toBe("You can't confirm this.");
+    });
   });
 
   it("an install in a one-to-one chat sends the card with two usable bots, otherwise the greeting", async () => {

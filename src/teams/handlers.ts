@@ -7,7 +7,7 @@ import type { Confirmations } from "../engine/confirm.js";
 import type { ProgressEvent, RunResult, RunTurnInput } from "../engine/runner.js";
 import { assignToChat, definitionsForChat, setChatDefinition, usableDefinitions } from "../bots/definitions.js";
 import { mayUseDefinition } from "../admin/access.js";
-import { getTenantSettings, recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { findPersonId, getTenantSettings, recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { botTitle, chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
 import type { AdaptiveCard } from "./cards.js";
 
@@ -47,6 +47,8 @@ export type TeamsIo = {
   sendCard: (card: AdaptiveCard) => Promise<void>;
   /** A reply typed out as it is written (one-to-one chats); end's text is the whole final message. */
   stream?: TeamsStream;
+  /** The sender's Graph token, asked for per call; present only on a turn that signed in. */
+  graphToken?: () => Promise<string | undefined>;
 };
 /** end's card, when given, goes out with the final message; finalText may then be empty. */
 export type TeamsStream = { informative(text: string): void; chunk(text: string): void; end(finalText: string, card?: AdaptiveCard): Promise<void> };
@@ -125,6 +127,25 @@ const ownerOf = async (db: Db, chatId: string) => (await db.select({ owner: chat
 
 export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string; defaultModel: string };
 
+export const signInFailed = "Sign-in didn't work. Say anything to try again.";
+
+/** Whether this message will run its sender's own Personal, so the turn must sign in first; read-only, mirrors handleMessage's choice. */
+export async function needsSignIn(
+  deps: Pick<HandlerDeps, "db" | "defaultModel">,
+  m: { tenantId: string; chatId: string; conversationType: string; aadObjectId: string; text: string },
+): Promise<boolean> {
+  const { db } = deps;
+  if (m.conversationType !== "personal" || m.text.trim().toLowerCase() === "switch") return false;
+  const personId = await findPersonId(db, m.tenantId, m.aadObjectId);
+  if (!personId) return false;
+  const owner = await ownerOf(db, m.chatId);
+  if (owner && owner !== personId) return false;
+  const usable = await usableDefinitions(db, m.tenantId, personId, deps.defaultModel);
+  const [assigned] = await definitionsForChat(db, m.chatId);
+  const definition = assigned ?? (usable.length === 1 ? usable[0] : undefined);
+  return definition?.identity === "person" && usable.some((d) => d.id === definition.id);
+}
+
 export async function handleMessage(
   deps: HandlerDeps,
   msg: IncomingMessage,
@@ -155,6 +176,9 @@ export async function handleMessage(
   // Personal acts as one person: only in their own one-to-one chat, whatever the assignment says
   if (definition.identity === "person" && (msg.conversationType !== "personal" || (await ownerOf(db, msg.chatId)) !== person.id)) return void (await io.send("This assistant is private to its owner."));
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
+  // the token goes only to the owner's own Personal turn; any other turn never sees it
+  const graphToken = definition.identity === "person" ? io.graphToken : undefined;
+  if (definition.identity === "person" && !graphToken) return void (await io.send(signInFailed));
   await serialize(`${msg.chatId}:${definition.id}`, async () => {
     const personal = msg.conversationType === "personal";
     // the reply's first line names the bot, in one-to-one chats too: every bot shares the one Teams identity
@@ -222,6 +246,7 @@ export async function handleMessage(
         person,
         text: msg.text,
         receivedAt: msg.receivedAt,
+        ...(graphToken ? { graphToken } : {}),
         askConfirmation: async (req) => {
           status.supersede();
           // a stream must not stay open through a wait of up to 10 minutes: the card ends it, replacing any progress line;

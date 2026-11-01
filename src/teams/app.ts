@@ -1,11 +1,11 @@
-import { AgentApplication, CardFactory, CloudAdapter, MessageFactory, StreamingResponseResult } from "@microsoft/agents-hosting";
+import { AgentApplication, CardFactory, CloudAdapter, MemoryStorage, MessageFactory, StreamingResponseResult } from "@microsoft/agents-hosting";
 import type { TurnContext, TurnState } from "@microsoft/agents-hosting";
 import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { findPersonId } from "../org/org.js";
 import { resultCard } from "./cards.js";
-import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting } from "./handlers.js";
+import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, signInFailed } from "./handlers.js";
 import type { TeamsStream } from "./handlers.js";
 
 export type TeamsAppDeps = {
@@ -14,7 +14,13 @@ export type TeamsAppDeps = {
   confirmations: Confirmations;
   botName: string;
   defaultModel: string;
+  /** The Azure Bot OAuth connection behind the `graph` sign-in. */
+  graphConnection: string;
 };
+
+/** The signed-in person's Graph token for this turn's sender, or undefined; never stored. */
+export const graphToken = async (app: AgentApplication<TurnState>, ctx: TurnContext): Promise<string | undefined> =>
+  (await app.authorization.getToken(ctx, "graph")).token;
 
 /** The turn's Teams stream. end throws unless the final message reached the chat, so the caller can send it another way. */
 export function teamsStream(ctx: TurnContext): TeamsStream {
@@ -47,7 +53,11 @@ export function teamsStream(ctx: TurnContext): TeamsStream {
 export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> {
   // longRunningMessages answers the HTTP request at once; a turn can wait minutes on a confirmation card
   // startServer reuses app.adapter, so proactive sends go through the same adapter as replies
-  const app = new AgentApplication<TurnState>({ adapter: new CloudAdapter(), startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true });
+  // the `graph` handler signs a person in (Teams SSO, else the OAuth card) on routes that ask for it; storage holds a pending sign-in's message
+  const app = new AgentApplication<TurnState>({
+    adapter: new CloudAdapter(), startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true,
+    storage: new MemoryStorage(), authorization: { graph: { azureBotOAuthConnectionName: deps.graphConnection } },
+  });
   // the SDK default posts "please fix the source code" into the chat and logs nothing we can see; handlers already tell the user
   app.adapter.onTurnError = async (ctx, err) => {
     const e = err as { name?: string; message?: string; statusCode?: number };
@@ -67,7 +77,14 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     );
   });
 
-  app.onActivity("message", async (ctx) => {
+  // the SDK replays the message that started a sign-in once it succeeds, so nothing runs here
+  app.onSignInFailure(async (ctx) => {
+    const code = (ctx.activity.value as { code?: unknown } | undefined)?.code;
+    console.error(`sign-in failed in ${ctx.activity.conversation?.id ?? "?"}: ${typeof code === "string" ? code.slice(0, 80) : "unknown"}`);
+    await ctx.sendActivity(signInFailed);
+  });
+
+  const onMessage = (signedIn: boolean) => async (ctx: TurnContext) => {
     const receivedAt = new Date();
     const { conversation, from } = ctx.activity;
     if (!conversation?.tenantId || !from?.aadObjectId) {
@@ -97,9 +114,18 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
         // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
         ...(conversationType === "personal" ? { stream: teamsStream(ctx) } : {}),
+        ...(signedIn ? { graphToken: () => graphToken(app, ctx) } : {}),
       },
     );
-  });
+  };
+  // a message that will run the sender's own Personal signs in first; the route order makes it win
+  const personTurn = async (ctx: TurnContext) => {
+    const { type, conversation, from, text } = ctx.activity;
+    if (type !== "message" || !conversation?.tenantId || !from?.aadObjectId) return false;
+    return needsSignIn(deps, { tenantId: conversation.tenantId, chatId: conversation.id, conversationType: conversation.conversationType ?? "personal", aadObjectId: from.aadObjectId, text: text ?? "" });
+  };
+  app.onActivity(personTurn, onMessage(true), ["graph"]);
+  app.onActivity("message", onMessage(false));
 
   app.adaptiveCards.actionExecute<unknown>("confirm", async (ctx, _state, data) => {
     const { conversation, from } = ctx.activity;

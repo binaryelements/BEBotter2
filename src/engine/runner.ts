@@ -174,6 +174,8 @@ export type RunTurnInput = {
   receivedAt?: Date;
   progress?: (event: ProgressEvent) => void;
   routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void> };
+  /** The person's Microsoft Graph token, asked for per call; only for person definitions. Never stored, logged or shown to the model. */
+  graphToken?: () => Promise<string | undefined>;
 };
 
 export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
@@ -315,7 +317,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         releaseApprove(toolUseID);
         return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
       }
-      const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind) });
+      const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId) });
       let o: Outcome | { result: "failed" };
       try {
         await turn.askConfirmation({ actionId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input });

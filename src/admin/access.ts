@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { botDefinitions, definitionDepartments, departmentMembers, departments, people } from "../db/schema.js";
+import { botDefinitions, chats, definitionDepartments, departmentMembers, departments, people } from "../db/schema.js";
 
 export type Actor = { personId: string; tenantId: string; name: string; role: "user" | "admin"; headOf: string[] };
 
@@ -71,15 +71,25 @@ export async function mayUseDefinition(db: Db, tenantId: string, personId: strin
   return mine.length > 0;
 }
 
-/** Who may click yes on a card: the asker (writes only), an admin, or a head of a department allowed to use the definition. */
+/**
+ * Who may click yes on a card: the asker (writes only), an admin, or a head of a department allowed to use the definition.
+ * A person definition acts as its owner, so only the asker who owns chatId may confirm, whoever else sees the card.
+ */
 export function confirmerPolicy(
   db: Db,
   tenantId: string,
   definitionId: string,
   askerPersonId: string | null,
   kind: "write" | "approve",
+  chatId?: string,
 ): (clickerPersonId: string) => Promise<boolean> {
   return async (clickerPersonId) => {
+    const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, tenantId)));
+    if (def?.identity === "person") {
+      if (!chatId || clickerPersonId !== askerPersonId) return false;
+      const [chat] = await db.select({ owner: chats.ownerPersonId }).from(chats).where(and(eq(chats.id, chatId), eq(chats.tenantId, tenantId)));
+      return chat?.owner === clickerPersonId;
+    }
     const actor = await loadActor(db, tenantId, clickerPersonId);
     if (!actor) return false;
     if (kind === "write" && clickerPersonId === askerPersonId) return true;
