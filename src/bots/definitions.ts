@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionDepartments, departments, people } from "../db/schema.js";
 import type { BotDefinition, McpServerRecord } from "../db/schema.js";
+import { mayUseDefinition } from "../admin/access.js";
 import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
@@ -112,6 +113,17 @@ export async function definitionsForChat(db: Db, chatId: string): Promise<BotDef
     .innerJoin(botDefinitions, eq(chatAssignments.definitionId, botDefinitions.id))
     .where(eq(chatAssignments.chatId, chatId));
   return rows.map((r) => r.def);
+}
+
+/** The bots a person may talk to: their Personal assistant first (when switched on), then the others by label. */
+export async function usableDefinitions(db: Db, tenantId: string, personId: string, defaultModel: string): Promise<BotDefinition[]> {
+  const [p] = await db.select({ on: people.personalBot }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
+  if (p?.on) await ensurePersonalDefinition(db, tenantId, defaultModel).catch((e) => console.error(`personal assistant for tenant ${tenantId}:`, e instanceof Error ? e.message : "error"));
+  const all = await db.select().from(botDefinitions).where(eq(botDefinitions.tenantId, tenantId));
+  const usable: BotDefinition[] = [];
+  for (const d of all) if (await mayUseDefinition(db, tenantId, personId, d.id)) usable.push(d);
+  const rank = (d: BotDefinition) => (d.identity === "person" ? 0 : 1);
+  return usable.sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));
 }
 
 // stdio servers get no service secrets, only what a command needs to start

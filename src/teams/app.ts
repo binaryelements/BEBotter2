@@ -5,7 +5,7 @@ import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { findPersonId } from "../org/org.js";
 import { resultCard } from "./cards.js";
-import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting, tenantBotName } from "./handlers.js";
+import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting } from "./handlers.js";
 import type { TeamsStream } from "./handlers.js";
 
 export type TeamsAppDeps = {
@@ -13,6 +13,7 @@ export type TeamsAppDeps = {
   runTurn: (turn: RunTurnInput) => Promise<RunResult>;
   confirmations: Confirmations;
   botName: string;
+  defaultModel: string;
 };
 
 /** The turn's Teams stream. end throws unless the final message reached the chat, so the caller can send it another way. */
@@ -57,7 +58,13 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     const botId = ctx.activity.recipient?.id;
     if (!ctx.activity.membersAdded?.some((m) => m.id === botId)) return;
     const tenantId = ctx.activity.conversation?.tenantId;
-    await ctx.sendActivity(membersAddedGreeting(tenantId ? await tenantBotName(deps.db, tenantId, deps.botName) : deps.botName));
+    if (!tenantId) return void (await ctx.sendActivity(membersAddedGreeting(deps.botName)));
+    const from = ctx.activity.from;
+    await handleInstall(
+      deps,
+      { tenantId, chatId: ctx.activity.conversation!.id, conversationType: ctx.activity.conversation?.conversationType ?? "personal", from: from?.aadObjectId ? { aadObjectId: from.aadObjectId, name: from.name ?? "" } : undefined },
+      { send: async (text) => (await ctx.sendActivity(text))?.id, sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))) },
+    );
   });
 
   app.onActivity("message", async (ctx) => {
@@ -105,6 +112,13 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
       from?.name ?? "",
     );
     return resultCard(text) as { type: "AdaptiveCard" };
+  });
+
+  app.adaptiveCards.actionExecute<unknown>("choose", async (ctx, _state, data) => {
+    const { conversation, from } = ctx.activity;
+    const tenantId = conversation?.tenantId;
+    const personId = tenantId && from?.aadObjectId ? await findPersonId(deps.db, tenantId, from.aadObjectId) : undefined;
+    return (await handleChoose(deps, { tenantId: tenantId ?? "", chatId: conversation?.id ?? "", personId }, choosePayload(data))) as { type: "AdaptiveCard" };
   });
 
   return app;

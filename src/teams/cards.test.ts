@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
+import { chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
 
 describe("cards", () => {
   const block = (text: string, extra: Record<string, unknown> = {}, run: Record<string, unknown> = {}) => ({ type: "RichTextBlock", ...extra, inlines: [{ type: "TextRun", text, ...run }] });
@@ -53,5 +53,23 @@ describe("cards", () => {
 
   it("withRoleLabel prefixes a bold label", () => {
     expect(withRoleLabel("Helper", "Hi")).toBe("**Helper**\n\nHi");
+  });
+});
+
+describe("chooseBotCard", () => {
+  const defs = [{ id: "p", displayName: null, label: "My assistant" }, { id: "s", displayName: "Iris", label: "IT" }, { id: "t", displayName: null, label: "Sales" }];
+
+  it("asks who, with one choose action per bot", () => {
+    const card = chooseBotCard(defs) as any;
+    expect(card.body).toEqual([{ type: "TextBlock", text: "Who would you like to talk to?", weight: "Bolder", wrap: true }]);
+    expect(card.actions).toEqual([
+      { type: "Action.Execute", title: "My assistant", verb: "choose", data: { definitionId: "p" } },
+      { type: "Action.Execute", title: "Iris · IT", verb: "choose", data: { definitionId: "s" } },
+      { type: "Action.Execute", title: "Sales", verb: "choose", data: { definitionId: "t" } },
+    ]);
+  });
+
+  it("shows the choice", () => {
+    expect((chooseBotCard(defs, "s") as any).body[1].text).toBe("You're now talking to Iris · IT.");
   });
 });

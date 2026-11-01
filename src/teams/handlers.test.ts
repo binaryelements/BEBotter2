@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assignToChat, upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import type * as auditModule from "../audit/audit.js";
 import { eq } from "drizzle-orm";
 import { beginAction, completeAction, recordSent } from "../audit/audit.js";
@@ -11,10 +11,10 @@ import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { setAllowedDepartments } from "../bots/definitions.js";
-import { auditEvents } from "../db/schema.js";
-import { createDepartment, setMembership, setRole } from "../org/directory.js";
+import { auditEvents, chatAssignments, chats } from "../db/schema.js";
+import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { clickPayload, handleConfirmClick, handleMessage, membersAddedGreeting, tenantBotName } from "./handlers.js";
+import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, tenantBotName } from "./handlers.js";
 import type { IncomingMessage } from "./handlers.js";
 
 const msg = (conversationType: string): IncomingMessage => ({
@@ -45,7 +45,7 @@ async function setup(assign: boolean) {
       const def = await upsertDefinition(db, Buffer.alloc(32), m.tenantId, { name: "helper", label: "Helper", persona: "p" } as never);
       await assignToChat(db, m.chatId, def.id);
     }
-    await handleMessage({ db, runTurn, botName: "Bot" }, m, { send: async (t) => (sent.push(t), undefined), update: async () => {}, sendCard: async (c) => void cards.push(c) });
+    await handleMessage({ db, runTurn, botName: "Bot", defaultModel: "m" }, m, { send: async (t) => (sent.push(t), undefined), update: async () => {}, sendCard: async (c) => void cards.push(c) });
   };
   return { db, run, runTurn, sent, cards, turns };
 }
@@ -144,7 +144,7 @@ describe("handleMessage status message", () => {
     return { s, log, io, failUpdates: () => (failUpdate = true) };
   };
   const run = (x: Awaited<ReturnType<typeof slowSetup>>, type = "personal") =>
-    handleMessage({ db: x.s.db, runTurn: x.s.runTurn, botName: "Bot" }, msg(type), x.io);
+    handleMessage({ db: x.s.db, runTurn: x.s.runTurn, botName: "Bot", defaultModel: "m" }, msg(type), x.io);
 
   it("sends no status message when the turn is fast", async () => {
     vi.useFakeTimers();
@@ -345,7 +345,7 @@ describe("handleMessage streaming", () => {
     return { s, log, io, fail };
   };
   const run = (x: Awaited<ReturnType<typeof streamSetup>>, type = "personal") =>
-    handleMessage({ db: x.s.db, runTurn: x.s.runTurn, botName: "Bot" }, msg(type), x.io);
+    handleMessage({ db: x.s.db, runTurn: x.s.runTurn, botName: "Bot", defaultModel: "m" }, msg(type), x.io);
   const timed = async (f: () => Promise<void>) => {
     vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -512,7 +512,7 @@ describe("handleMessage ordering", () => {
       return { text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
     });
     const send = (chatId: string) =>
-      handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("groupChat"), chatId }, { send: async () => undefined, update: async () => {}, sendCard: async () => {} });
+      handleMessage({ db, runTurn, botName: "Bot", defaultModel: "m" }, { ...msg("groupChat"), chatId }, { send: async () => undefined, update: async () => {}, sendCard: async () => {} });
 
     const all = [send("c1"), send("c1"), send("c2")];
     await vi.waitFor(() => expect(running.map((r) => r.chatId).sort()).toEqual(["c1", "c2"]));
@@ -582,7 +582,7 @@ describe("handleMessage department access", () => {
     const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } }));
     const as = async (aadObjectId: string) => {
       const sent: string[] = [];
-      await handleMessage({ db, runTurn, botName: "Bot" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, { send: async (t) => (sent.push(t), undefined), update: async () => {}, sendCard: async () => {} });
+      await handleMessage({ db, runTurn, botName: "Bot", defaultModel: "m" }, { ...msg("personal"), from: { aadObjectId, name: aadObjectId } }, { send: async (t) => (sent.push(t), undefined), update: async () => {}, sendCard: async () => {} });
       return sent;
     };
     return { db, runTurn, as };
@@ -597,8 +597,130 @@ describe("handleMessage department access", () => {
 
   it("refuses anyone else without a model call or audit row", async () => {
     const s = await restricted();
-    expect(await s.as("stranger")).toEqual(["You don't have access to this bot."]);
+    expect(await s.as("stranger")).toEqual(["You no longer have access to Helper."]);
     expect(s.runTurn).not.toHaveBeenCalled();
     expect(await s.db.select().from(auditEvents)).toEqual([]);
+  });
+});
+
+describe("choosing the bot in a one-to-one chat", () => {
+  async function chat() {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const ann = await upsertPerson(db, { tenantId: "t1", aadObjectId: "u1", name: "Ann" });
+    const bob = await upsertPerson(db, { tenantId: "t1", aadObjectId: "u2", name: "Bob" });
+    const runTurn = vi.fn(async () => ({ text: "reply", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } }));
+    const deps = { db, runTurn, botName: "Bot", defaultModel: "m" };
+    const sent: string[] = [];
+    const cards: any[] = [];
+    const io = { send: async (t: string) => (sent.push(t), undefined), update: async () => {}, sendCard: async (c: unknown) => void cards.push(c) };
+    const say = (text: string, from = "u1") => handleMessage(deps, { ...msg("personal"), text, from: { aadObjectId: from, name: from } }, io);
+    const assigned = async () => (await db.select().from(chatAssignments).where(eq(chatAssignments.chatId, "c1"))).map((a) => a.definitionId);
+    const service = (name: string, label: string) => upsertDefinition(db, Buffer.alloc(32), "t1", { name, label, persona: "p" } as never);
+    const titles = (c: any) => c.actions.map((a: any) => a.title);
+    return { db, ann, bob, deps, runTurn, sent, cards, io, say, assigned, service, titles };
+  }
+
+  it("records the chat owner on the first message", async () => {
+    const s = await chat();
+    await s.say("hi");
+    const [c] = await s.db.select().from(chats).where(eq(chats.id, "c1"));
+    expect(c.ownerPersonId).toBe(s.ann.id);
+  });
+
+  it("answers directly with the one usable bot and assigns it", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    await s.say("hi");
+    expect(s.sent).toEqual(["**Helper**\n\nreply"]);
+    expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("sends the card, with no turn, when several bots are usable; Personal first", async () => {
+    const s = await chat();
+    await s.service("zed", "Zed");
+    await s.service("abe", "Abe");
+    await setPersonalBot(s.db, "t1", s.ann.id, true);
+    await s.say("hi");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(s.cards).toHaveLength(1);
+    expect(s.cards[0].body[0].text).toBe("Who would you like to talk to?");
+    expect(s.titles(s.cards[0])).toEqual(["My assistant", "Abe", "Zed"]);
+    expect(s.cards[0].actions[1]).toMatchObject({ type: "Action.Execute", verb: "choose" });
+    expect(await s.assigned()).toEqual([]);
+  });
+
+  it("says so when no bot is usable", async () => {
+    const s = await chat();
+    await s.say("hi");
+    expect(s.sent).toEqual(["No bot is available to you yet. Ask an admin."]);
+    expect(s.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("shows the card for a lone `switch`, in any case, instead of a turn", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    await s.service("other", "Other");
+    await s.say("hi"); // card (two usable), nothing assigned yet
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    await s.say("  Switch ");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(s.cards).toHaveLength(2);
+  });
+
+  it("shows access lost and the card when the assigned bot is no longer usable", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    const b = await s.service("other", "Other");
+    await s.say("hi");
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    const sales = await createDepartment(s.db, "t1", "Sales");
+    await setAllowedDepartments(s.db, "t1", a.id, [sales.id]);
+    s.sent.length = s.cards.length = 0;
+    await s.say("hi again");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(s.sent).toEqual(["You no longer have access to Helper."]);
+    expect(s.titles(s.cards[0])).toEqual(["Other"]);
+    expect(b.id).toBeTruthy();
+  });
+
+  it("the owner's choose replaces the assignment and refreshes the card", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    const b = await s.service("other", "Other");
+    await s.say("hi");
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    const card: any = await handleChoose(s.deps, { tenantId: "t1", chatId: "c1", personId: s.ann.id }, b.id);
+    expect(await s.assigned()).toEqual([b.id]);
+    expect(JSON.stringify(card)).toContain("You're now talking to Other.");
+  });
+
+  it("refuses a choose from anyone but the owner, or of a bot the owner may not use, and changes nothing", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    const b = await s.service("other", "Other");
+    const c = await s.service("secret", "Secret");
+    const sales = await createDepartment(s.db, "t1", "Sales");
+    await setAllowedDepartments(s.db, "t1", c.id, [sales.id]);
+    await s.say("hi");
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    const by = (personId: string, id: string) => handleChoose(s.deps, { tenantId: "t1", chatId: "c1", personId }, id);
+    expect(JSON.stringify(await by(s.bob.id, b.id))).toContain("You can't choose this bot.");
+    expect(JSON.stringify(await by(s.ann.id, c.id))).toContain("You can't choose this bot.");
+    expect(JSON.stringify(await by(s.ann.id, "forged"))).toContain("You can't choose this bot.");
+    expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("an install in a one-to-one chat sends the card with two usable bots, otherwise the greeting", async () => {
+    const s = await chat();
+    const install = () => handleInstall(s.deps, { tenantId: "t1", chatId: "c1", conversationType: "personal", from: { aadObjectId: "u1", name: "Ann" } }, s.io);
+    await s.service("helper", "Helper");
+    await install();
+    expect(s.sent).toEqual(["Hi, I'm Bot. Mention me with a question or a job."]);
+    await s.service("other", "Other");
+    await install();
+    expect(s.cards).toHaveLength(1);
+    const [c] = await s.db.select().from(chats).where(eq(chats.id, "c1"));
+    expect(c.ownerPersonId).toBe(s.ann.id);
   });
 });

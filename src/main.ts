@@ -52,7 +52,7 @@ const mail = config.agentmail
   : undefined;
 const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
-const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName });
+const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel });
 
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 

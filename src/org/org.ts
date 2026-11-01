@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { chats, people, tenants } from "../db/schema.js";
 import type { Chat, Person, Tenant } from "../db/schema.js";
 import type { Db } from "../db/client.js";
@@ -37,6 +37,11 @@ export async function upsertChat(
     .onConflictDoUpdate({ target: chats.id, set: { conversationType, lastSeenAt: new Date() } })
     .returning();
   return row;
+}
+
+/** Records whose one-to-one chat it is, once. */
+export async function recordChatOwner(db: Db, chatId: string, personId: string): Promise<void> {
+  await db.update(chats).set({ ownerPersonId: personId }).where(and(eq(chats.id, chatId), isNull(chats.ownerPersonId)));
 }
 
 export async function saveConversationReference(db: Db, chatId: string, reference: unknown): Promise<void> {
