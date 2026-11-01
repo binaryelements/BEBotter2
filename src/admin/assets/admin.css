@@ -1,0 +1,55 @@
+/* App layout only. Every value is a design-system token (see be/tokens.css). */
+body.be { margin: 0; min-height: 100vh; }
+.be-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-10) var(--space-16); padding: var(--space-10) var(--space-16); border-bottom: 1px solid var(--line); background: var(--panel); }
+.be-top .who { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8) var(--space-12); font: 12.5px var(--font-mono); color: var(--muted); }
+.be-top .who b { color: var(--bright); font-weight: 600; }
+.be-top form { margin: 0; display: inline-flex; gap: var(--space-2); }
+.be-top button[aria-pressed="true"] { border-color: var(--sel-edge); background: var(--sel-bg); color: var(--cyan); }
+.be-body { display: flex; align-items: stretch; }
+.be-body > .be-nav { flex: none; min-height: calc(100vh - 56px); }
+.be-body > main { flex: 1; min-width: 0; max-width: 1040px; padding: var(--space-18) var(--space-28); }
+/* Phones: the menu folds behind the burger (a checkbox, so no script). */
+.burger { display: none; cursor: pointer; }
+/* the checkbox stays focusable for keyboards, out of sight; its focus shows on the burger */
+.nav-open { display: none; position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.nav-open:focus-visible + .be-top .burger { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.nav-open:checked + .be-top .burger { border-color: var(--sel-edge); background: var(--sel-bg); color: var(--cyan); }
+@media (max-width: 720px) {
+  .be-body { flex-direction: column; }
+  .be-body > .be-nav { display: none; width: auto; min-height: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .nav-open:checked ~ .be-body > .be-nav { display: block; }
+  .burger, .nav-open { display: inline-flex; }
+  .be-body > main { padding: var(--space-12) var(--space-16); }
+  /* one brand row (burger + name), then the person and their controls; the company and tagline go */
+  .be-top { gap: var(--space-8) var(--space-10); }
+  .be-top .by, .be-top .co { display: none; }
+  .be-top .who { flex-basis: 100%; margin-left: 0; }
+  .be-top .who .me { flex: 1; }
+}
+
+/* Un-migrated markup inside main already looks like the design system. */
+main h1 { margin: 0 0 var(--space-16); font: 600 20px/1.25 var(--font-sans); color: var(--bright); }
+main h2, main h3 { margin: var(--space-18) 0 var(--space-8); font: 600 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+main table:not(.be-table) { border-collapse: collapse; width: 100%; display: block; max-width: 100%; overflow-x: auto; }
+main th, main td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--hover); vertical-align: top; }
+main th { font: 600 11px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line2); }
+main tr:hover td { background: var(--hover); }
+main input, main select, main textarea { font: 13px var(--font-mono); padding: 5px 8px; border: 1px solid var(--edge); border-radius: var(--radius-md); background: var(--well); color: var(--bright); max-width: 100%; }
+main textarea { width: 100%; min-height: 8rem; font-family: var(--font-sans); }
+main input:focus, main select:focus, main textarea:focus { outline: none; border-color: var(--cyan); box-shadow: var(--shadow-focus); }
+main input[type="checkbox"], main input[type="radio"] { accent-color: var(--cyan); }
+main button { font: 500 12px var(--font-mono); padding: 5px 11px; border: 1px solid var(--edge); border-radius: var(--radius-md); background: var(--btn); color: var(--bright); cursor: pointer; }
+main button:hover { background: var(--btn2); border-color: var(--edge2); }
+main button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+main form.inline { display: inline; }
+main .muted { color: var(--muted); }
+main .error { border: 1px solid var(--bad-edge); border-left: 3px solid var(--bad); background: var(--bad-bg); padding: var(--space-10) var(--space-12); border-radius: var(--radius-md); margin-bottom: var(--space-16); }
+.scroll { overflow-x: auto; max-width: 100%; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); margin: var(--space-12) 0; }
+.row form { display: contents; }
+main form.inline-edit { display: flex; gap: var(--space-6); align-items: center; margin: 0; }
+/* The mark follows the device too when no theme is chosen. */
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .be-mark-dark { display: none; } :root:not([data-theme]) .be-mark-light { display: inline-block; } }
+/* Theme picker: icon-only buttons, square. */
+.be-btn.icon { padding: 4px 6px; line-height: 0; }
+.be-btn.icon svg { display: block; }

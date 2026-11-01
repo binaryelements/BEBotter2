@@ -59,6 +59,57 @@ describe("admin router", () => {
     expect(res.headers.get("location")).toContain("login.microsoftonline.com");
   });
 
+  it("serves the design system assets without a session, cacheable, with the right types", async () => {
+    for (const [file, type] of [["be/tokens.css", "text/css"], ["be/components.css", "text/css"], ["admin.css", "text/css"], ["be/be-mark-cyan.png", "image/png"]]) {
+      const res = await get(`/admin/assets/${file}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain(type);
+      expect(res.headers.get("cache-control")).not.toContain("no-store");
+    }
+    expect((await get("/admin/assets/nope.css")).status).not.toBe(200);
+  });
+
+  it("admin.css is versioned by its content, the design system files by their sync version", async () => {
+    const page = await (await get("/admin/people", as(admin))).text();
+    expect(page).toMatch(/admin\.css\?v=[0-9a-f]{8}"/);
+    expect(page).toMatch(/be\/tokens\.css\?v=\w{7}"/);
+  });
+
+  it("the theme link keeps the page's query string on the way back, and only within /admin", async () => {
+    const ok = await get("/admin/theme?set=dark&next=" + encodeURIComponent("/admin/bots/x?tab=actions"));
+    expect(ok.headers.get("location")).toBe("/admin/bots/x?tab=actions");
+    expect((await get("/admin/theme?set=dark&next=" + encodeURIComponent("//evil.example/admin"))).headers.get("location")).toBe("/admin");
+    expect((await get("/admin/theme?set=dark&next=" + encodeURIComponent("/admin/../health"))).headers.get("location")).toBe("/admin");
+  });
+
+  it("the theme link sets a Lax cookie on /admin and returns to the page; bad input is ignored", async () => {
+    const res = await get("/admin/theme?set=light&next=/admin/people");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/admin/people");
+    expect(res.headers.get("set-cookie")).toBe("theme=light; Path=/admin; SameSite=Lax; Max-Age=31536000");
+    const bad = await get("/admin/theme?set=red&next=//evil.example");
+    expect(bad.headers.get("location")).toBe("/admin");
+    expect(bad.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  it("pages carry the theme cookie, the company, the role and the current menu item; an invalid theme is ignored", async () => {
+    const page = await (await get("/admin/people", `${as(admin)}; theme=light`)).text();
+    expect(page).toContain('data-theme="light"');
+    expect(page).toContain('class="active" aria-current="page">People</a>');
+    expect(page).toContain("Ann</b> · admin");
+    expect(await (await get("/admin/people", `${as(admin)}; theme=bogus`)).text()).not.toContain("data-theme");
+    expect(await (await get("/admin/people", as(head))).text()).toContain("Hal</b> · head");
+  });
+
+  it("every screen renders inside the shell with its title and an active menu item", async () => {
+    for (const [path, title] of [["people", "People"], ["departments", "Departments"], ["assignments", "Assignments"], ["activity", "Activity"], ["knowledge", "Shared notes"], ["settings", "Settings"], ["bots", "Bots"]]) {
+      const page = await (await get(`/admin/${path}`, as(admin))).text();
+      expect(page).toContain('<body class="be">');
+      expect(page).toContain(`<h1>${title}</h1>`);
+      expect(page).toContain(`href="/admin/${path}" class="active"`);
+    }
+  });
+
   it("a GET without a session redirects to sign-in", async () => {
     for (const path of ["/admin", "/admin/people", "/admin/departments"]) {
       const res = await get(path);
@@ -101,13 +152,13 @@ describe("admin router", () => {
     expect((await get("/admin/people", sessionCookie(secretsKey, "tenant-1", "no-such-person"))).status).toBe(403);
   });
 
-  it("GET /admin sends admins to People and heads to Departments", async () => {
-    const a = await get("/admin", as(admin));
-    expect(a.status).toBe(303);
-    expect(a.headers.get("location")).toBe("/admin/people");
-    const h = await get("/admin", as(head));
-    expect(h.status).toBe(303);
-    expect(h.headers.get("location")).toBe("/admin/departments");
+  it("GET /admin lands admins and heads on the Overview; plain users are refused", async () => {
+    for (const who of [admin, head]) {
+      const res = await get("/admin", as(who));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("<h1>Overview</h1>");
+    }
+    expect((await get("/admin/overview", as(user))).status).toBe(403);
   });
 
   it("a POST with a missing or wrong csrf is 403", async () => {

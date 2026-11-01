@@ -67,7 +67,7 @@ describe("activity screen", () => {
     expect(t).toContain("mcp__x__y");
     expect(t).toContain("message");
     expect(t).toContain("confirmed by Hal");
-    expect(t).not.toContain(">Older<");
+    expect(t).not.toContain(">older<");
   });
 
   it("shows timings for message rows that have them", async () => {
@@ -76,7 +76,9 @@ describe("activity screen", () => {
     const a = await beginAction(db, { tenantId: T, chatId: "chat-1", definitionId: bot, personId: id.Sam, kind: "message", summary: "timed-row" });
     await completeAction(db, a, { status: "done", timings: { receivedAt: iso(0), engineReadyAt: iso(3), firstOutputAt: iso(16), firstToolAt: iso(17), resultAt: iso(22), sentAt: iso(23), tools: 2 } });
     const t = await (await get("/admin/activity", "Ann")).text();
-    expect(t).toContain("23.0s total: ready 3.0s / first 16.0s / tools 17.0s (2) / reply 22.0s");
+    expect(t).toContain('aria-label="total 23.0 s: engine ready 3.0 s, model and tools 19.0 s, delivery 1.0 s"');
+    expect(t).toContain("<li class=\"t2\">model and tools 19.0 s</li>");
+    for (const w of ["13.0", "82.6", "4.3"]) expect(t).toContain(`style="width:${w}%"`); // 3 + 19 + 1 of 23 s
   });
 
   it("filters combine", async () => {
@@ -132,11 +134,11 @@ describe("activity screen", () => {
   it("Older pages on to the next rows and ignores a bad before", async () => {
     for (let i = 0; i < 100; i++) await add("Eve", `bulk ${i}`, { at: new Date(Date.UTC(2020, 0, 1, 0, i)), chat: "chat-2" });
     const first = await (await get("/admin/activity", "Ann")).text();
-    const link = first.match(/href="([^"]+)">Older/)?.[1].replaceAll("&amp;", "&");
+    const link = first.match(/href="([^"]+)">older/)?.[1].replaceAll("&amp;", "&");
     expect(link).toContain("before=");
     const next = await (await get(link!, "Ann")).text();
     expect(next).toContain("bulk");
-    expect(next).not.toContain(">Older<");
+    expect(next).not.toContain(">older<");
     expect(first).not.toContain("2020-01-01T00:00");
     expect((await get("/admin/activity?before=nonsense", "Ann")).status).toBe(200);
   });
@@ -149,7 +151,7 @@ describe("activity screen", () => {
     while (path) {
       const t = await (await get(path, "Ann")).text();
       seen.push(...[...t.matchAll(/tie-\d+/g)].map((m) => m[0]));
-      path = t.match(/href="([^"]+)">Older/)?.[1].replaceAll("&amp;", "&");
+      path = t.match(/href="([^"]+)">older/)?.[1].replaceAll("&amp;", "&");
     }
     expect(seen.sort()).toEqual([...Array(105).keys()].map((i) => `tie-${i}`).sort());
   });

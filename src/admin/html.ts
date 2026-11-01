@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { fileURLToPath } from "node:url";
 import type { Actor } from "./access.js";
 import { isAdmin } from "./access.js";
 
@@ -22,53 +26,79 @@ export function html(strings: TemplateStringsArray, ...values: Value[]): SafeHtm
 /** Trusted markup only; never pass user input. */
 export const raw = (s: string) => new SafeHtml(s);
 
-const screens = [
-  { label: "Bots", path: "bots", head: false },
-  { label: "People", path: "people", head: true },
-  { label: "Departments", path: "departments", head: true },
-  { label: "Assignments", path: "assignments", head: false },
-  { label: "Activity", path: "activity", head: true },
-  { label: "Knowledge", path: "knowledge", head: true },
-  { label: "Settings", path: "settings", head: false },
+/** Per-request facts the shell needs but pages do not pass: set by the router. */
+export type Shell = { theme?: string; path: string; url?: string; company?: string };
+export const shell = new AsyncLocalStorage<Shell>();
+
+export const assetsDir = fileURLToPath(new URL("./assets/", import.meta.url));
+const version = readFileSync(`${assetsDir}be/VERSION`, "utf8").trim();
+
+export const themes = ["dark", "light"] as const;
+export const themeOf = (cookieHeader: string | undefined) => {
+  const v = /(?:^|;\s*)theme=(\w+)/.exec(cookieHeader ?? "")?.[1];
+  return themes.find((t) => t === v);
+};
+
+const groups = [
+  { name: "", items: [{ label: "Overview", path: "overview", head: true }] },
+  { name: "Bots", items: [{ label: "Bots", path: "bots", head: false }, { label: "Assignments", path: "assignments", head: false }, { label: "Shared notes", path: "knowledge", head: true }] },
+  { name: "People", items: [{ label: "People", path: "people", head: true }, { label: "Departments", path: "departments", head: true }] },
+  { name: "Audit", items: [{ label: "Activity", path: "activity", head: true }, { label: "Settings", path: "settings", head: false }] },
 ];
 
-const css = `
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;color:#111;background:#fff;line-height:1.45}
-header{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;padding:.75rem 1rem;border-bottom:1px solid #ddd}
-header nav{display:flex;flex-wrap:wrap;gap:1rem;flex:1}
-a{color:#111}
-header nav a{text-decoration:none}
-header nav a:hover{text-decoration:underline}
-main{padding:1rem;max-width:960px}
-h1{font-size:1.3rem;margin:0 0 1rem}
-table{border-collapse:collapse;width:100%}
-th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid #eee;vertical-align:top}
-th{font-weight:600;color:#555}
-input,select,textarea,button{font:inherit}
-input,select,textarea{border:1px solid #bbb;border-radius:4px;padding:.25rem .4rem}
-textarea{width:100%;min-height:8rem}
-button{border:1px solid #111;background:#111;color:#fff;border-radius:4px;padding:.25rem .75rem;cursor:pointer}
-button.secondary{background:#fff;color:#111}
-form.inline{display:inline}
-.muted{color:#666}
-.error{border:1px solid #111;padding:.5rem;margin-bottom:1rem}
-`;
+// The design system files change only on a re-sync (VERSION); the app's own stylesheet is versioned by its content.
+const appCss = createHash("sha1").update(readFileSync(`${assetsDir}admin.css`)).digest("hex").slice(0, 8);
+const href = (file: string) => `/admin/assets/${file}?v=${file === "admin.css" ? appCss : version}`;
+
+// 16px line icons in the text colour: a screen (follow the device), a sun, a moon
+const svg = (d: string) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const themeIcons: Record<string, string> = {
+  device: svg('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),
+  light: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  dark: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
+};
 
 export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csrf?: string }): string {
   const { actor } = opts;
-  const nav = actor ? screens.filter((s) => isAdmin(actor) || (s.head && actor.headOf.length > 0)) : [];
+  const ctx = shell.getStore();
+  const theme = ctx?.theme;
+  const visible = (s: { head: boolean }) => !!actor && (isAdmin(actor) || (s.head && actor.headOf.length > 0));
+  const menu = groups
+    .map((g) => ({ ...g, items: g.items.filter(visible) }))
+    .filter((g) => g.items.length > 0)
+    .map(
+      (g) => html`<div class="ng">${g.name ? html`<div class="nh">${g.name}</div>` : ""}${g.items.map((s) => {
+        const on = ctx?.path === `/admin/${s.path}` || (s.path === "overview" && ctx?.path === "/admin") || ctx?.path.startsWith(`/admin/${s.path}/`);
+        return html`<a href="/admin/${s.path}"${on ? raw(' class="active" aria-current="page"') : ""}>${s.label}</a>`;
+      })}</div>`,
+    );
+  const pick = (v: string, label: string) =>
+    html`<button class="be-btn sm icon" name="set" value="${v}" aria-label="${label}" title="${label}" aria-pressed="${String((theme ?? "device") === v)}">${raw(themeIcons[v])}</button>`;
   return html`<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${opts.title}</title><style>${raw(css)}</style></head>
-<body>
-<header><nav>${nav.map((s) => html`<a href="/admin/${s.path}">${s.label}</a>`)}</nav>${
-    actor ? html`<span class="muted">${actor.name}</span>` : ""
+<html lang="en"${theme ? raw(` data-theme="${theme}"`) : ""}>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${opts.title}</title><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"><link rel="stylesheet" href="${href("be/tokens.css")}"><link rel="stylesheet" href="${href("be/components.css")}"><link rel="stylesheet" href="${href("admin.css")}"></head>
+<body class="be">
+<input type="checkbox" id="nav-open" class="nav-open" aria-label="menu">
+<header class="be-top">${menu.length ? raw('<label for="nav-open" class="be-btn sm icon burger" title="menu"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></label>') : ""}<div class="be-brand"><img class="be-mark-dark" src="${href("be/be-mark-cyan.png")}" alt=""><img class="be-mark-light" src="${href("be/be-mark-red.png")}" alt="">TEAM BOTTER<span class="by">by Binary Elements</span></div><div class="who">${
+    ctx?.company ? html`<span class="co">${ctx.company}</span>` : ""
   }${
+    actor ? html`<span class="me"><b>${actor.name}</b> · ${isAdmin(actor) ? "admin" : "head"}</span>` : ""
+  }<form method="get" action="/admin/theme" aria-label="theme"><input type="hidden" name="next" value="${ctx?.url ?? ctx?.path ?? "/admin"}">${pick("device", "follow device")}${pick("light", "light")}${pick("dark", "dark")}</form>${
     actor && opts.csrf
-      ? html`<form class="inline" method="post" action="/admin/auth/logout"><input type="hidden" name="csrf" value="${opts.csrf}"><button class="secondary">Sign out</button></form>`
+      ? html`<form method="post" action="/admin/auth/logout"><input type="hidden" name="csrf" value="${opts.csrf}"><button class="be-btn sm">sign out</button></form>`
       : ""
-  }</header>
-<main>${opts.body}</main>
+  }</div></header>
+<div class="be-body">${menu.length ? html`<nav class="be-nav" aria-label="admin">${menu}</nav>` : ""}<main>${opts.body}</main></div>
 </body>
 </html>`.value;
 }
+
+const chipClass: Record<string, string> = { done: "g", pending: "w", denied: "b", failed: "b", changed: "c" };
+/** A status always shows its word; colour only adds to it. */
+export const chip = (status: string) => html`<span class="be-chip ${chipClass[status] ?? ""}">${status}</span>`;
+
+export const pageHead = (title: string, act?: SafeHtml) =>
+  html`<header class="be-pagehead"><div class="pt"><h1>${title}</h1></div>${act ? html`<div class="act">${act}</div>` : ""}</header>`;
+
+/** A table in a box that scrolls sideways on a phone instead of the page. */
+export const scroll = (table: SafeHtml) => html`<div class="scroll">${table}</div>`;

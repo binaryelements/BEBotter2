@@ -70,6 +70,8 @@ describe("secret link page", () => {
     expect(page.headers.get("cache-control")).toBe("no-store");
     expect(page.headers.get("referrer-policy")).toBe("no-referrer");
     const text = await page.text();
+    expect(text).toContain("be-pagehead");
+    expect(text).not.toContain("be-nav");
     expect(text).toContain("helpdesk");
     expect(text).toContain("https://api.example.test/v1");
     expect(text).toContain('type="password"');

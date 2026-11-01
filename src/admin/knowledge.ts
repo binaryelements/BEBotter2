@@ -5,7 +5,8 @@ import type { Db } from "../db/client.js";
 import { botDefinitions, chats, people } from "../db/schema.js";
 import { deleteNote, listNotes, noteHistory, readNote, rollbackNote, searchNotes, writeNote } from "../knowledge/store.js";
 import { isAdmin } from "./access.js";
-import { html, layout } from "./html.js";
+import { armedPage, isArmed } from "./arm.js";
+import { html, layout, pageHead, scroll } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 
@@ -28,11 +29,11 @@ export function knowledgeRoutes(db: Db, key: Buffer): Router {
       );
       res.type("html").send(
         layout({
-          title: "Knowledge",
-          body: html`<h1>Knowledge</h1>
-<form method="get" action="/admin/knowledge"><input name="q" value="${query}" aria-label="Search"> <button>Search</button></form>
-<table><thead><tr><th>Note</th><th>Version</th><th>Updated</th></tr></thead><tbody>${tr}</tbody></table>
-${isAdmin(actor) ? html`<form method="get" action="/admin/knowledge/note"><input name="path" placeholder="New note path" aria-label="New note path"> <button>New</button></form>` : ""}`,
+          title: "Shared notes",
+          body: html`${pageHead("Shared notes")}
+<form class="row" method="get" action="/admin/knowledge"><input class="be-input" name="q" value="${query}" aria-label="Search" placeholder="search notes"> <button class="be-btn">search</button></form>
+${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Note</th><th>Version</th><th>Updated</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">No notes yet.</div>`}
+${isAdmin(actor) ? html`<form class="row" method="get" action="/admin/knowledge/note"><input class="be-input" name="path" placeholder="new note path" aria-label="New note path"> <button class="be-btn primary">add note</button></form>` : ""}`,
           actor,
           csrf,
         }),
@@ -63,20 +64,20 @@ ${isAdmin(actor) ? html`<form method="get" action="/admin/knowledge/note"><input
         const where = (h.chatId && chat.get(h.chatId)) || "—";
         const roll =
           admin && !h.deleted
-            ? html`<form method="post" action="/admin/knowledge/rollback"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}${field("version", String(h.version))}<button>Roll back</button></form>`
+            ? html`<form method="post" action="/admin/knowledge/rollback"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}${field("version", String(h.version))}<button class="be-btn sm">roll back</button></form>`
             : "";
         return html`<tr><td>${h.version}${h.deleted ? " (deleted)" : ""}</td><td>${who}</td><td>${where}</td><td>${h.createdAt.toISOString().slice(0, 16)}</td><td>${roll}</td></tr>`;
       });
       res.type("html").send(
         layout({
           title: path,
-          body: html`<h1>${path}</h1>
+          body: html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/knowledge">shared notes</a> / <span aria-current="page">${path}</span></nav><h1>${path}</h1></div></header>
 ${note && !admin ? html`<pre>${note.body}</pre>` : ""}
 ${admin
-  ? html`<form method="post" action="/admin/knowledge/note"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<textarea name="body" rows="16" cols="80" aria-label="Note">${note?.body ?? ""}</textarea><br><button>Save</button></form>
-${note ? html`<form method="post" action="/admin/knowledge/delete"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<button>Delete</button></form>` : ""}`
+  ? html`<form method="post" action="/admin/knowledge/note"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<textarea class="be-textarea" name="body" rows="16" aria-label="Note">${note?.body ?? ""}</textarea><p><button class="be-btn primary">save</button></p></form>
+${note ? html`<form method="post" action="/admin/knowledge/delete"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<button class="be-btn danger">delete</button></form>` : ""}`
   : ""}
-<table><thead><tr><th>Version</th><th>Author</th><th>Chat</th><th>Time</th><th></th></tr></thead><tbody>${tr}</tbody></table>`,
+${scroll(html`<table class="be-table"><thead><tr><th>Version</th><th>Author</th><th>Chat</th><th>Time</th><th></th></tr></thead><tbody>${tr}</tbody></table>`)}`,
           actor,
           csrf,
         }),
@@ -90,6 +91,7 @@ ${note ? html`<form method="post" action="/admin/knowledge/delete"><input type="
       wrap(async (req, res) => {
         const { actor } = adminOf(res);
         if (!isAdmin(actor)) return page(res, 403, "Not allowed.");
+        if (route === "/knowledge/delete" && !isArmed(req)) return armedPage(req, res, { title: "Delete note?", button: "confirm delete?", back: `/admin/knowledge/note?path=${encodeURIComponent(str(bodyOf(req).path))}` });
         await run(req, actor.tenantId, { personId: actor.personId });
         const path = str(bodyOf(req).path);
         res.redirect(303, route === "/knowledge/delete" ? "/admin/knowledge" : `/admin/knowledge/note?path=${encodeURIComponent(path)}`);
