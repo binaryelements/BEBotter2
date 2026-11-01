@@ -34,8 +34,15 @@ export function teamsStream(ctx: TurnContext): TeamsStream {
       let landed = false;
       const isFinal = (a: { type?: string; text?: string; attachments?: unknown[] }) =>
         a.type === "message" && (a.text ?? "") === finalText && !!a.attachments?.length === !!card;
-      const watch = async <T>(activities: { type?: string; text?: string; attachments?: unknown[] }[], next: () => Promise<T>) => {
-        const r = await next();
+      // what the stream sent after end, without text: why a final message did not land is otherwise invisible
+      const sent: string[] = [];
+      type Sent = { type?: string; text?: string; attachments?: unknown[]; entities?: { type?: string; streamType?: string }[] };
+      const watch = async <T>(activities: Sent[], next: () => Promise<T>) => {
+        for (const a of activities) sent.push(`${a.type}/${a.entities?.find((e) => e.type === "streaminfo")?.streamType ?? "-"}/${a.text === finalText ? "same" : `len${a.text?.length ?? 0}`}`);
+        const r = await next().catch((e: unknown) => {
+          sent.push(`refused: ${e instanceof Error ? e.message.slice(0, 200) : "unknown"}`);
+          throw e;
+        });
         if (activities.some(isFinal)) landed = true;
         return r;
       };
@@ -47,7 +54,7 @@ export function teamsStream(ctx: TurnContext): TeamsStream {
         ctx.streamingResponse.setAttachments([attachment]); // the final message takes its attachments from here
       } else ctx.streamingResponse.setFinalMessage(MessageFactory.text(finalText));
       const result = await ctx.streamingResponse.endStream();
-      if (result !== StreamingResponseResult.Success || !landed) throw new Error(`stream ended: ${landed ? result : "final message not sent"}`);
+      if (result !== StreamingResponseResult.Success || !landed) throw new Error(`stream ended: ${landed ? result : "final message not sent"} [${sent.join(", ") || "nothing sent"}]`);
     },
   };
 }
