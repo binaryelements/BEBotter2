@@ -278,7 +278,7 @@ knowledge base per tenant, read and written by all its bots. Knowledge must be k
 Martin: "Each bot that is assigned into a group chat - need to keep summary of the conversation it
 was discussed in the chat. No need for @bot." "Memory should be searchable." "In Admin tool, we can
 see summary daily, monthly, etc." "Anything directly asked, obviously take priority in memory."
-"can opt out of being listened to .. personal bots also summarised. can opt out also." Store: "pg".
+"personal bots also summarised. can opt out also." Store: "pg".
 
 - **Listening.** The Teams app asks for the resource-specific permission to read messages in chats
   it is added to, so a bot assigned to a group chat receives every message, not only @mentions.
@@ -301,11 +301,12 @@ see summary daily, monthly, etc." "Anything directly asked, obviously take prior
   answered) becomes a memory item at once, marked *direct*, without waiting for the summary. Search
   ranks direct, then decisions and actions, then general discussion; newer beats older on the same
   topic. **[M]**
-- **Opt-out.** Anyone in a group chat can tell the bot to stop listening, and an admin can switch it
-  off per chat; a person can opt their personal chat out by telling their bot. Opting out deletes
-  what was stored for that chat (messages, summaries, memory items), it does not just hide it. The
-  bot still answers mentions and direct requests in an opted-out chat; it stores nothing else.
-  **[M]**
+- **Opt-out.** Group chats are always listened to; nobody in the chat can switch it off, only an
+  admin, per chat, on the admin page (Martin: "no group chat cannot say this - this is default on.
+  Only admin can remove"). A person can opt their own personal chat out by telling their bot
+  ("stop listening"). Opting out deletes what was stored for that chat (messages, summaries,
+  memory items), it does not just hide it. The bot still answers mentions and direct requests in an
+  opted-out chat; it stores nothing else. **[M]**
 - **Admin.** A Summaries screen: pick a chat or all chats and a period (day, week, month); see the
   summary, decisions and direct asks, each linking to Activity. Admins see every chat, heads their
   departments' chats only, as elsewhere. Admins can delete a chat's memory and switch listening per
