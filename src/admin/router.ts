@@ -12,7 +12,7 @@ import { assignmentRoutes } from "./assignments.js";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { botRoutes } from "./bots.js";
 import { adminOf, wrap } from "./http.js";
-import { assetsDir, shell, themeOf, themes } from "./html.js";
+import { assetsDir, html, layout, shell, themeOf, themes } from "./html.js";
 import { knowledgeRoutes } from "./knowledge.js";
 import { oidcRoutes, page } from "./oidc.js";
 import type { OidcDeps } from "./oidc.js";
@@ -50,6 +50,15 @@ export function adminRouter(deps: AdminDeps): Router {
     withShell(req, res, next);
   });
   router.use(oidcRoutes(deps));
+  // a page of our own before Microsoft's: a bare redirect to a Microsoft login reads as phishing to browsers' safety checks
+  router.get("/sign-in", (_req, res) => {
+    res.type("html").send(
+      layout({
+        title: "Sign in · BE Team Botter",
+        body: html`<h1>Sign in</h1><p>The admin site for BE Team Botter, Binary Elements' bots in Microsoft Teams.</p><p><a class="be-btn primary" href="/admin/auth/login">sign in with Microsoft</a></p>`,
+      }),
+    );
+  });
   router.use(express.urlencoded({ extended: false }));
   router.use(withShell);
   // before the admin guard: any signed-in person of the tenant may open their own secret link
@@ -60,7 +69,7 @@ export function adminRouter(deps: AdminDeps): Router {
     wrap(async (req, res, next) => {
       const safe = req.method === "GET" || req.method === "HEAD";
       const session = readSession(sKey, req.headers.cookie);
-      if (!session) return safe ? res.redirect(303, "/admin/auth/login") : page(res, 403, "Not allowed.");
+      if (!session) return safe ? res.redirect(303, "/admin/sign-in") : page(res, 403, "Not allowed.");
       const actor = await loadActor(db, session.tenantId, session.personId);
       if (!actor || !mayEnter(actor)) return page(res, 403, "You do not have access to the admin page.");
       if (!safe && !csrfOk(session, (req.body ?? {}) as Record<string, unknown>)) return page(res, 403, "Not allowed.");

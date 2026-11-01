@@ -68,6 +68,7 @@ startServer(app, {
       onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
     }));
     express.get("/health", (_req, res) => void res.json({ ok: true }));
+    express.get("/", (_req, res) => res.redirect(302, "/admin"));
   },
 });
 

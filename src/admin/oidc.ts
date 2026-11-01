@@ -72,7 +72,9 @@ export function oidcRoutes(deps: OidcDeps): Router {
       try {
         const { id_token } = await deps.exchangeCode(code, login.verifier, redirectUri);
         claims = await deps.verifyIdToken(id_token, login.nonce);
-      } catch {
+      } catch (e) {
+        // Microsoft's answer names the cause (an AADSTS code); it carries no secret
+        console.error("admin sign-in: code exchange or token check failed:", e instanceof Error ? e.message.slice(0, 300) : "unknown");
         return page(res, 400, "Sign-in failed. Start again.");
       }
       if (claims.tid !== config.teams.tenantId) return page(res, 403, "This account belongs to another organization.");
@@ -99,7 +101,7 @@ export function oidcRoutes(deps: OidcDeps): Router {
     const session = readSession(sKey, req.headers.cookie);
     if (!session || !csrfOk(session, (req.body ?? {}) as Record<string, unknown>)) return page(res, 403, "Not allowed.");
     res.append("Set-Cookie", cookie(SESSION_COOKIE, "", 0));
-    res.redirect(303, "/admin/auth/login");
+    res.redirect(303, "/admin/sign-in");
   });
 
   return router;

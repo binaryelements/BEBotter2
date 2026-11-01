@@ -183,7 +183,7 @@ describe("oidc", () => {
     it("clears the session with the right csrf", async () => {
       const res = await logout(`bb_session=${session()}`, "csrf=tok");
       expect(res.status).toBe(303);
-      expect(res.headers.get("location")).toBe("/admin/auth/login");
+      expect(res.headers.get("location")).toBe("/admin/sign-in");
       expect(setCookie(res, "bb_session")).toMatch(/Max-Age=0/);
     });
 

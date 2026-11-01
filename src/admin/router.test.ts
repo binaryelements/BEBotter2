@@ -114,8 +114,16 @@ describe("admin router", () => {
     for (const path of ["/admin", "/admin/people", "/admin/departments"]) {
       const res = await get(path);
       expect(res.status).toBe(303);
-      expect(res.headers.get("location")).toBe("/admin/auth/login");
+      expect(res.headers.get("location")).toBe("/admin/sign-in");
     }
+  });
+
+  it("the sign-in page says what the site is and links to Microsoft sign-in, without a session", async () => {
+    const res = await get("/admin/sign-in");
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("BE Team Botter");
+    expect(body).toContain('href="/admin/auth/login"');
   });
 
   it("a forged or expired session is treated as none", async () => {
