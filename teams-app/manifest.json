@@ -10,12 +10,12 @@
     "termsOfUseUrl": "https://www.binaryelements.com/terms"
   },
   "name": {
-    "short": "BE Team Botter",
-    "full": "BE Team Botter by Binary Elements"
+    "short": "BE Teammate",
+    "full": "BE Teammate by Binary Elements"
   },
   "description": {
     "short": "Your team bots in Teams, by Binary Elements.",
-    "full": "BE Team Botter puts role bots such as IT Support and Marketing into Teams chats. They answer questions, use the systems they are given access to, and ask before changing anything."
+    "full": "BE Teammate puts role bots such as IT Support and Marketing into Teams chats. They answer questions, use the systems they are given access to, and ask before changing anything."
   },
   "icons": {
     "color": "color.png",

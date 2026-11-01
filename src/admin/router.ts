@@ -54,8 +54,8 @@ export function adminRouter(deps: AdminDeps): Router {
   router.get("/sign-in", (_req, res) => {
     res.type("html").send(
       layout({
-        title: "Sign in · BE Team Botter",
-        body: html`<h1>Sign in</h1><p>The admin site for BE Team Botter, Binary Elements' bots in Microsoft Teams.</p><p><a class="be-btn primary" href="/admin/auth/login">sign in with Microsoft</a></p>`,
+        title: "Sign in · BE Teammate",
+        body: html`<h1>Sign in</h1><p>The admin site for BE Teammate, Binary Elements' bots in Microsoft Teams.</p><p><a class="be-btn primary" href="/admin/auth/login">sign in with Microsoft</a></p>`,
       }),
     );
   });
