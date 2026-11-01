@@ -151,7 +151,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
         ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
         ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
-        ...conn.servers,
+        ...(definition.identity === "person" ? {} : conn.servers),
       },
       canUseTool,
       hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },

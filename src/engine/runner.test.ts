@@ -651,6 +651,18 @@ describe("runTurn", () => {
     expect(requests.map((r) => [r.toolName, r.input])).toEqual([["mcp__conn-desk__close_ticket", { id: 1 }]]);
   });
 
+  it("a person definition gets no linked connection, even one linked before Personal refused links", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const { connection } = await requestConnection({ db, ssh: fakeSsh(), secretsKey: key }, "t1", {
+      kind: "mcp", name: "desk", target: "https://mcp.example.test/mcp", mode: "read-only", config: { headerName: "X-Api-Key", readOnlyTools: ["list_tickets"] }, definitionId: definition.id, personId: person.id,
+    });
+    await db.update(connections).set({ status: "active", secretCipher: encrypt(key, "mcp-tok") }).where(eq(connections.id, connection.id));
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: [] }, person, text: "x", askConfirmation: async () => {} });
+    expect(Object.keys(q.seen[0]!.mcpServers!)).not.toContain("conn-desk");
+  });
+
   it("an active mailbox attaches the mail server with the bot's key; sends ask, reads do not; a saved server named mail is skipped", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
