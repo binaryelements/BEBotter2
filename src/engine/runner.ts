@@ -40,6 +40,8 @@ export type RunnerDeps = {
   agentmailUrl?: string;
   /** For http connections and verifying mcp connections. */
   fetchFn: typeof fetch;
+  /** A PDF's text, for attachments the person's assistant opens; without it PDFs give their details only. */
+  readDocument?: (pdfBase64: string) => Promise<string>;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
   /** Warm engine processes per chat and bot; without it every turn starts its own. */

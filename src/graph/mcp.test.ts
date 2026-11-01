@@ -22,9 +22,9 @@ function graph(answers: Record<string, () => Response> = {}) {
 }
 const json = (v: unknown, status = 200) => () => new Response(JSON.stringify(v), { status });
 
-function server(fetchFn: typeof fetch, capabilities: readonly GraphCapability[] = GRAPH_CAPABILITIES, token: () => Promise<string | undefined> = async () => TOKEN) {
+function server(fetchFn: typeof fetch, capabilities: readonly GraphCapability[] = GRAPH_CAPABILITIES, token: () => Promise<string | undefined> = async () => TOKEN, readDocument?: (pdf: string) => Promise<string>) {
   const signInLost = vi.fn();
-  const s = m365McpServer({ fetchFn, sleep: async () => {} }, { graphToken: token, signInLost }, capabilities);
+  const s = m365McpServer({ fetchFn, sleep: async () => {}, ...(readDocument ? { readDocument } : {}) }, { graphToken: token, signInLost }, capabilities);
   const tools = (s.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
   return {
     signInLost,
@@ -43,9 +43,9 @@ describe("m365 mcp", () => {
   it("offers only the tools of the definition's capabilities", () => {
     const g = graph();
     expect(server(g.fetchFn).names).toEqual(
-      ["create_event", "find_free_time", "list_chats", "list_events", "list_mail", "read_chat", "read_file", "read_mail", "reply_mail", "respond_event", "search_files", "search_mail", "send_mail", "upload_file"].sort(),
+      ["create_event", "find_free_time", "list_chats", "list_events", "list_mail", "read_attachment", "read_chat", "read_file", "read_mail", "reply_mail", "respond_event", "search_files", "search_mail", "send_mail", "upload_file"].sort(),
     );
-    expect(server(g.fetchFn, ["mail.read"]).names).toEqual(["list_mail", "read_mail", "search_mail"]);
+    expect(server(g.fetchFn, ["mail.read"]).names).toEqual(["list_mail", "read_attachment", "read_mail", "search_mail"]);
     expect(server(g.fetchFn, ["calendar.read", "files.write"]).names).toEqual(["find_free_time", "list_events", "upload_file"]);
     expect(server(g.fetchFn, []).names).toEqual([]);
   });
@@ -73,6 +73,46 @@ describe("m365 mcp", () => {
     expect(g.seen[3]!.headers.Prefer).toBe('outlook.body-content-type="text"');
     expect(read.body).toHaveLength(20_000);
     expect(read.preview).toBeUndefined();
+  });
+
+  it("read_mail lists attachments; read_attachment reads text, PDFs through the reader, and images as images", async () => {
+    const file = (name: string, contentType: string, content: string) => json({ "@odata.type": "#microsoft.graph.fileAttachment", id: "a1", name, contentType, size: content.length, contentBytes: Buffer.from(content).toString("base64") });
+    const g = graph({
+      "GET /me/messages/m1": json({ ...message, hasAttachments: true, body: { content: "see attached" } }),
+      "GET /me/messages/m1/attachments": json({ value: [{ id: "a1", name: "inv.pdf", contentType: "application/pdf", size: 9, isInline: false }] }),
+      "GET /me/messages/m1/attachments/pdf": file("inv.pdf", "application/pdf", "%PDF-1.4 x"),
+      "GET /me/messages/m1/attachments/txt": file("notes.csv", "text/csv", "a,b\n1,2"),
+      "GET /me/messages/m1/attachments/png": file("logo.png", "image/png", "PNGDATA"),
+      "GET /me/messages/m1/attachments/zip": file("x.zip", "application/zip", "PK"),
+      "GET /me/messages/m1/attachments/mail": json({ "@odata.type": "#microsoft.graph.itemAttachment", id: "a2", name: "Fwd", size: 10 }),
+    });
+    const readDocument = vi.fn(async () => "Invoice 777: internet 99.00");
+    const s = server(g.fetchFn, ["mail.read"], undefined, readDocument);
+    const read = out(await s.call("read_mail", { id: "m1" })) as { attachments: unknown };
+    expect(read.attachments).toEqual([{ id: "a1", name: "inv.pdf", type: "application/pdf", size: 9 }]);
+    expect(g.seen[1]!.url.searchParams.get("$select")).toBe("id,name,contentType,size,isInline");
+
+    expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "pdf" }))).toMatchObject({ name: "inv.pdf", text: "Invoice 777: internet 99.00" });
+    expect(readDocument).toHaveBeenCalledWith(Buffer.from("%PDF-1.4 x").toString("base64"));
+    expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "txt" }))).toMatchObject({ text: "a,b\n1,2" });
+    expect((await s.call("read_attachment", { id: "m1", attachmentId: "png" })).content).toEqual([{ type: "image", data: Buffer.from("PNGDATA").toString("base64"), mimeType: "image/png" }]);
+    expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "zip" }))).toMatchObject({ note: "not readable as text" });
+    expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "mail" }))).toMatchObject({ note: "an attached email or link, not a file" });
+    expect(await s.call("read_attachment", { id: "..", attachmentId: "pdf" })).toMatchObject({ isError: true });
+  });
+
+  it("a PDF attachment without a reader gives its details only, and a reader's failure says nothing of the document", async () => {
+    const pdf = json({ "@odata.type": "#microsoft.graph.fileAttachment", id: "a1", name: "inv.pdf", contentType: "application/pdf", size: 3, contentBytes: Buffer.from("PDF").toString("base64") });
+    const g = graph({ "GET /me/messages/m1/attachments/a1": pdf });
+    expect(out(await server(g.fetchFn, ["mail.read"]).call("read_attachment", { id: "m1", attachmentId: "a1" }))).toMatchObject({ note: "not readable as text" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await server(g.fetchFn, ["mail.read"], undefined, async () => { throw new Error("secret invoice text"); }).call("read_attachment", { id: "m1", attachmentId: "a1" });
+      expect(r).toMatchObject({ isError: true, content: [{ text: "Microsoft 365 error" }] });
+      expect(JSON.stringify(spy.mock.calls)).not.toContain("secret invoice text");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("refuses . and .. as ids, which would climb the Graph path", async () => {

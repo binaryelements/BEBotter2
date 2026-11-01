@@ -6,6 +6,7 @@ import { startAuditPruning } from "./audit/audit.js";
 import { dockerodeClient } from "./computer/docker.js";
 import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
+import { documentReader } from "./engine/read-document.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { ensurePersonalDefinition } from "./bots/definitions.js";
 import { connect } from "./db/client.js";
@@ -45,6 +46,7 @@ const runnerDeps: RunnerDeps = {
   publicUrl: config.publicUrl,
   agentmailUrl: config.agentmail?.url,
   fetchFn: fetch,
+  readDocument: documentReader(query, config.defaultModel, config.filesDir),
   live,
 };
 const mail = config.agentmail
