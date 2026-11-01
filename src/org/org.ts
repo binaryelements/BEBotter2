@@ -1,5 +1,4 @@
 import { and, eq, sql } from "drizzle-orm";
-import { ensurePersonalDefinition } from "../bots/definitions.js";
 import { chats, people, tenants } from "../db/schema.js";
 import type { Chat, Person, Tenant } from "../db/schema.js";
 import type { Db } from "../db/client.js";
@@ -8,13 +7,11 @@ import { DirectoryError } from "./directory.js";
 
 /** A new tenant gets an empty name until one is known; an existing name is kept when none is given. */
 export async function upsertTenant(db: Db, { id, name }: { id: string; name?: string }): Promise<Tenant> {
-  const [created] = await db.insert(tenants).values({ id, name: name ?? "" }).onConflictDoNothing().returning();
-  if (created) {
-    await ensurePersonalDefinition(db, id);
-    return created;
-  }
-  if (name !== undefined) await db.update(tenants).set({ name }).where(eq(tenants.id, id));
-  const [row] = await db.select().from(tenants).where(eq(tenants.id, id));
+  const [row] = await db
+    .insert(tenants)
+    .values({ id, name: name ?? "" })
+    .onConflictDoUpdate({ target: tenants.id, set: { name: name ?? sql`${tenants.name}` } })
+    .returning();
   return row;
 }
 

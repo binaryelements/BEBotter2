@@ -25,7 +25,9 @@ import { sendToChat } from "./teams/proactive.js";
 loadEnvFile();
 const config = loadConfig(process.env);
 const db = await connect(config.databaseUrl);
-for (const t of await db.select({ id: tenants.id }).from(tenants)) await ensurePersonalDefinition(db, t.id, config.defaultModel);
+for (const t of await db.select({ id: tenants.id }).from(tenants)) {
+  await ensurePersonalDefinition(db, t.id, config.defaultModel).catch((e) => console.error(`personal assistant for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
+}
 const confirmations = new Confirmations();
 // operational limits: an idle chat's engine stops after 60 minutes, and at most 20 stay warm
 // engines stay up until `max` evicts the least recently used (~310 MB each); restarts re-warm chats used in the last day

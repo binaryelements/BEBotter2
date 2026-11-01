@@ -62,19 +62,21 @@ export const PERSONAL_PERSONA =
   "You are the personal assistant of the person you are talking to. You act as them in Microsoft 365: their mail, calendar, files and Teams chats. Be brief. Before you send, reply, book, accept or save anything, say exactly what you will do; the person confirms it in the chat.";
 
 /** One built-in Personal definition per tenant; safe to call again and concurrently. */
-export async function ensurePersonalDefinition(db: Db, tenantId: string, defaultModel = "claude-haiku-5-5"): Promise<BotDefinition> {
+export async function ensurePersonalDefinition(db: Db, tenantId: string, defaultModel: string): Promise<BotDefinition> {
   const model = (await getTenantSettings(db, tenantId)).defaultModel ?? defaultModel;
   await db
     .insert(botDefinitions)
     .values({ id: crypto.randomUUID(), tenantId, name: "personal", label: "My assistant", persona: PERSONAL_PERSONA, model, webSearch: false, computer: false, identity: "person", graph: [...GRAPH_CAPABILITIES], mcpServers: [] })
     .onConflictDoNothing({ target: [botDefinitions.tenantId, botDefinitions.name] });
   const [row] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.name, "personal")));
+  if (row.identity !== "person") throw new DirectoryError('A bot named "personal" already exists; rename it so the built-in Personal assistant can be created');
   return row;
 }
 
 export async function assignToChat(db: Db, chatId: string, definitionId: string): Promise<void> {
   const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(eq(botDefinitions.id, definitionId));
   if (def?.identity === "person") {
+    // a personal chat with no recorded owner passes until the owner is recorded on the first message
     const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId));
     if (chat?.type !== "personal") throw new DirectoryError("A personal assistant works only in a one-to-one chat");
     if (chat.owner) {

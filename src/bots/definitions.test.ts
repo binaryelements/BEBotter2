@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
-import { mayUseDefinition } from "../admin/access.js";
+import { eq, sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
+import { mayUseDefinition } from "../admin/access.js";
 import { botDefinitions, chats, people, tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
@@ -156,7 +156,7 @@ describe("the Personal definition", () => {
   it("is created once per tenant, even when ensured twice at the same time", async () => {
     const db = await testDb();
     await upsertTenant(db, { id: "t1" });
-    const [a, b] = await Promise.all([ensurePersonalDefinition(db, "t1"), ensurePersonalDefinition(db, "t1")]);
+    const [a, b] = await Promise.all([ensurePersonalDefinition(db, "t1", "m"), ensurePersonalDefinition(db, "t1", "m")]);
     expect(a.id).toBe(b.id);
     expect((await db.select().from(botDefinitions).where(eq(botDefinitions.name, "personal"))).length).toBe(1);
     expect(a).toMatchObject({ label: "My assistant", identity: "person", computer: false });
@@ -167,21 +167,27 @@ describe("the Personal definition", () => {
     const db = await testDb();
     await db.insert(tenants).values({ id: "t2", name: "", defaultModel: "m-tenant" });
     expect((await ensurePersonalDefinition(db, "t2", "m-config")).model).toBe("m-tenant");
-    await upsertTenant(db, { id: "t3" });
-    await db.delete(botDefinitions).where(eq(botDefinitions.tenantId, "t3"));
+    await db.insert(tenants).values({ id: "t3", name: "" });
     expect((await ensurePersonalDefinition(db, "t3", "m-config")).model).toBe("m-config");
   });
 
-  it("reads ordinary definitions as service", async () => {
+  it("reads rows saved before identity existed as service", async () => {
     const db = await testDb();
-    const def = await upsertDefinition(db, Buffer.alloc(32), "t1", { name: "plain", label: "Plain", persona: "p" });
-    expect(def).toMatchObject({ identity: "service", graph: [] });
+    await upsertTenant(db, { id: "t1" });
+    await db.execute(sql`insert into bot_definitions (id, tenant_id, name, label, persona, model, web_search, computer, mcp_servers) values ('old', 't1', 'old', 'Old', 'p', 'm', false, false, '[]'::jsonb)`);
+    expect(await getDefinition(db, "t1", "old")).toMatchObject({ identity: "service", graph: [] });
+  });
+
+  it("refuses to adopt a service bot that already took the name", async () => {
+    const db = await testDb();
+    await upsertDefinition(db, Buffer.alloc(32), "t1", { name: "personal", label: "Mine", persona: "p" });
+    await expect(ensurePersonalDefinition(db, "t1", "m")).rejects.toThrow(/already exists/);
   });
 
   it("is usable only by people with the flag on", async () => {
     const db = await testDb();
     await upsertTenant(db, { id: "t1" });
-    const def = await ensurePersonalDefinition(db, "t1");
+    const def = await ensurePersonalDefinition(db, "t1", "m");
     const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
     expect(await mayUseDefinition(db, "t1", p.id, def.id)).toBe(false);
     await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
@@ -191,7 +197,7 @@ describe("the Personal definition", () => {
   it("is assigned only to a one-to-one chat whose owner has the flag", async () => {
     const db = await testDb();
     await upsertTenant(db, { id: "t1" });
-    const def = await ensurePersonalDefinition(db, "t1");
+    const def = await ensurePersonalDefinition(db, "t1", "m");
     const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
     await upsertChat(db, { id: "g", tenantId: "t1", conversationType: "groupChat" });
     await upsertChat(db, { id: "dm", tenantId: "t1", conversationType: "personal" });
