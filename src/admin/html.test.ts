@@ -32,7 +32,7 @@ describe("html", () => {
     const page = layout({ title: "T", body: html`x`, actor: actor({ role: "admin" }), csrf: "tok" });
     expect(page).toContain('<body class="be">');
     for (const f of ["be/tokens.css", "be/components.css", "admin.css"]) expect(page).toMatch(new RegExp(`href="/admin/assets/${f}\\?v=\\w+"`));
-    expect(page).toContain("TEAM BOTTER");
+    expect(page).toContain("TEAMMATE");
     expect(page).toContain("by Binary Elements");
     expect(page).toContain("be-mark-dark");
     expect(page).toContain("be-mark-light");

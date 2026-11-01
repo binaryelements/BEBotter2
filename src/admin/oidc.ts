@@ -26,7 +26,7 @@ const random = () => randomBytes(32).toString("base64url");
 const safeReturn = (v: unknown): v is string => typeof v === "string" && /^\/admin(\/[A-Za-z0-9_-]+)+$/.test(v);
 
 export function page(res: Response, status: number, message: string) {
-  res.status(status).type("html").send(layout({ title: "BE Botter admin", body: html`<p>${message}</p>` }));
+  res.status(status).type("html").send(layout({ title: "BE Teammate admin", body: html`<p>${message}</p>` }));
 }
 
 export function oidcRoutes(deps: OidcDeps): Router {
