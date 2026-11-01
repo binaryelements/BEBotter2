@@ -273,6 +273,46 @@ knowledge base per tenant, read and written by all its bots. Knowledge must be k
 - The admin page shows each bot's address and can **remove** the mailbox (revoke the key, remove the webhook, switch the inbox off) and **restore** it. BE AgentMail cannot delete an inbox, so a removed address stays reserved.
 - Personal bots keep the person's own Microsoft 365 mail and calendar through Graph SSO (4.4); this section is about role bots' own addresses.
 
+### 4.12 Chat memory and summaries (Martin, 2026-11-01)
+
+Martin: "Each bot that is assigned into a group chat - need to keep summary of the conversation it
+was discussed in the chat. No need for @bot." "Memory should be searchable." "In Admin tool, we can
+see summary daily, monthly, etc." "Anything directly asked, obviously take priority in memory."
+"can opt out of being listened to .. personal bots also summarised. can opt out also." Store: "pg".
+
+- **Listening.** The Teams app asks for the resource-specific permission to read messages in chats
+  it is added to, so a bot assigned to a group chat receives every message, not only @mentions.
+  Hearing is not answering: the bot still replies only when mentioned, addressed by name, or when
+  its persona says to step in (4.3). Personal (one-to-one) chats are listened to the same way.
+  **[M]**
+- **Stored messages.** Each message in a listened chat is stored with its sender and time,
+  encrypted at rest, keyed by tenant and chat. Raw messages are kept 90 days; summaries and memory
+  items are kept until deleted. **[C: 90 days]**
+- **Summaries.** In the background a small model (Haiku class) folds new messages into the chat's
+  summary for the day: topics, decisions, who is doing what, open questions, problems raised. At
+  day end the day is closed. Week and month summaries are built from the day summaries, never by
+  re-reading raw messages. **[M; cadence C: about hourly]**
+- **Memory items.** Short, searchable facts with their source (chat, person, time, and the summary
+  or message they came from), stored in Postgres next to everything else: full-text search first,
+  meaning search (pgvector embeddings) when needed. Bots get a memory search tool and are given the
+  chat's current summary before answering. Shared notes (4.10) stay the curated, company-wide
+  knowledge; memory items are what was said. **[M: Postgres, not Supermemory; C: the rest]**
+- **Priority.** Anything said to a bot directly (a mention, a "remember this", a question it
+  answered) becomes a memory item at once, marked *direct*, without waiting for the summary. Search
+  ranks direct, then decisions and actions, then general discussion; newer beats older on the same
+  topic. **[M]**
+- **Opt-out.** Anyone in a group chat can tell the bot to stop listening, and an admin can switch it
+  off per chat; a person can opt their personal chat out by telling their bot. Opting out deletes
+  what was stored for that chat (messages, summaries, memory items), it does not just hide it. The
+  bot still answers mentions and direct requests in an opted-out chat; it stores nothing else.
+  **[M]**
+- **Admin.** A Summaries screen: pick a chat or all chats and a period (day, week, month); see the
+  summary, decisions and direct asks, each linking to Activity. Admins see every chat, heads their
+  departments' chats only, as elsewhere. Admins can delete a chat's memory and switch listening per
+  chat. **[M: screen; C: layout]**
+- One memory interface in the service (save, search, forget) so the store can change later
+  without touching bots or the admin page. **[C]**
+
 ## 5. Architecture
 
 One Node service, one Postgres, N bot containers, on one host. **[C]**
