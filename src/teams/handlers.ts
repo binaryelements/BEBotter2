@@ -178,7 +178,8 @@ export async function handleMessage(
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
   // the token goes only to the owner's own Personal turn; any other turn never sees it
   const graphToken = definition.identity === "person" ? io.graphToken : undefined;
-  if (definition.identity === "person" && !graphToken) return void (await io.send(signInFailed));
+  // the route was chosen before the assignment or flag changed; the next message goes through sign-in
+  if (definition.identity === "person" && !graphToken) return void (await io.send("Say that again, please."));
   await serialize(`${msg.chatId}:${definition.id}`, async () => {
     const personal = msg.conversationType === "personal";
     // the reply's first line names the bot, in one-to-one chats too: every bot shares the one Teams identity

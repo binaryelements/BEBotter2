@@ -778,7 +778,7 @@ describe("choosing the bot in a one-to-one chat", () => {
       const s = await mine();
       await s.say("hi");
       expect(s.runTurn).not.toHaveBeenCalled();
-      expect(s.sent).toEqual(["Sign-in didn't work. Say anything to try again."]);
+      expect(s.sent).toEqual(["Say that again, please."]); // the route chose before the assignment changed: the next message signs in
     });
 
     it("signs in only for the owner's own turn of Personal", async () => {

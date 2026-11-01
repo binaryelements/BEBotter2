@@ -97,12 +97,16 @@ describe("sign-in for a person's own assistant", () => {
     vi.spyOn(app.adapter, "continueConversation").mockImplementation(async (_id, ref, logic) => {
       await logic(turnOf({ type: "event", name: "continueConversation", ...base, conversation: ref.conversation, from: ref.user, recipient: ref.agent }));
     });
-    const say = (text: string, conversation = { id: "c1", conversationType: "personal", tenantId: "t1" }) =>
-      app.run(turnOf({ ...base, type: "message", id: `m-${text}`, text, conversation }));
+    // a turn that throws ends in onTurnError, the way the adapter's middleware hands it on
+    const say = (text: string, conversation = { id: "c1", conversationType: "personal", tenantId: "t1" }) => {
+      const ctx = turnOf({ ...base, type: "message", id: `m-${text}`, text, conversation });
+      return app.run(ctx).catch((err) => app.adapter.onTurnError(ctx, err));
+    };
     const invoke = (name: string, value: object) =>
       app.run(turnOf({ ...base, type: "invoke", id: `i-${name}`, name, value, conversation: { id: "c1", conversationType: "personal", tenantId: "t1" } }));
     const oauthCards = () => sent.filter((a) => a.attachments?.some((x) => x.contentType === "application/vnd.microsoft.card.oauth"));
-    return { db, app, runTurn, turns, sent, tokenService, say, invoke, oauthCards };
+    const expire = () => void (token = undefined);
+    return { db, app, runTurn, turns, sent, tokenService, say, invoke, oauthCards, expire };
   }
 
   it("a person turn without a token sends the sign-in card and runs no engine", async () => {
@@ -114,6 +118,8 @@ describe("sign-in for a person's own assistant", () => {
 
   it("after sign-in the pending text runs once, with the token fetched through the closure", async () => {
     const s = await signInApp();
+    const logged: unknown[] = [];
+    for (const m of ["log", "info", "warn", "error", "debug"] as const) vi.spyOn(console, m).mockImplementation((...a) => void logged.push(...a));
     await s.say("what's on my calendar?");
     await s.invoke("signin/tokenExchange", { id: "x1", connectionName: "graph", token: "sso-from-teams" });
     await vi.waitFor(() => expect(s.runTurn).toHaveBeenCalledTimes(1));
@@ -125,6 +131,40 @@ describe("sign-in for a person's own assistant", () => {
     await vi.waitFor(() => expect(s.runTurn).toHaveBeenCalledTimes(2));
     expect(s.oauthCards()).toHaveLength(1);
     expect(JSON.stringify(s.sent)).not.toContain("tok-ann-secret");
+    expect(JSON.stringify(logged)).not.toContain("tok-ann-secret");
+  });
+
+  it("the sign-in card and a message typed while it waits use our copy", async () => {
+    const s = await signInApp();
+    await s.say("what's on my calendar?");
+    const card = (s.oauthCards()[0]!.attachments![0] as { content?: { text?: string; buttons?: { title?: string }[] } }).content!;
+    expect(card.text).toBe("Sign in so I can act as you in Microsoft 365.");
+    expect(card.buttons?.[0]?.title).toBe("sign in");
+    await s.say("hello?");
+    expect(s.sent.at(-1)?.text).toBe("Finish signing in on the card above.");
+    expect(s.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("an expired token brings a fresh sign-in card and no turn", async () => {
+    const s = await signInApp();
+    await s.say("what's on my calendar?");
+    await s.invoke("signin/tokenExchange", { id: "x1", connectionName: "graph", token: "sso-from-teams" });
+    await vi.waitFor(() => expect(s.runTurn).toHaveBeenCalledTimes(1));
+    s.expire();
+    await s.say("and tomorrow?");
+    expect(s.oauthCards()).toHaveLength(2);
+    await new Promise((res) => setTimeout(res, 20));
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sign-in that throws says so, runs no turn and logs no token", async () => {
+    const s = await signInApp();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    s.tokenService.getTokenOrSignInResource.mockRejectedValueOnce(Object.assign(new Error("token service down tok-ann-secret"), { statusCode: 503 }));
+    await s.say("what's on my calendar?");
+    expect(s.sent.map((a) => a.text)).toContain("Sign-in didn't work. Say anything to try again.");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(JSON.stringify(err.mock.calls)).not.toContain("tok-ann-secret");
   });
 
   it("a service turn never asks", async () => {

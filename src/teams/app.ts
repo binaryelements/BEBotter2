@@ -18,6 +18,8 @@ export type TeamsAppDeps = {
   graphConnection: string;
 };
 
+const FAILED_TO_SIGN_IN = -120510; // Errors.FailedToSignIn in agents-hosting 1.9.1
+
 /** The signed-in person's Graph token for this turn's sender, or undefined; never stored. */
 export const graphToken = async (app: AgentApplication<TurnState>, ctx: TurnContext): Promise<string | undefined> =>
   (await app.authorization.getToken(ctx, "graph")).token;
@@ -54,13 +56,28 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
   // longRunningMessages answers the HTTP request at once; a turn can wait minutes on a confirmation card
   // startServer reuses app.adapter, so proactive sends go through the same adapter as replies
   // the `graph` handler signs a person in (Teams SSO, else the OAuth card) on routes that ask for it; storage holds a pending sign-in's message
+  // shortcut: MemoryStorage loses a pending sign-in on restart and keeps per-conversation turn state without bound; upgrade to Postgres-backed storage when that matters
   const app = new AgentApplication<TurnState>({
     adapter: new CloudAdapter(), startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true,
-    storage: new MemoryStorage(), authorization: { graph: { azureBotOAuthConnectionName: deps.graphConnection } },
+    storage: new MemoryStorage(),
+    authorization: {
+      graph: {
+        azureBotOAuthConnectionName: deps.graphConnection,
+        title: "sign in",
+        text: "Sign in so I can act as you in Microsoft 365.",
+        invalidSignInRetryMessageFormat: "Finish signing in on the card above.", // what a message typed while the card waits gets
+      },
+    },
   });
   // the SDK default posts "please fix the source code" into the chat and logs nothing we can see; handlers already tell the user
   app.adapter.onTurnError = async (ctx, err) => {
-    const e = err as { name?: string; message?: string; statusCode?: number };
+    const e = err as { name?: string; message?: string; statusCode?: number; code?: unknown };
+    // the SDK wraps any throw from a sign-in handler as FailedToSignIn; `graph` is our only handler
+    if (e?.code === FAILED_TO_SIGN_IN || String(e?.message ?? "").startsWith("[handler:graph]")) {
+      console.error(`sign-in failed in ${ctx.activity.conversation?.id ?? "?"}: ${String(e?.code ?? "unknown")}`);
+      if (ctx.activity.type === "message") await ctx.sendActivity(signInFailed).catch(() => console.error("sign-in failure reply not sent"));
+      return;
+    }
     console.error(`turn error in ${ctx.activity.conversation?.id ?? "?"}: ${e?.name ?? "Error"} ${e?.statusCode ?? ""} ${String(e?.message ?? "").slice(0, 300)}`);
   };
 
@@ -119,6 +136,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     );
   };
   // a message that will run the sender's own Personal signs in first; the route order makes it win
+  // the selector runs a few small queries, about twice per message (authorization, then routing)
   const personTurn = async (ctx: TurnContext) => {
     const { type, conversation, from, text } = ctx.activity;
     if (type !== "message" || !conversation?.tenantId || !from?.aadObjectId) return false;
