@@ -676,6 +676,18 @@ describe("runTurn", () => {
     expect(String(q.seen[1]!.systemPrompt)).toContain("an admin can add one on the admin page");
   });
 
+  it("the prompt names the actions an admin set to run freely or to need a card", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await setToolRule(db, definition.id, "mcp__connections__ssh_change", "free");
+    await setToolRule(db, definition.id, "mcp__computer__bash", "confirm");
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: async () => {} });
+    const prompt = String(q.seen[0]!.systemPrompt);
+    expect(prompt).toContain("never say they need confirming: ssh_change.");
+    expect(prompt).toContain("need a confirmation card in the chat: bash.");
+  });
+
   it("a named bot states its name even without a mailbox", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

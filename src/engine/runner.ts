@@ -22,7 +22,7 @@ export type { TurnTimings };
 import type { Confirmations, Outcome } from "./confirm.js";
 import { classify } from "./gate.js";
 import type { LiveSessions } from "./live.js";
-import { recordTools, toolRule } from "./tool-rules.js";
+import { recordTools, toolRule, toolRulesFor } from "./tool-rules.js";
 
 export type RunnerDeps = {
   db: Db;
@@ -84,6 +84,15 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       console.error("mailbox key:", e instanceof Error ? e.name : "error"); // no mail this turn; the turn still runs
     }
   }
+  // the admin's per-action rules, so the bot does not tell people an action needs confirming when it runs freely
+  const rules = [...(await toolRulesFor(db, definition.id))].sort(([a], [b]) => a.localeCompare(b));
+  const ruleNote = (rule: string, words: string) => {
+    const names = rules.filter(([, r]) => r === rule).map(([t]) => t.replace(/^mcp__.+?__/, ""));
+    return names.length ? ` ${words}: ${names.join(", ")}.` : "";
+  };
+  const rulesText =
+    ruleNote("free", "An admin set these actions to run without a confirmation card, so run them and never say they need confirming") +
+    ruleNote("confirm", "An admin set these actions to need a confirmation card in the chat");
   // the SDK advertises cwd to MCP servers as the client root, so it must be the folder the files server serves
   mkdirSync(deps.filesDir, { recursive: true });
   // a process with no turn running (warmed, or between turns) acts for nobody
@@ -117,7 +126,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         mail
           ? `Your own email address is ${mail.address}.`
           : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-      }`,
+      }${rulesText}`,
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
       allowedTools: [], // a tool named here bypasses canUseTool
@@ -143,7 +152,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     };
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, containerId ?? null, conn, routine, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, containerId ?? null, conn, routine, rules, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, buildOptions, fingerprint };
 }
 

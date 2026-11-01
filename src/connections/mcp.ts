@@ -115,7 +115,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
           }),
       ),
       tool("ssh_read", `Run a command on an active read-only ssh connection. ${READ_ONLY_RULE}`, { name: z.string(), command: z.string() }, sshTool("read-only")),
-      tool("ssh_change", "Run a command on an active change ssh connection; each call is confirmed in the chat.", { name: z.string(), command: z.string() }, sshTool("change")),
+      tool("ssh_change", "Run a command on an active change ssh connection; each call is confirmed in the chat unless an admin set it to run freely.", { name: z.string(), command: z.string() }, sshTool("change")),
       tool(
         "http_read",
         `Send a GET or HEAD request on an active http connection. path is relative to the connection's URL; the service adds the secret. ${READ_ONLY_RULE}`,
@@ -124,7 +124,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       ),
       tool(
         "http_change",
-        "Send a request on an active change http connection; each call is confirmed in the chat. path is relative to the connection's URL; the service adds the secret.",
+        "Send a request on an active change http connection; each call is confirmed in the chat unless an admin set it to run freely. path is relative to the connection's URL; the service adds the secret.",
         {
           name: z.string(), method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]), path: z.string(),
           query: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional(), body: z.string().optional(),
