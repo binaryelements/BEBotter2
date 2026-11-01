@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assignToChat, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, ensurePersonalDefinition, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import type * as auditModule from "../audit/audit.js";
 import { eq } from "drizzle-orm";
 import { beginAction, completeAction, recordSent } from "../audit/audit.js";
@@ -681,7 +681,7 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(s.runTurn).not.toHaveBeenCalled();
     expect(s.sent).toEqual(["You no longer have access to Helper."]);
     expect(s.titles(s.cards[0])).toEqual(["Other"]);
-    expect(b.id).toBeTruthy();
+    expect(s.cards[0].actions[0].data).toEqual({ definitionId: b.id });
   });
 
   it("the owner's choose replaces the assignment and refreshes the card", async () => {
@@ -709,6 +709,42 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(JSON.stringify(await by(s.ann.id, c.id))).toContain("You can't choose this bot.");
     expect(JSON.stringify(await by(s.ann.id, "forged"))).toContain("You can't choose this bot.");
     expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("leaves My assistant off the card of a person without the flag", async () => {
+    const s = await chat();
+    await s.service("a", "A");
+    await s.service("b", "B");
+    await ensurePersonalDefinition(s.db, "t1", "m");
+    await s.say("hi");
+    expect(s.titles(s.cards[0])).toEqual(["A", "B"]);
+  });
+
+  it("refuses a choose of another tenant's bot and changes nothing", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    await upsertTenant(s.db, { id: "t2" });
+    const foreign = await upsertDefinition(s.db, Buffer.alloc(32), "t2", { name: "x", label: "X", persona: "p" } as never);
+    await s.say("hi");
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    expect(JSON.stringify(await handleChoose(s.deps, { tenantId: "t1", chatId: "c1", personId: s.ann.id }, foreign.id))).toContain("You can't choose this bot.");
+    expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("refuses Personal in a group chat, and for anyone but the chat's owner, without a turn", async () => {
+    const s = await chat();
+    const personal = await ensurePersonalDefinition(s.db, "t1", "m");
+    await setPersonalBot(s.db, "t1", s.ann.id, true);
+    await setPersonalBot(s.db, "t1", s.bob.id, true);
+    await upsertChat(s.db, { id: "g1", tenantId: "t1", conversationType: "groupChat" });
+    await s.db.insert(chatAssignments).values({ chatId: "g1", definitionId: personal.id });
+    await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1" }, s.io);
+    await s.say("hi"); // Ann's own chat: Personal is her only bot, so it is assigned and answers
+    await s.say("hello", "u2");
+    const refusal = "This assistant is private to its owner.";
+    expect(s.sent).toEqual([refusal, "**My assistant**\n\nreply", refusal]);
+    expect(s.runTurn).toHaveBeenCalledTimes(1); // Ann's only
+    expect(await s.db.select().from(auditEvents)).toEqual([]);
   });
 
   it("an install in a one-to-one chat sends the card with two usable bots, otherwise the greeting", async () => {

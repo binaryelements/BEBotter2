@@ -121,6 +121,8 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
   return { progress, stop, finish, supersede };
 }
 
+const ownerOf = async (db: Db, chatId: string) => (await db.select({ owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.owner;
+
 export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string; defaultModel: string };
 
 export async function handleMessage(
@@ -150,6 +152,8 @@ export async function handleMessage(
     }
   }
   if (!definition) return void (await io.send("No bot is set up for this chat yet."));
+  // Personal acts as one person: only in their own one-to-one chat, whatever the assignment says
+  if (definition.identity === "person" && (msg.conversationType !== "personal" || (await ownerOf(db, msg.chatId)) !== person.id)) return void (await io.send("This assistant is private to its owner."));
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
   await serialize(`${msg.chatId}:${definition.id}`, async () => {
     const personal = msg.conversationType === "personal";

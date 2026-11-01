@@ -5,7 +5,7 @@ import { botDefinitions, chats, people, tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { createDepartment } from "../org/directory.js";
-import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, ensurePersonalDefinition, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, updateDefinitionFields, upsertDefinition } from "./definitions.js";
+import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, ensurePersonalDefinition, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, setChatDefinition, usableDefinitions, updateDefinitionFields, upsertDefinition } from "./definitions.js";
 
 describe("bot definitions", () => {
   it("stores MCP headers encrypted and gives them back decrypted", async () => {
@@ -207,5 +207,23 @@ describe("the Personal definition", () => {
     await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
     await assignToChat(db, "dm", def.id);
     expect((await definitionsForChat(db, "dm")).map((d) => d.id)).toEqual([def.id]);
+  });
+
+  it("setChatDefinition refuses Personal on a group chat and leaves the assignment alone", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const def = await ensurePersonalDefinition(db, "t1", "m");
+    await upsertChat(db, { id: "g", tenantId: "t1", conversationType: "groupChat" });
+    await expect(setChatDefinition(db, "t1", "g", def.id)).rejects.toThrow(/one-to-one/);
+    expect(await definitionsForChat(db, "g")).toEqual([]);
+  });
+
+  it("usableDefinitions lets an unexpected error from creating Personal propagate", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const p = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a", name: "A" });
+    await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
+    const broken = Object.assign(Object.create(db), { insert: () => { throw new Error("db down"); } });
+    await expect(usableDefinitions(broken, "t1", p.id, "m")).rejects.toThrow("db down");
   });
 });

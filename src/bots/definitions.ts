@@ -74,17 +74,21 @@ export async function ensurePersonalDefinition(db: Db, tenantId: string, default
   return row;
 }
 
-export async function assignToChat(db: Db, chatId: string, definitionId: string): Promise<void> {
+/** A Personal assistant works only in its owner's one-to-one chat; the owner is checked once it is recorded. */
+async function checkPersonDefinition(db: Db, chatId: string, definitionId: string): Promise<void> {
   const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(eq(botDefinitions.id, definitionId));
-  if (def?.identity === "person") {
-    // a personal chat with no recorded owner passes until the owner is recorded on the first message
-    const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId));
-    if (chat?.type !== "personal") throw new DirectoryError("A personal assistant works only in a one-to-one chat");
-    if (chat.owner) {
-      const [p] = await db.select({ on: people.personalBot }).from(people).where(eq(people.id, chat.owner));
-      if (!p?.on) throw new DirectoryError("The chat owner has no personal assistant");
-    }
+  if (def?.identity !== "person") return;
+  // a personal chat with no recorded owner passes until the owner is recorded on the first message
+  const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId));
+  if (chat?.type !== "personal") throw new DirectoryError("A personal assistant works only in a one-to-one chat");
+  if (chat.owner) {
+    const [p] = await db.select({ on: people.personalBot }).from(people).where(eq(people.id, chat.owner));
+    if (!p?.on) throw new DirectoryError("The chat owner has no personal assistant");
   }
+}
+
+export async function assignToChat(db: Db, chatId: string, definitionId: string): Promise<void> {
+  await checkPersonDefinition(db, chatId, definitionId);
   await db.insert(chatAssignments).values({ chatId, definitionId }).onConflictDoNothing();
 }
 
@@ -97,6 +101,7 @@ export async function setChatLabel(db: Db, tenantId: string, chatId: string, lab
 
 /** One bot per chat: replaces any existing link, or clears it when definitionId is null. */
 export async function setChatDefinition(db: Db, tenantId: string, chatId: string, definitionId: string | null): Promise<void> {
+  if (definitionId) await checkPersonDefinition(db, chatId, definitionId);
   await db.transaction(async (tx) => {
     const [chat] = await tx.select({ id: chats.id }).from(chats).where(and(eq(chats.id, chatId), eq(chats.tenantId, tenantId)));
     if (!chat) throw new DirectoryError("Chat not found");
@@ -118,7 +123,10 @@ export async function definitionsForChat(db: Db, chatId: string): Promise<BotDef
 /** The bots a person may talk to: their Personal assistant first (when switched on), then the others by label. */
 export async function usableDefinitions(db: Db, tenantId: string, personId: string, defaultModel: string): Promise<BotDefinition[]> {
   const [p] = await db.select({ on: people.personalBot }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
-  if (p?.on) await ensurePersonalDefinition(db, tenantId, defaultModel).catch((e) => console.error(`personal assistant for tenant ${tenantId}:`, e instanceof Error ? e.message : "error"));
+  if (p?.on) await ensurePersonalDefinition(db, tenantId, defaultModel).catch((e) => {
+      if (!(e instanceof DirectoryError)) throw e;
+      console.error(`personal assistant for tenant ${tenantId}:`, e.message);
+    });
   const all = await db.select().from(botDefinitions).where(eq(botDefinitions.tenantId, tenantId));
   const usable: BotDefinition[] = [];
   for (const d of all) if (await mayUseDefinition(db, tenantId, personId, d.id)) usable.push(d);
