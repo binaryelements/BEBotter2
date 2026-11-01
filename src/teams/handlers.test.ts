@@ -57,7 +57,7 @@ describe("handleMessage", () => {
     vi.mocked(recordSent).mockRejectedValueOnce(new Error("db down"));
     await s.run(msg("personal"));
     err.mockRestore();
-    expect(s.sent).toEqual(["reply"]);
+    expect(s.sent).toEqual(["**Helper**\n\nreply"]);
   });
 
   it("still logs the timing line when recording it fails", async () => {
@@ -109,7 +109,7 @@ describe("handleMessage", () => {
   it("sends the plain reply in a personal chat", async () => {
     const s = await setup(true);
     await s.run(msg("personal"));
-    expect(s.sent).toEqual(["reply"]);
+    expect(s.sent).toEqual(["**Helper**\n\nreply"]);
   });
 
   it("reports a failure", async () => {
@@ -151,7 +151,7 @@ describe("handleMessage status message", () => {
     try {
       const x = await slowSetup(async (t, wait) => (t.progress!({ kind: "tool", toolName: "WebSearch" }), wait(2900)));
       await run(x);
-      expect(x.log).toEqual(["send:final"]);
+      expect(x.log).toEqual(["send:**Helper**\n\nfinal"]);
     } finally {
       vi.useRealTimers();
     }
@@ -192,7 +192,7 @@ describe("handleMessage status message", () => {
         x.failUpdates();
       });
       await run(x);
-      expect(x.log).toEqual(["send:thinking", "send:final"]);
+      expect(x.log).toEqual(["send:thinking", "send:**Helper**\n\nfinal"]);
     } finally {
       vi.useRealTimers();
     }
@@ -207,7 +207,7 @@ describe("handleMessage status message", () => {
         await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "mcp__tickets__close", input: {} });
       });
       await run(x);
-      expect(x.log).toEqual(["send:thinking", "send:final"]);
+      expect(x.log).toEqual(["send:thinking", "send:**Helper**\n\nfinal"]);
     } finally {
       vi.useRealTimers();
     }
@@ -224,7 +224,7 @@ describe("handleMessage status message", () => {
       });
       x.io.send = async (t: string) => (x.log.push(`send:${t}`), undefined as unknown as string);
       await run(x);
-      expect(x.log).toEqual(["send:one", "send:final"]);
+      expect(x.log).toEqual(["send:one", "send:**Helper**\n\nfinal"]);
     } finally {
       vi.useRealTimers();
     }
@@ -257,7 +257,7 @@ describe("handleMessage status message", () => {
       });
       const timersBefore = vi.getTimerCount();
       await run(x);
-      expect(x.log).toEqual(["send:one", "update:id1:final"]);
+      expect(x.log).toEqual(["send:one", "update:id1:**Helper**\n\nfinal"]);
       expect(vi.getTimerCount()).toBeLessThanOrEqual(timersBefore);
     } finally {
       vi.useRealTimers();
@@ -281,7 +281,7 @@ describe("handleMessage status message", () => {
       expect(x.log).toEqual(["send:one"]); // reply still waits for the in-flight send
       release[0]!();
       await done;
-      expect(x.log).toEqual(["send:one", "update:id1:final"]);
+      expect(x.log).toEqual(["send:one", "update:id1:**Helper**\n\nfinal"]);
     } finally {
       vi.useRealTimers();
     }
@@ -368,7 +368,7 @@ describe("handleMessage streaming", () => {
         expect(x.log).toEqual(["chunk:Hel", "chunk:lo"]);
       });
       await run(x);
-      expect(x.log).toEqual(["chunk:Hel", "chunk:lo", "end:final"]);
+      expect(x.log).toEqual(["chunk:Hel", "chunk:lo", "end:**Helper**\n\nfinal"]);
     }));
 
   it("shows tools as informative updates until text starts, then none; a later message follows a blank line and the final message is exactly the reply", () =>
@@ -384,7 +384,7 @@ describe("handleMessage streaming", () => {
         t.progress!({ kind: "message-end" });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: search…", "chunk:Let me check.", "chunk:\n\nAnswer", "end:final"]);
+      expect(x.log).toEqual(["info:Working: search…", "chunk:Let me check.", "chunk:\n\nAnswer", "end:**Helper**\n\nfinal"]);
     }));
 
   it("ends the stream with the text so far before a confirmation card and sends the reply after it as a new message", () =>
@@ -398,7 +398,7 @@ describe("handleMessage streaming", () => {
         t.progress!({ kind: "message-end" });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking+card", "send:final"]);
+      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking+card", "send:**Helper**\n\nfinal"]);
     }));
 
   it("ends a stream that only showed progress with the card alone, so no progress line stays", () =>
@@ -409,7 +409,7 @@ describe("handleMessage streaming", () => {
         await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "mcp__mail__reply_to_email", input: {} });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: reply to email…", "end:+card", "send:final"]);
+      expect(x.log).toEqual(["info:Working: reply to email…", "end:+card", "send:**Helper**\n\nfinal"]);
     }));
 
   it("sends the card as its own message when ending the stream with it fails", () =>
@@ -421,7 +421,7 @@ describe("handleMessage streaming", () => {
         await t.askConfirmation({ actionId: "a1", label: "Helper", toolName: "WebSearch", input: {} });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: WebSearch…", "card", "send:final"]);
+      expect(x.log).toEqual(["info:Working: WebSearch…", "card", "send:**Helper**\n\nfinal"]);
     }));
 
   it("sends no status message around a confirmation card in a chat that streams", () =>
@@ -434,7 +434,7 @@ describe("handleMessage streaming", () => {
         await wait(5000);
       });
       await run(x);
-      expect(x.log).toEqual(["card", "send:final"]);
+      expect(x.log).toEqual(["card", "send:**Helper**\n\nfinal"]);
     }));
 
   it("falls back to the status message when a stream call throws and sends one reply", () =>
@@ -447,7 +447,7 @@ describe("handleMessage streaming", () => {
       });
       x.fail.chunk = true;
       await run(x);
-      expect(x.log).toEqual(["send:working on it", "update:id1:final"]);
+      expect(x.log).toEqual(["send:working on it", "update:id1:**Helper**\n\nfinal"]);
     }));
 
   it("sends the reply as a message when ending the stream fails", () =>
@@ -458,7 +458,7 @@ describe("handleMessage streaming", () => {
       });
       x.fail.end = true;
       await run(x);
-      expect(x.log).toEqual(["chunk:Hi", "send:final"]);
+      expect(x.log).toEqual(["chunk:Hi", "send:**Helper**\n\nfinal"]);
     }));
 
   it("never streams in a group chat", () =>
@@ -490,7 +490,7 @@ describe("handleMessage streaming", () => {
       await run(x);
       const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn "));
       log.mockRestore();
-      expect(x.log).toEqual(["chunk:Hi", "end:Hi"]);
+      expect(x.log).toEqual(["chunk:Hi", "end:**Helper**\n\nHi"]);
       const [row] = await x.s.db.select().from(auditEvents).where(eq(auditEvents.kind, "message"));
       expect(row!.timings!.sentAt).toBeTruthy();
       expect(lines).toHaveLength(1);
@@ -590,8 +590,8 @@ describe("handleMessage department access", () => {
 
   it("serves a member of a linked department and an admin", async () => {
     const s = await restricted();
-    expect(await s.as("member")).toEqual(["reply"]);
-    expect(await s.as("admin")).toEqual(["reply"]);
+    expect(await s.as("member")).toEqual(["**Helper**\n\nreply"]);
+    expect(await s.as("admin")).toEqual(["**Helper**\n\nreply"]);
     expect(s.runTurn).toHaveBeenCalledTimes(2);
   });
 

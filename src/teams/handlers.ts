@@ -136,6 +136,8 @@ export async function handleMessage(
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
   await serialize(`${msg.chatId}:${definition.id}`, async () => {
     const personal = msg.conversationType === "personal";
+    // the reply's first line names the bot, in one-to-one chats too: every bot shares the one Teams identity
+    const name = definition.displayName ? `${definition.displayName} · ${definition.label}` : definition.label;
     // group chats never stream; a stream that fails hands the rest of the turn to the status message
     let stream = personal ? io.stream : undefined;
     let streamed = false; // the stream showed something, so it must be ended
@@ -162,7 +164,7 @@ export async function handleMessage(
       if (!personal || !io.stream || fellBack) return false;
       return !stream || flowing || toStream((s) => s.informative(t), t);
     };
-    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(definition.label, t), onStream);
+    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(name, t), onStream);
     const progress = (e: ProgressEvent) => {
       if (!stream) return status.progress(e);
       if (e.kind === "delta") {
@@ -209,7 +211,7 @@ export async function handleMessage(
         },
         progress,
       });
-      await deliver(personal ? result.text : withRoleLabel(definition.label, result.text));
+      await deliver(withRoleLabel(name, result.text));
       try {
         await recordSent(db, result.auditId, new Date());
       } catch (err) {
