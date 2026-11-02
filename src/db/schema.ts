@@ -32,6 +32,8 @@ export const tenants = pgTable("tenants", {
   botName: text("bot_name"),
   defaultModel: text("default_model"),
   timezone: text("timezone").notNull().default("UTC"),
+  location: text("location"),
+  country: text("country"),
   createdAt: createdAt(),
 });
 

@@ -56,14 +56,15 @@ export async function findPersonId(db: Db, tenantId: string, aadObjectId: string
   return row?.id;
 }
 
-export type TenantSettings = { botName: string | null; retentionDays: number; defaultModel: string | null; timezone: string };
+/** timezone, location and country: the defaults every bot is told on every message, unless a chat says otherwise. */
+export type TenantSettings = { botName: string | null; retentionDays: number; defaultModel: string | null; timezone: string; location: string | null; country: string | null };
 
 export async function getTenantSettings(db: Db, tenantId: string): Promise<TenantSettings> {
   const [row] = await db
-    .select({ botName: tenants.botName, retentionDays: tenants.retentionDays, defaultModel: tenants.defaultModel, timezone: tenants.timezone })
+    .select({ botName: tenants.botName, retentionDays: tenants.retentionDays, defaultModel: tenants.defaultModel, timezone: tenants.timezone, location: tenants.location, country: tenants.country })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
-  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC" };
+  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null };
 }
 
 export async function setTenantSettings(db: Db, tenantId: string, settings: TenantSettings): Promise<void> {

@@ -31,6 +31,9 @@ export function settingsRoutes(db: Db): Router {
 <p><label class="be-label">keep activity (days) <input class="be-input" name="retentionDays" type="number" min="1" max="3650" value="${s.retentionDays}" required></label></p>
 <p><label class="be-label">default model <input class="be-input" name="defaultModel" value="${s.defaultModel ?? ""}"></label></p>
 <p><label class="be-label">time zone <input class="be-input" name="timezone" value="${s.timezone}" required placeholder="Australia/Sydney"></label></p>
+<p><label class="be-label">location <input class="be-input" name="location" value="${s.location ?? ""}" maxlength="80" placeholder="Melbourne"></label></p>
+<p><label class="be-label">country <input class="be-input" name="country" value="${s.country ?? ""}" maxlength="80" placeholder="Australia"></label></p>
+<p>every bot is told the time zone, location and country on every message; anything said otherwise in a chat wins there.</p>
 <button class="be-btn primary">save</button></form>`,
           actor,
           csrf,
@@ -51,7 +54,12 @@ export function settingsRoutes(db: Db): Router {
       if (!(retentionDays >= 1 && retentionDays <= 3650)) throw new DirectoryError("Keep activity must be a whole number of days from 1 to 3650");
       const defaultModel = field(req, "defaultModel") || null;
       if (defaultModel && !/^claude-[a-z0-9-]+$/.test(defaultModel)) throw new DirectoryError("Default model is not a valid model id");
-      await setTenantSettings(db, actor.tenantId, { botName, retentionDays, defaultModel, timezone: field(req, "timezone") || (await getTenantSettings(db, actor.tenantId)).timezone });
+      const place = (key: "location" | "country") => {
+        const v = field(req, key);
+        if (v.length > 80) throw new DirectoryError(`${key === "location" ? "Location" : "Country"} is too long (80 characters at most)`);
+        return v || null;
+      };
+      await setTenantSettings(db, actor.tenantId, { botName, retentionDays, defaultModel, timezone: field(req, "timezone") || (await getTenantSettings(db, actor.tenantId)).timezone, location: place("location"), country: place("country") });
       res.redirect(303, "/admin/settings");
     }),
   );

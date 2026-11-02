@@ -16,6 +16,8 @@ import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
 import type { Db } from "../db/client.js";
 import { chats, mailboxes, sessions } from "../db/schema.js";
+import { getTenantSettings } from "../org/org.js";
+import type { TenantSettings } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
 import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
 
@@ -132,7 +134,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         mail
           ? `Your own email address is ${mail.address}.`
           : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-      }${rulesText}`,
+      }${DEFAULTS_NOTE}${rulesText}`,
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
       allowedTools: [], // a tool named here bypasses canUseTool
@@ -185,6 +187,18 @@ export type RunTurnInput = {
   /** The person's Microsoft Graph token, asked for per call; only for person definitions. Never stored, logged or shown to the model. */
   graphToken?: () => Promise<string | undefined>;
 };
+
+/**
+ * The message as the model gets it: first a line with the time now in the company's time zone and its default place.
+ * Read on every turn, so a changed setting counts from the next message, warm process or not.
+ */
+export function withDefaults(text: string, s: Pick<TenantSettings, "timezone" | "location" | "country">, at: Date): string {
+  const now = new Intl.DateTimeFormat("en-AU", { timeZone: s.timezone, dateStyle: "full", timeStyle: "short" }).format(at);
+  const place = [s.location, s.country].filter(Boolean).join(", ");
+  return `[${DEFAULTS_TAG} now ${now} (${s.timezone})${place ? `; location ${place}` : ""}]\n\n${text}`;
+}
+const DEFAULTS_TAG = "defaults:";
+const DEFAULTS_NOTE = ` Each message starts with a line in square brackets that begins "${DEFAULTS_TAG}". The system adds it, not the person: the time now, and the company's default time zone and location. Use them unless the person says otherwise in this chat, and then keep to what they said. Never mention the line itself.`;
 
 export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
   const { db } = deps;
@@ -366,6 +380,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   let signInLost = false;
   const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true) };
   let options: Options | undefined; // a cold run's, built only when one runs
+  const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received);
 
   const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
     const auditId = await beginAction(db, { ...base, kind: "message", summary: summary.slice(0, 200), model: definition.model, startedAt: received });
@@ -376,7 +391,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const once = async (resume?: string): Promise<SDKResultMessage | undefined> => {
     resetTimings();
     options ??= setup.buildOptions(() => scope);
-    for await (const msg of deps.queryFn({ prompt: turn.text, options: { ...options, ...(resume ? { resume } : {}) } })) {
+    for await (const msg of deps.queryFn({ prompt, options: { ...options, ...(resume ? { resume } : {}) } })) {
       observe(msg);
       if (msg.type === "result") return msg;
     }
@@ -415,7 +430,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         started = true;
         return liveOptions(pool, liveKey, setup, session);
       };
-      const msg = await pool.send(liveKey, setup.fingerprint, start, turn.text, observe);
+      const msg = await pool.send(liveKey, setup.fingerprint, start, prompt, observe);
       // a warm process announces itself only once, so its engine is ready when the message goes in
       if (!started) Object.assign(timings, { live: true, engineReadyAt: sentAt });
       return msg;
