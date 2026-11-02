@@ -118,7 +118,7 @@ describe("handleMessage", () => {
     s.runTurn.mockRejectedValueOnce(new Error("boom"));
     vi.spyOn(console, "error").mockImplementation(() => {});
     await s.run(msg("personal"));
-    expect(s.sent).toEqual(["Something went wrong on my side."]);
+    expect(s.sent).toEqual(["**Helper**\n\nSomething went wrong on my side."]);
   });
 });
 
@@ -308,7 +308,7 @@ describe("handleMessage status message", () => {
         throw new Error("boom");
       });
       await run(x);
-      expect(x.log).toEqual(["send:thinking", "update:id1:Something went wrong on my side."]);
+      expect(x.log).toEqual(["send:thinking", "update:id1:**Helper**\n\nSomething went wrong on my side."]);
     } finally {
       vi.useRealTimers();
     }
@@ -358,21 +358,30 @@ describe("handleMessage streaming", () => {
     }
   };
 
-  it("streams each delta as it arrives and ends with exactly the reply", () =>
+  it("streams the bot's name then each delta, and ends with what was streamed: Teams refuses a final message that does not carry on from it", () =>
     timed(async () => {
       const x = await streamSetup(async (t) => {
         t.progress!({ kind: "delta", text: "Hel" });
-        expect(x.log).toEqual(["chunk:Hel"]);
+        expect(x.log).toEqual(["chunk:**Helper**\n\nHel"]);
         t.progress!({ kind: "delta", text: "lo" });
         t.progress!({ kind: "text", text: "Hello" });
         t.progress!({ kind: "message-end" });
-        expect(x.log).toEqual(["chunk:Hel", "chunk:lo"]);
-      });
+        expect(x.log).toEqual(["chunk:**Helper**\n\nHel", "chunk:lo"]);
+      }, "Hello");
       await run(x);
-      expect(x.log).toEqual(["chunk:Hel", "chunk:lo", "end:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nHel", "chunk:lo", "end:**Helper**\n\nHello"]);
     }));
 
-  it("shows tools as informative updates until text starts, then none; a later message follows a blank line and the final message is exactly the reply", () =>
+  it("a reply the stream never showed is added after what was streamed, never in place of it", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t) => {
+        t.progress!({ kind: "delta", text: "Looking" });
+      }, "Here it is");
+      await run(x);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nLooking", "end:**Helper**\n\nLooking\n\nHere it is"]);
+    }));
+
+  it("shows tools as informative updates until text starts, then none; a later message follows a blank line and the final message keeps it all", () =>
     timed(async () => {
       const x = await streamSetup(async (t, wait) => {
         t.progress!({ kind: "tool", toolName: "mcp__knowledge__search" });
@@ -383,9 +392,9 @@ describe("handleMessage streaming", () => {
         await wait(3000);
         t.progress!({ kind: "delta", text: "Answer" });
         t.progress!({ kind: "message-end" });
-      });
+      }, "Answer");
       await run(x);
-      expect(x.log).toEqual(["info:Working: search…", "chunk:Let me check.", "chunk:\n\nAnswer", "end:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["info:Working: search…", "chunk:**Helper**\n\nLet me check.", "chunk:\n\nAnswer", "end:**Helper**\n\nLet me check.\n\nAnswer"]);
     }));
 
   it("ends the stream with the text so far before a confirmation card and sends the reply after it as a new message", () =>
@@ -399,7 +408,7 @@ describe("handleMessage streaming", () => {
         t.progress!({ kind: "message-end" });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking+card", "send:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:**Helper**\n\nChecking", "end:**Helper**\n\nChecking+card", "send:**Helper**\n\nfinal"]);
     }));
 
   it("ends a stream that only showed progress with the card alone, so no progress line stays", () =>
@@ -459,7 +468,7 @@ describe("handleMessage streaming", () => {
       });
       x.fail.end = true;
       await run(x);
-      expect(x.log).toEqual(["chunk:Hi", "send:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nHi", "send:**Helper**\n\nfinal"]);
     }));
 
   it("never streams in a group chat", () =>
@@ -491,7 +500,7 @@ describe("handleMessage streaming", () => {
       await run(x);
       const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn "));
       log.mockRestore();
-      expect(x.log).toEqual(["chunk:Hi", "end:**Helper**\n\nHi"]);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nHi", "end:**Helper**\n\nHi"]);
       const [row] = await x.s.db.select().from(auditEvents).where(eq(auditEvents.kind, "message"));
       expect(row!.timings!.sentAt).toBeTruthy();
       expect(lines).toHaveLength(1);

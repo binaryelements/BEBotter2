@@ -216,8 +216,8 @@ export async function handleMessage(
     const progress = (e: ProgressEvent) => {
       if (!stream) return status.progress(e);
       if (e.kind === "delta") {
-        // interim text may stream too; the final message is exactly the reply
-        const text = (newMessage && flowing ? "\n\n" : "") + e.text;
+        // interim text streams too, after the bot's name; Teams refuses a final message that does not carry on from what was streamed
+        const text = (flowing ? (newMessage ? "\n\n" : "") : withRoleLabel(name, "")) + e.text;
         newMessage = false;
         if (toStream((s) => s.chunk(text), (flowing ? soFar : "") + text)) flowing = true;
       } else if (e.kind === "tool") status.progress(e);
@@ -237,9 +237,11 @@ export async function handleMessage(
         return false;
       }
     };
-    const deliver = async (text: string) => {
+    const deliver = async (reply: string) => {
       await status.stop();
-      if (!(await endStream(text))) await status.finish(text);
+      const labelled = withRoleLabel(name, reply);
+      const final = !flowing ? labelled : soFar.trimEnd().endsWith(reply.trim()) ? soFar : `${soFar}\n\n${reply}`;
+      if (!(await endStream(final))) await status.finish(labelled);
     };
     try {
       const result = await deps.runTurn({
@@ -260,7 +262,7 @@ export async function handleMessage(
         },
         progress,
       });
-      await deliver(withRoleLabel(name, result.text));
+      await deliver(result.text);
       // a revoked token can keep coming back from the token service until the person is signed out
       if (result.signInLost)
         await io.signOut?.().catch((e: unknown) => console.error("graph sign-out failed:", e instanceof Error ? e.name : "unknown"));
