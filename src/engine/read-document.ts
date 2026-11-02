@@ -1,4 +1,5 @@
 import type { SDKUserMessage, query } from "@anthropic-ai/claude-agent-sdk";
+import { OFFICE, officeToPdf } from "./office-pdf.js";
 
 const ASK = "Transcribe this document's text, keeping tables and amounts exactly. Reply with the text only.";
 
@@ -6,8 +7,9 @@ const ASK = "Transcribe this document's text, keeping tables and amounts exactly
  * A PDF's text, read by the model in a run of its own with no tools: a tool result can't hand the bot's model a PDF,
  * and whatever the document says can do nothing here but come back as text.
  */
-export function documentReader(queryFn: typeof query, model: string, cwd: string) {
-  return async (pdfBase64: string): Promise<string> => {
+export function documentReader(queryFn: typeof query, model: string, cwd: string, toPdf: typeof officeToPdf = officeToPdf) {
+  return async (fileBase64: string, name: string): Promise<string> => {
+    const pdfBase64 = OFFICE.test(name) ? (await toPdf(Buffer.from(fileBase64, "base64"), name)).toString("base64") : fileBase64;
     async function* prompt(): AsyncGenerator<SDKUserMessage> {
       yield {
         type: "user",

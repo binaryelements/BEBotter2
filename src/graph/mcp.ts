@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { GraphCapability } from "../db/schema.js";
+import { OFFICE } from "../engine/office-pdf.js";
 import { GraphError, graphFetch } from "./client.js";
 import type { GraphDeps } from "./client.js";
 
@@ -116,7 +117,7 @@ const top = (max: number) => z.number().int().min(1).max(max).optional();
 const times = "ISO 8601 date and time with an offset, e.g. 2026-11-02T09:00:00Z";
 
 /** Microsoft 365 as the person talking, through Graph with their delegated token; only the tools of the given capabilities. */
-export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"]; readDocument?: (pdfBase64: string) => Promise<string> }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpSdkServerConfigWithInstance {
+export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"]; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpSdkServerConfigWithInstance {
   const g: GraphDeps = { fetchFn: deps.fetchFn, token: () => ctx.graphToken(), ...(deps.sleep ? { sleep: deps.sleep } : {}) };
   const get = async <T>(path: string, headers?: Record<string, string>) => (await graphFetch(g, path, headers ? { headers } : {})).json() as Promise<T>;
   const post = async (path: string, json: unknown) => (await graphFetch(g, path, { method: "POST", json })).body?.cancel();
@@ -140,7 +141,7 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       const files = m.hasAttachments ? (await get<{ value: Attachment[] }>(`/me/messages/${idPart(id)}/attachments?${qs({ $select: "id,name,contentType,size,isInline" })}`)).value.map(attachment) : undefined;
       return { ...mail(m), preview: undefined, cc: m.ccRecipients?.map(who), body: m.body?.content?.slice(0, BODY), attachments: files };
     }))],
-    ["mail.read", tool("read_attachment", "Read one attachment of an email (ids from read_mail): text, PDF and images; other kinds give their details only.", { id: z.string().min(1), attachmentId: z.string().min(1) }, run(async ({ id, attachmentId }) => {
+    ["mail.read", tool("read_attachment", "Read one attachment of an email (ids from read_mail): text, PDF, Word, PowerPoint, Excel and images; other kinds give their details only. Call it again whenever asked to read an attachment; an earlier result may be out of date.", { id: z.string().min(1), attachmentId: z.string().min(1) }, run(async ({ id, attachmentId }) => {
       const a = await get<Attachment>(`/me/messages/${idPart(id)}/attachments/${idPart(attachmentId)}`);
       const details = attachment(a);
       const bytes = a["@odata.type"] === "#microsoft.graph.fileAttachment" && a.contentBytes ? Buffer.from(a.contentBytes, "base64") : undefined;
@@ -149,7 +150,9 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       const type = a.contentType ?? "";
       if (TEXT_TYPE.test(type) || TEXT_NAME.test(a.name ?? "")) return { ...details, ...documentText(bytes.toString("utf8")) };
       if (IMAGE_TYPE.test(type) && bytes.length <= MAX_IMAGE) return new Content([{ type: "image", data: a.contentBytes!, mimeType: type }]);
-      if ((type === "application/pdf" || /\.pdf$/i.test(a.name ?? "")) && deps.readDocument) return { ...details, ...documentText(await deps.readDocument(a.contentBytes!)) };
+      const name = a.name ?? "";
+      const pdf = type === "application/pdf" || /\.pdf$/i.test(name);
+      if ((pdf || OFFICE.test(name)) && deps.readDocument) return { ...details, ...documentText(await deps.readDocument(a.contentBytes!, pdf ? name || "file.pdf" : name)) };
       return { ...details, note: "not readable as text" };
     }))],
     ["mail.send", tool("send_mail", "Send an email as the person; they confirm it in the chat first.", { to: z.array(z.string()).min(1), cc: z.array(z.string()).optional(), subject: z.string(), body: z.string() }, run(async (a) => {

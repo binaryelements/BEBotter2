@@ -82,6 +82,7 @@ describe("m365 mcp", () => {
       "GET /me/messages/m1/attachments": json({ value: [{ id: "a1", name: "inv.pdf", contentType: "application/pdf", size: 9, isInline: false }] }),
       "GET /me/messages/m1/attachments/pdf": file("inv.pdf", "application/pdf", "%PDF-1.4 x"),
       "GET /me/messages/m1/attachments/txt": file("notes.csv", "text/csv", "a,b\n1,2"),
+      "GET /me/messages/m1/attachments/pptx": file("Deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "PK deck"),
       "GET /me/messages/m1/attachments/png": file("logo.png", "image/png", "PNGDATA"),
       "GET /me/messages/m1/attachments/zip": file("x.zip", "application/zip", "PK"),
       "GET /me/messages/m1/attachments/mail": json({ "@odata.type": "#microsoft.graph.itemAttachment", id: "a2", name: "Fwd", size: 10 }),
@@ -93,7 +94,9 @@ describe("m365 mcp", () => {
     expect(g.seen[1]!.url.searchParams.get("$select")).toBe("id,name,contentType,size,isInline");
 
     expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "pdf" }))).toMatchObject({ name: "inv.pdf", text: "Invoice 777: internet 99.00" });
-    expect(readDocument).toHaveBeenCalledWith(Buffer.from("%PDF-1.4 x").toString("base64"));
+    expect(readDocument).toHaveBeenCalledWith(Buffer.from("%PDF-1.4 x").toString("base64"), "inv.pdf");
+    expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "pptx" }))).toMatchObject({ name: "Deck.pptx", text: "Invoice 777: internet 99.00" });
+    expect(readDocument).toHaveBeenLastCalledWith(Buffer.from("PK deck").toString("base64"), "Deck.pptx");
     expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "txt" }))).toMatchObject({ text: "a,b\n1,2" });
     expect((await s.call("read_attachment", { id: "m1", attachmentId: "png" })).content).toEqual([{ type: "image", data: Buffer.from("PNGDATA").toString("base64"), mimeType: "image/png" }]);
     expect(out(await s.call("read_attachment", { id: "m1", attachmentId: "zip" }))).toMatchObject({ note: "not readable as text" });

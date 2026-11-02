@@ -1,5 +1,6 @@
 FROM node:24-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
+# LibreOffice turns Office attachments into PDFs for the document reader
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui fonts-dejavu-core fonts-liberation2 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./

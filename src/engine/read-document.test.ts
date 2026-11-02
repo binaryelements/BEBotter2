@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { query } from "@anthropic-ai/claude-agent-sdk";
 import { documentReader } from "./read-document.js";
 
@@ -17,12 +17,20 @@ function fake(result: Record<string, unknown>) {
 describe("documentReader", () => {
   it("sends the PDF as a document to a run with no tools and returns its text", async () => {
     const f = fake({ subtype: "success", result: "Invoice 777" });
-    expect(await documentReader(f.fn, "m", "/srv/files")("UERG")).toBe("Invoice 777");
+    expect(await documentReader(f.fn, "m", "/srv/files")("UERG", "inv.pdf")).toBe("Invoice 777");
     expect(f.seen.options).toMatchObject({ model: "m", tools: [], allowedTools: [], maxTurns: 1, persistSession: false });
     expect(f.seen.content).toMatchObject([{ type: "document", source: { type: "base64", media_type: "application/pdf", data: "UERG" } }, { type: "text" }]);
   });
 
+  it("an Office file is turned into a PDF first, and the PDF is what the model reads", async () => {
+    const f = fake({ subtype: "success", result: "slide text" });
+    const toPdf = vi.fn(async () => Buffer.from("%PDF-deck"));
+    expect(await documentReader(f.fn, "m", "/", toPdf)(Buffer.from("PK").toString("base64"), "Deck.pptx")).toBe("slide text");
+    expect(toPdf).toHaveBeenCalledWith(Buffer.from("PK"), "Deck.pptx");
+    expect(f.seen.content).toMatchObject([{ type: "document", source: { data: Buffer.from("%PDF-deck").toString("base64") } }, { type: "text" }]);
+  });
+
   it("a failed run throws without quoting the document", async () => {
-    await expect(documentReader(fake({ subtype: "error_max_turns" }).fn, "m", "/")("UERG")).rejects.toThrow("document read error_max_turns");
+    await expect(documentReader(fake({ subtype: "error_max_turns" }).fn, "m", "/")("UERG", "inv.pdf")).rejects.toThrow("document read error_max_turns");
   });
 });
