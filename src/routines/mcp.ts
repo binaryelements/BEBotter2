@@ -43,7 +43,7 @@ export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfig
       : [
           tool(
             "background",
-            "Start a job now that runs on its own while this chat carries on, and posts its results here when it is done. Use it for slow work: comparing many websites, long research. The job does not see this chat, so `task` must say everything it needs (dates, places, what to compare, how to report). Tell the person you have started it.",
+            "Start a job now that runs on its own while this chat carries on, and posts its results here when it is done. Decide before you start working: anything likely to take more than a minute (comparing several websites, finding the cheapest, research across many pages) goes here straight away instead of into your reply. The job does not see this chat, so `task` must say everything it needs: dates, places, what to compare, how to report, and every preference the person has given in this chat. Then tell the person it will take a few minutes, that you have started it, and that the results will be posted here.",
             { task: z.string() },
             async ({ task }) => {
               try {

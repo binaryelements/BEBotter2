@@ -57,6 +57,8 @@ export type TeamsStream = { informative(text: string): void; chunk(text: string)
 
 const STATUS_AFTER_MS = 3000;
 const STATUS_EVERY_MS = 2000;
+const SLOW_AFTER_MS = 45_000;
+export const SLOW_NOTE = "_Still working on this one; it's taking a while. The answer will appear here._";
 
 /**
  * One status message for a slow turn: shown after 3 s, edited at most every 2 s (latest wins), then turned into the reply.
@@ -237,7 +239,14 @@ export async function handleMessage(
         return false;
       }
     };
+    // a reply still running after SLOW_AFTER_MS says so once, so nobody is left looking at a silent chat
+    const slow = setTimeout(() => {
+      if (flowing && stream) {
+        if (toStream((s) => s.chunk(`\n\n${SLOW_NOTE}`), `${soFar}\n\n${SLOW_NOTE}`)) newMessage = true;
+      } else status.progress({ kind: "text", text: SLOW_NOTE });
+    }, SLOW_AFTER_MS);
     const deliver = async (reply: string) => {
+      clearTimeout(slow);
       await status.stop();
       const labelled = withRoleLabel(name, reply);
       const final = !flowing ? labelled : soFar.trimEnd().endsWith(reply.trim()) ? soFar : `${soFar}\n\n${reply}`;
@@ -253,6 +262,7 @@ export async function handleMessage(
         receivedAt: msg.receivedAt,
         ...(graphToken ? { graphToken } : {}),
         askConfirmation: async (req) => {
+          clearTimeout(slow); // the card says what it is waiting for
           status.supersede();
           // a stream must not stay open through a wait of up to 10 minutes: the card ends it, replacing any progress line;
           // the reply after the card is a new message

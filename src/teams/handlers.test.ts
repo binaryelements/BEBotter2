@@ -14,7 +14,7 @@ import { setAllowedDepartments } from "../bots/definitions.js";
 import { auditEvents, chatAssignments, chats } from "../db/schema.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { recordChatOwner, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
+import { SLOW_NOTE, choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
 import { confirmerPolicy } from "../admin/access.js";
 import type { IncomingMessage } from "./handlers.js";
 
@@ -409,6 +409,29 @@ describe("handleMessage streaming", () => {
       });
       await run(x);
       expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:**Helper**\n\nChecking", "end:**Helper**\n\nChecking+card", "send:**Helper**\n\nfinal"]);
+    }));
+
+  it("says once that it is still working when a reply passes 45 s, as a progress line or after the streamed text", () =>
+    timed(async () => {
+      const quiet = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "tool", toolName: "WebSearch" });
+        await wait(46_000);
+      }, "Answer");
+      await run(quiet);
+      expect(quiet.log).toEqual(["info:Working: WebSearch…", `info:${SLOW_NOTE}`, "end:**Helper**\n\nAnswer"]);
+
+      const talking = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "delta", text: "Checking flights." });
+        await wait(46_000);
+        t.progress!({ kind: "delta", text: "Found them" });
+      }, "Found them");
+      await run(talking);
+      expect(talking.log).toEqual([
+        "chunk:**Helper**\n\nChecking flights.",
+        `chunk:\n\n${SLOW_NOTE}`,
+        "chunk:\n\nFound them",
+        `end:**Helper**\n\nChecking flights.\n\n${SLOW_NOTE}\n\nFound them`,
+      ]);
     }));
 
   it("ends a stream that only showed progress with the card alone, so no progress line stays", () =>
