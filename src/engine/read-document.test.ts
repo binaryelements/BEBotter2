@@ -30,6 +30,14 @@ describe("documentReader", () => {
     expect(f.seen.content).toMatchObject([{ type: "document", source: { data: Buffer.from("%PDF-deck").toString("base64") } }, { type: "text" }]);
   });
 
+  it("a spreadsheet is read as CSV with no model run", async () => {
+    const f = fake({ subtype: "success", result: "not used" });
+    const toCsv = vi.fn(async () => "## Calls\nDate,Cost");
+    expect(await documentReader(f.fn, "m", "/", undefined, toCsv)(Buffer.from("PK").toString("base64"), "cdr.xlsx")).toBe("## Calls\nDate,Cost");
+    expect(toCsv).toHaveBeenCalledWith(Buffer.from("PK"), "cdr.xlsx");
+    expect(f.seen.content).toBeUndefined();
+  });
+
   it("a failed run throws without quoting the document", async () => {
     await expect(documentReader(fake({ subtype: "error_max_turns" }).fn, "m", "/")("UERG", "inv.pdf")).rejects.toThrow("document read error_max_turns");
   });
