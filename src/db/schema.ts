@@ -276,6 +276,8 @@ export const routines = pgTable("routines", {
   runAt: timestamp("run_at", { withTimezone: true }),
   quiet: boolean("quiet").notNull().default(false),
   enabled: boolean("enabled").notNull().default(true),
+  /** A job the bot started from a chat: it runs at once in its own session, beside the chat rather than in its queue. */
+  background: boolean("background").notNull().default(false),
   grantPersonId: text("grant_person_id").references(() => people.id),
   createdByPersonId: text("created_by_person_id").notNull().references(() => people.id),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),

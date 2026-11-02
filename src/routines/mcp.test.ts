@@ -25,7 +25,7 @@ describe("routine mcp", () => {
 
   it("remind creates a one-off routine for this chat and refuses past times", async () => {
     const t = toolsOf(routineMcpServer({ db }, ctx));
-    expect(Object.keys(t)).toEqual(["remind"]);
+    expect(Object.keys(t)).toEqual(["remind", "background"]);
     const at = new Date(Date.now() + 3600_000).toISOString();
     expect((await t.remind.handler({ at, prompt: "call back" })).isError).toBeUndefined();
     const [r] = await listRoutines(db, "t1");
@@ -36,9 +36,22 @@ describe("routine mcp", () => {
     expect(await listRoutines(db, "t1")).toHaveLength(1);
   });
 
-  it("post exists only when a post callback is given", async () => {
+  it("background starts a job now for this chat, three at most waiting", async () => {
+    const t = toolsOf(routineMcpServer({ db }, ctx));
+    expect((await t.background.handler({ task: "compare MEL-MNL fares on 11 Nov" })).isError).toBeUndefined();
+    const job = (await listRoutines(db, "t1")).find((r) => r.background)!;
+    expect(job).toMatchObject({ chatId: "c1", prompt: "compare MEL-MNL fares on 11 Nov", schedule: null, enabled: true, createdByPersonId: ctx.personId });
+    expect(job.runAt!.getTime() - Date.now()).toBeLessThan(5000);
+    await t.background.handler({ task: "b" });
+    await t.background.handler({ task: "c" });
+    expect((await t.background.handler({ task: "d" })).isError).toBe(true);
+    expect((await listRoutines(db, "t1")).filter((r) => r.background)).toHaveLength(3);
+  });
+
+  it("post exists only when a post callback is given, and then background does not", async () => {
     const posted: string[] = [];
     const t = toolsOf(routineMcpServer({ db }, { ...ctx, post: async (x) => void posted.push(x) }));
+    expect(Object.keys(t)).toEqual(["remind", "post"]);
     await t.post.handler({ text: "hi" });
     expect(posted).toEqual(["hi"]);
   });

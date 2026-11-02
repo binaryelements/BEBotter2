@@ -257,13 +257,13 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         const settings = (on: "overview" | "persona") => html`<form method="post" action="/admin/bots/${def.id}">${csrf}${
           on === "overview"
             ? html`<p><label>name <input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label> <label>label <input name="label" value="${def.label}" required></label> <label>model <input name="model" value="${def.model}" required></label></p>
-<p><label><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search</label>${person ? "" : html` <label><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> computer</label>`}</p>
+<p><label><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search and browser</label>${person ? "" : html` <label><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> computer</label>`}</p>
 ${person ? "" : html`<fieldset><legend>departments</legend>${depts.map((d) => html`<label><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</fieldset>`}${hide("persona", def.persona)}`
             : html`${personaBox}${hide("displayName", def.displayName ?? "")}${hide("label", def.label)}${hide("model", def.model)}${def.webSearch ? hide("webSearch", "on") : ""}${def.computer ? hide("computer", "on") : ""}${person ? "" : allowed.map((d) => hide("departments", d))}`
         }<p><button class="be-btn primary">save</button></p></form>`;
         let section: SafeHtml;
         if (tab === "overview") {
-          section = html`<dl class="be-kv"><div><dt>model</dt><dd>${def.model}</dd></div><div><dt>web search</dt><dd>${yesNo(def.webSearch)}</dd></div>${person ? "" : html`<div><dt>computer</dt><dd>${yesNo(def.computer)}</dd></div><div><dt>departments</dt><dd>${depts.filter((d) => allowed.includes(d.id)).map((d) => d.name).join(", ") || "none"}</dd></div>`}</dl>${person ? html`<p>acts as each person who uses it</p>` : ""}${settings("overview")}`;
+          section = html`<dl class="be-kv"><div><dt>model</dt><dd>${def.model}</dd></div><div><dt>web search and browser</dt><dd>${yesNo(def.webSearch)}</dd></div>${person ? "" : html`<div><dt>computer</dt><dd>${yesNo(def.computer)}</dd></div><div><dt>departments</dt><dd>${depts.filter((d) => allowed.includes(d.id)).map((d) => d.name).join(", ") || "none"}</dd></div>`}</dl>${person ? html`<p>acts as each person who uses it</p>` : ""}${settings("overview")}`;
         } else if (tab === "m365") {
           section = html`<form method="post" action="/admin/bots/${def.id}/m365">${csrf}<p>${GRAPH_CAPABILITIES.map((c) => html`<label><input type="checkbox" name="graph" value="${c}" ${def.graph.includes(c) ? "checked" : ""}> ${c}</label> `)}</p><p><button class="be-btn primary">save</button></p></form>`;
         } else if (tab === "persona") {

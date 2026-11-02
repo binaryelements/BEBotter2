@@ -14,6 +14,7 @@ const fail = (e: unknown) => {
 };
 const OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 const MAX_PENDING = 50;
+const MAX_BACKGROUND = 3;
 const MAX_AHEAD_MS = 366 * 24 * 3600_000;
 
 export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfigWithInstance {
@@ -36,6 +37,27 @@ export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfig
         }
       },
     ),
+    // offered in a chat only: a job starting jobs could fan out without anyone watching
+    ...(ctx.post
+      ? []
+      : [
+          tool(
+            "background",
+            "Start a job now that runs on its own while this chat carries on, and posts its results here when it is done. Use it for slow work: comparing many websites, long research. The job does not see this chat, so `task` must say everything it needs (dates, places, what to compare, how to report). Tell the person you have started it.",
+            { task: z.string() },
+            async ({ task }) => {
+              try {
+                const waiting = (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled && r.background);
+                if (waiting.length >= MAX_BACKGROUND) throw new DirectoryError(`This chat already has ${MAX_BACKGROUND} background jobs waiting`);
+                // a second ahead: a run time must be in the future; the scheduler picks it up on its next tick
+                await createRoutine(deps.db, ctx.tenantId, { definitionId: ctx.definitionId, chatId: ctx.chatId, prompt: task, runAt: new Date(Date.now() + 1000), background: true, createdByPersonId: ctx.personId });
+                return ok("Started; its results will be posted in this chat");
+              } catch (e) {
+                return fail(e);
+              }
+            },
+          ),
+        ]),
     ...(ctx.post
       ? [
           tool("post", "Post a message to the chat for this routine run.", { text: z.string() }, async ({ text }) => {

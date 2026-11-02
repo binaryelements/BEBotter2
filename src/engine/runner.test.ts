@@ -253,6 +253,31 @@ describe("runTurn", () => {
     expect((await db.select().from(sessions))[0]!.sdkSessionId).toBe("chat-session");
   });
 
+  it("a background job uses its own session with more steps; a chat turn keeps the chat's", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(sessions).values({ chatId: "c1", definitionId: definition.id, sdkSessionId: "chat-session", updatedAt: new Date() });
+    const q = fakeQuery({ calls: [], result: { session_id: "job-session" } });
+    await runTurn(deps(db, q.fn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "compare fares", askConfirmation: async () => {},
+      routine: { id: "r1", grantPersonId: null, post: async () => {}, background: true },
+    });
+    expect(q.seen[0]).toMatchObject({ maxTurns: 100 });
+    expect(q.seen[0]!.resume).toBeUndefined();
+    expect((await db.select().from(sessions))[0]!.sdkSessionId).toBe("chat-session");
+  });
+
+  it("web search brings the browser, as desktop Chrome on Linux; without it there is none", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, webSearch: true }, person, text: "x", askConfirmation: async () => {} });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, webSearch: false }, person, text: "x", askConfirmation: async () => {} });
+    expect(q.seen[0]!.mcpServers!.browser).toMatchObject({ type: "stdio", args: expect.arrayContaining(["--headless", "--isolated", expect.stringMatching(/X11; Linux x86_64.*Chrome\/\d+/)]) });
+    expect(q.seen[0]!.tools).toEqual(["WebSearch", "WebFetch"]);
+    expect(q.seen.at(-1)!.mcpServers).not.toHaveProperty("browser");
+  });
+
   it("a saved server named like a built-in neither loads nor shadows it", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

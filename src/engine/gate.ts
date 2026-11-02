@@ -1,5 +1,6 @@
 import { isReservedMcpName } from "../bots/definitions.js";
 import type { BotDefinition } from "../db/schema.js";
+import { BROWSER_READS } from "./browser.js";
 
 export type ToolClass = "read" | "write" | "approve";
 /** An admin's choice for one bot's tool: free runs it as a read, confirm asks as a write. */
@@ -12,8 +13,10 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__connections__http_change: "write",
   mcp__connections__approve: "approve",
   mcp__routine__remind: "read",
+  mcp__routine__background: "read",
   mcp__routine__post: "read",
   mcp__computer__bash: "read",
+  ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
   ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "read_attachment", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
   // Graph writes act as the person, so like an approval they always ask and no admin rule can free them
   ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"].map((t) => [`mcp__m365__${t}`, "approve"])),

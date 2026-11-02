@@ -11,6 +11,10 @@ describe("classify", () => {
     expect(classify("WebSearch", def)).toBe("read");
     expect(classify("WebFetch", def)).toBe("read");
   });
+  it("lets the browser look, click and type freely, but asks before it runs page code or uploads a file", () => {
+    for (const t of ["navigate", "snapshot", "click", "type", "fill_form"]) expect(classify(`mcp__browser__browser_${t}`, def)).toBe("read");
+    for (const t of ["evaluate", "run_code_unsafe", "file_upload", "cookie_set"]) expect(classify(`mcp__browser__browser_${t}`, def)).toBe("write");
+  });
   it("treats the computer's bash as read", () => {
     expect(classify("mcp__computer__bash", def)).toBe("read");
   });

@@ -61,7 +61,8 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
       return fail("its owner is not signed in");
     }
   }
-  await serialize(`${chatId}:${definitionId}`, async () => {
+  // a background job queues on its own, so the chat's messages are not held behind it
+  await serialize(routine.background ? `${chatId}:${definitionId}:${routine.id}` : `${chatId}:${definitionId}`, async () => {
     let result: RunResult;
     try {
       result = await deps.runTurn({
@@ -72,7 +73,7 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
         text: routine.prompt,
         receivedAt: due,
         askConfirmation: (req) => deps.send(chatId, confirmationCard(req)),
-        routine: { id: routine.id, grantPersonId, post },
+        routine: { id: routine.id, grantPersonId, post, background: routine.background },
         ...(graphToken ? { graphToken } : {}),
       });
     } catch (err) {

@@ -17,6 +17,9 @@ importers:
       '@microsoft/agents-hosting-express':
         specifier: 1.9.1
         version: 1.9.1(@opentelemetry/api@1.10.0)
+      '@playwright/mcp':
+        specifier: 0.0.83
+        version: 0.0.83
       dockerode:
         specifier: ^5.0.1
         version: 5.0.1
@@ -689,6 +692,11 @@ packages:
 
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
+
+  '@playwright/mcp@0.0.83':
+    resolution: {integrity: sha512-oNcl+Ae2/IAjhfPeP46BfIkSakfmprY+aOtkv5MjrQ4lPav4/yNtPhL0iq8SlIM90oApWgBDUxaNKvktazUKOg==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -1818,6 +1826,16 @@ packages:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
 
+  playwright-core@1.64.0-alpha-1790635538000:
+    resolution: {integrity: sha512-pNwaXirhXMRLaRQs4NQ18EpTdtDoFwyPH9FOaaDC7YXG4hpwE2xmwCic/1srbuExVQC7zT9LJSJpDBAru+Vo9A==}
+    engines: {node: '>=20'}
+    hasBin: true
+
+  playwright@1.64.0-alpha-1790635538000:
+    resolution: {integrity: sha512-/5XDUMxpOd/9AojJtWDFIRV3EJZNQ0AwvK69wgt3CPzy8wTgiBG9pX45VfxtqtvIRGwfWzMhrvawNKreG69Snw==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   postcss@8.5.32:
     resolution: {integrity: sha512-LJlKCCAUFKOuZxipUdYw1NzIITEsPcgyOG9LkvRJvuKj/bRzbuRY0ARXvL0pWGpsZvn8jku+LMep2eU0seHp8g==}
     engines: {node: ^10 || ^12 || >=14}
@@ -2609,6 +2627,11 @@ snapshots:
   '@opentelemetry/api@1.10.0': {}
 
   '@oxc-project/types@0.155.0': {}
+
+  '@playwright/mcp@0.0.83':
+    dependencies:
+      playwright: 1.64.0-alpha-1790635538000
+      playwright-core: 1.64.0-alpha-1790635538000
 
   '@protobufjs/aspromise@1.1.2': {}
 
@@ -3657,6 +3680,12 @@ snapshots:
   picomatch@4.0.7: {}
 
   pkce-challenge@5.0.1: {}
+
+  playwright-core@1.64.0-alpha-1790635538000: {}
+
+  playwright@1.64.0-alpha-1790635538000:
+    dependencies:
+      playwright-core: 1.64.0-alpha-1790635538000
 
   postcss@8.5.32:
     dependencies:

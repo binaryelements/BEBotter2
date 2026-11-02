@@ -1,0 +1,1 @@
+ALTER TABLE "routines" ADD COLUMN "background" boolean DEFAULT false NOT NULL;

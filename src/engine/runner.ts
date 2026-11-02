@@ -23,6 +23,7 @@ import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
 
 export type { TurnTimings };
 import type { Confirmations, Outcome } from "./confirm.js";
+import { browserMcpServer } from "./browser.js";
 import { classify } from "./gate.js";
 import type { LiveSessions } from "./live.js";
 import { recordTools, toolRule, toolRulesFor } from "./tool-rules.js";
@@ -148,6 +149,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       mcpServers: {
         ...mcpServerConfigs(definition, deps.secretsKey),
         ...(containerId ? { computer: computerMcpServer(deps.docker, containerId) } : {}),
+        ...(definition.webSearch ? { browser: browserMcpServer() } : {}),
         // Personal reads shared notes but stores nothing and reaches no company systems: what it saw in one person's mail must not reach others
         knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
         ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
@@ -183,7 +185,7 @@ export type RunTurnInput = {
   /** When the turn was asked for (the message arrived, the routine was due); defaults to now. */
   receivedAt?: Date;
   progress?: (event: ProgressEvent) => void;
-  routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void> };
+  routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void>; background?: boolean };
   /** The person's Microsoft Graph token, asked for per call; only for person definitions. Never stored, logged or shown to the model. */
   graphToken?: () => Promise<string | undefined>;
 };
@@ -249,8 +251,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     }
   };
 
-  // a run under an admin grant starts clean: text from the chat must not steer it, and its context stays out of the chat's session
-  const ownSession = !!turn.routine?.grantPersonId;
+  // a run under an admin grant starts clean: text from the chat must not steer it, and its context stays out of the chat's session;
+  // a background job too, so the chat carries on beside it
+  const ownSession = !!turn.routine?.grantPersonId || !!turn.routine?.background;
   const [session] = ownSession ? [] : await db
     .select()
     .from(sessions)
@@ -390,7 +393,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   const once = async (resume?: string): Promise<SDKResultMessage | undefined> => {
     resetTimings();
-    options ??= setup.buildOptions(() => scope);
+    // a background job works through many pages (each browser click is a step), so it gets more steps than a chat turn
+    options ??= { ...setup.buildOptions(() => scope), ...(turn.routine?.background ? { maxTurns: 100 } : {}) };
     for await (const msg of deps.queryFn({ prompt, options: { ...options, ...(resume ? { resume } : {}) } })) {
       observe(msg);
       if (msg.type === "result") return msg;

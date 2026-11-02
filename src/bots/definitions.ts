@@ -9,7 +9,7 @@ import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
-export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine", "mail", "m365"] as const;
+export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine", "mail", "m365", "browser"] as const;
 
 /** MCP connections attach as `conn-<name>`, so that prefix is reserved too. */
 export const isReservedMcpName = (name: string): boolean => (RESERVED_MCP_NAMES as readonly string[]).includes(name.toLowerCase()) || name.toLowerCase().startsWith("conn-");
