@@ -24,6 +24,22 @@ const FAILED_TO_SIGN_IN = -120510; // Errors.FailedToSignIn in agents-hosting 1.
 export const graphToken = async (app: AgentApplication<TurnState>, ctx: TurnContext): Promise<string | undefined> =>
   (await app.authorization.getToken(ctx, "graph")).token;
 
+/**
+ * Runs a send to Teams, once more after a second if the connection failed (about 1 in 20 to the connector resets).
+ * An HTTP error is an answer, not a dropped connection, and is not retried.
+ * shortcut: a reset after Teams took the message can post it twice; a rare duplicate beats a lost reply
+ */
+export async function retryNetwork<T>(send: () => Promise<T>, waitMs = 1000): Promise<T> {
+  try {
+    return await send();
+  } catch (e) {
+    if (!(e instanceof TypeError && e.message === "fetch failed")) throw e;
+    console.error("send to Teams failed, retrying:", (e.cause as { code?: string } | undefined)?.code ?? "unknown");
+    await new Promise((r) => setTimeout(r, waitMs));
+    return send();
+  }
+}
+
 /** The turn's Teams stream. end throws unless the final message reached the chat, so the caller can send it another way. */
 export function teamsStream(ctx: TurnContext): TeamsStream {
   return {
@@ -132,13 +148,13 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         conversationReference: ctx.activity.getConversationReference(),
       },
       {
-        send: async (text) => (await ctx.sendActivity(text))?.id,
-        update: async (id, text) => {
+        send: (text) => retryNetwork(async () => (await ctx.sendActivity(text))?.id),
+        update: (id, text) => retryNetwork(async () => {
           const activity = MessageFactory.text(text);
           activity.id = id; // the spread form loses the Activity class
           await ctx.updateActivity(activity);
-        },
-        sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
+        }),
+        sendCard: (card) => retryNetwork(async () => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card))))),
         // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
         ...(conversationType === "personal" ? { stream: teamsStream(ctx) } : {}),
         ...(signedIn ? { graphToken: () => graphToken(app, ctx), signOut: () => app.authorization.signOut(ctx, state, "graph") } : {}),
