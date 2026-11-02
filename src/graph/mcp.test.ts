@@ -101,6 +101,16 @@ describe("m365 mcp", () => {
     expect(await s.call("read_attachment", { id: "..", attachmentId: "pdf" })).toMatchObject({ isError: true });
   });
 
+  it("read_attachment keeps a long document whole, and says so when one is too long to keep", async () => {
+    const pdf = json({ "@odata.type": "#microsoft.graph.fileAttachment", id: "a1", name: "guide.pdf", contentType: "application/pdf", size: 3, contentBytes: Buffer.from("PDF").toString("base64") });
+    const g = graph({ "GET /me/messages/m1/attachments/a1": pdf });
+    const whole = "x".repeat(60_000);
+    expect(out(await server(g.fetchFn, ["mail.read"], undefined, async () => whole).call("read_attachment", { id: "m1", attachmentId: "a1" }))).toMatchObject({ text: whole });
+    const cut = out(await server(g.fetchFn, ["mail.read"], undefined, async () => "x".repeat(90_000)).call("read_attachment", { id: "m1", attachmentId: "a1" })) as { text: string; note: string };
+    expect(cut.text).toHaveLength(80_000);
+    expect(cut.note).toBe("cut short: first 80000 of 90000 characters");
+  });
+
   it("a PDF attachment without a reader gives its details only, and a reader's failure says nothing of the document", async () => {
     const pdf = json({ "@odata.type": "#microsoft.graph.fileAttachment", id: "a1", name: "inv.pdf", contentType: "application/pdf", size: 3, contentBytes: Buffer.from("PDF").toString("base64") });
     const g = graph({ "GET /me/messages/m1/attachments/a1": pdf });
