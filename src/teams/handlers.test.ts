@@ -95,7 +95,7 @@ describe("handleMessage", () => {
   it("says so and skips the engine when nothing is assigned", async () => {
     const s = await setup(false);
     await s.run(msg("groupChat"));
-    expect(s.sent).toEqual(["No bot is set up for this chat yet."]);
+    expect(s.sent).toEqual(["No bot is set up for this chat yet. An admin can choose one on the admin site, under Assignments."]);
     expect(s.runTurn).not.toHaveBeenCalled();
   });
 

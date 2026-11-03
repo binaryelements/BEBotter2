@@ -176,7 +176,7 @@ export async function handleMessage(
       definition = usable[0];
     }
   }
-  if (!definition) return void (await io.send("No bot is set up for this chat yet."));
+  if (!definition) return void (await io.send("No bot is set up for this chat yet. An admin can choose one on the admin site, under Assignments."));
   // Personal acts as one person: only in their own one-to-one chat, whatever the assignment says
   if (definition.identity === "person" && (msg.conversationType !== "personal" || (await ownerOf(db, msg.chatId)) !== person.id)) return void (await io.send("This assistant is private to its owner."));
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
