@@ -27,6 +27,7 @@ describe("classify", () => {
       ["mcp__connections__approve", "approve"],
       ["mcp__routine__remind", "read"],
       ["mcp__routine__post", "read"],
+      ...["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read"] as [string, string]),
       ["mcp__computer__bash", "read"],
       ["mcp__mail__send_email", "write"],
       ["mcp__mail__reply_to_email", "write"],

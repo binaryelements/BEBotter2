@@ -14,6 +14,8 @@ import { connectionMcpConfigs } from "../connections/store.js";
 import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
+import { learningsMcpServer } from "../learnings/mcp.js";
+import { learningsNote, listLearnings } from "../learnings/store.js";
 import type { Db } from "../db/client.js";
 import { chats, mailboxes, sessions } from "../db/schema.js";
 import { getTenantSettings } from "../org/org.js";
@@ -96,6 +98,10 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     const names = rules.filter(([, r]) => r === rule).map(([t]) => t.replace(/^mcp__.+?__/, ""));
     return names.length ? ` ${words}: ${names.join(", ")}.` : "";
   };
+  // a Personal assistant is one bot shared by everyone, so it reads only the shared learnings and its chat owner's own
+  const personal = definition.identity === "person";
+  const owner = personal ? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null) : null;
+  const learnt = await listLearnings(db, tenantId, definition.id, owner);
   const rulesText =
     ruleNote("free", "An admin set these actions to run without a confirmation card, so run them and never say they need confirming") +
     ruleNote("confirm", "An admin set these actions to need a confirmation card in the chat");
@@ -135,7 +141,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         mail
           ? `Your own email address is ${mail.address}.`
           : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-      }${DEFAULTS_NOTE}${rulesText}`,
+      }${DEFAULTS_NOTE}${rulesText}${learningsNote(learnt)}`,
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
       allowedTools: [], // a tool named here bypasses canUseTool
@@ -156,6 +162,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
         ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
         routine: routineMcpServer(deps, ctx),
+        learnings: learningsMcpServer(deps, ctx, personal),
         ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
         ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
         ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
@@ -166,7 +173,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     };
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, learnt.map((l) => [l.id, l.text]), mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, buildOptions, fingerprint };
 }
 

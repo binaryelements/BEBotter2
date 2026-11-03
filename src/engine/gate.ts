@@ -16,6 +16,8 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__routine__background: "read",
   mcp__routine__reminders: "read",
   mcp__routine__cancel_reminder: "read", // only this chat's own one-offs
+  // Martin's call: anyone's teaching applies at once; admins review and undo on the bot's Learnings tab
+  ...Object.fromEntries(["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
   mcp__routine__post: "read",
   mcp__computer__bash: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),

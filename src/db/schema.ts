@@ -284,6 +284,21 @@ export const routines = pgTable("routines", {
   createdAt: createdAt(),
 });
 
+/** Something a person taught a bot; it is in the bot's instructions from the next message on. */
+export const learnings = pgTable("learnings", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+  text: text("text").notNull(),
+  /** set on a Personal assistant's learnings: they apply to that person's chats only, since Personal is one bot shared by everyone */
+  ownerPersonId: text("owner_person_id").references(() => people.id),
+  taughtByPersonId: text("taught_by_person_id").notNull().references(() => people.id),
+  chatId: text("chat_id").references(() => chats.id), // null when an admin added it on the admin site
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type Learning = typeof learnings.$inferSelect;
 export type Tenant = typeof tenants.$inferSelect;
 export type Person = typeof people.$inferSelect;
 export type Department = typeof departments.$inferSelect;

@@ -9,6 +9,7 @@ import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
+import { addLearning, listLearnings } from "../learnings/store.js";
 import { eq } from "drizzle-orm";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { MailError } from "../mail/agentmail.js";
@@ -271,6 +272,25 @@ describe("bots screen", () => {
       expect(await listRoutines(db, T, d.id)).toHaveLength(1); // the first press changes nothing
       await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", [["confirm", "yes"]]);
       expect(await listRoutines(db, T, d.id)).toHaveLength(0);
+    });
+    it("the learnings tab lists who taught what and where, and an admin adds, rewords and deletes", async () => {
+      const d = await def("helper");
+      const chatId = "chat-l1";
+      await db.insert(chats).values({ id: chatId, tenantId: T, conversationType: "personal", label: "Sales room" } as typeof chats.$inferInsert);
+      await db.insert(chatAssignments).values({ chatId, definitionId: d.id } as typeof chatAssignments.$inferInsert);
+      const l = await addLearning(db, T, { definitionId: d.id, text: "Call scheduled runs reminders", taughtByPersonId: id.Hal, chatId });
+      const page = await (await get(`/admin/bots/${d.id}?tab=learnings`, "Ann")).text();
+      expect(page).toMatch(/Call scheduled runs reminders<\/textarea>[\s\S]*?Hal<\/td><td>Sales room<\/td><td>everyone/);
+      expect((await post(`/admin/bots/${d.id}/learnings`, "Hal", [["text", "x"]])).status).toBe(403);
+      await post(`/admin/bots/${d.id}/learnings`, "Ann", [["text", "Sign off with Cheers"]]);
+      await post(`/admin/bots/${d.id}/learnings/${l.id}`, "Ann", [["text", "Say reminders"]]);
+      expect((await listLearnings(db, T, d.id)).map((x) => x.text)).toEqual(["Say reminders", "Sign off with Cheers"]);
+      const other = await def("other");
+      expect((await post(`/admin/bots/${other.id}/learnings/${l.id}`, "Ann", [["text", "hijack"]])).status).toBe(400); // another bot's id
+      expect(await (await post(`/admin/bots/${d.id}/learnings/${l.id}/delete`, "Ann", [])).text()).toContain("confirm delete?");
+      expect(await listLearnings(db, T, d.id)).toHaveLength(2);
+      await post(`/admin/bots/${d.id}/learnings/${l.id}/delete`, "Ann", [["confirm", "yes"]]);
+      expect((await listLearnings(db, T, d.id)).map((x) => x.text)).toEqual(["Sign off with Cheers"]);
     });
     it("lists what is waiting or repeating, and folds one-offs that already ran away", async () => {
       const d = await def("helper");
@@ -600,7 +620,7 @@ describe("bot page tabs and arming", () => {
   const get = (path: string) => fetch(url + path, { redirect: "manual", headers: { cookie: cookie() } }).then((r) => r.text());
 
   it("each tab shows its own section and not the others", async () => {
-    const section: Record<string, string> = { persona: "Persona text.", email: "remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines and reminders</h2>" };
+    const section: Record<string, string> = { persona: "Persona text.", email: "remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines and reminders</h2>", learnings: "<h2>Learnings</h2>" };
     for (const [tab, mark] of Object.entries(section)) {
       const page = await get(`/admin/bots/${botId}?tab=${tab}`);
       expect(page).toContain(mark);

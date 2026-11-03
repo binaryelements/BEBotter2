@@ -15,7 +15,8 @@ import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, connections, mailboxes, sessions } from "../db/schema.js";
+import { botDefinitions, chats, connections, mailboxes, sessions } from "../db/schema.js";
+import { addLearning } from "../learnings/store.js";
 import { requestConnection, revokeConnection } from "../connections/store.js";
 import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
@@ -198,7 +199,7 @@ describe("runTurn", () => {
     expect(result).toMatchObject({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toEqual({ actionId: expect.any(String), label: "Ops", toolName: "mcp__tickets__close_ticket", input: { id: 7 } });
-    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "routine", "tickets"]);
+    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "learnings", "routine", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
     expect(q.seen[0]!.cwd).toBe(filesDir);
 
@@ -277,6 +278,26 @@ describe("runTurn", () => {
     expect(q.seen[0]!.tools).toEqual(["WebSearch", "WebFetch"]);
     expect(q.seen.at(-1)!.mcpServers).not.toHaveProperty("browser");
     expect(q.seen[0]!.disallowedTools).toContain("mcp__browser__browser_run_code_unsafe"); // runs on the server, not in the page
+  });
+
+  it("what the bot was taught is in its instructions from the next turn; on Personal only the chat owner's own and the shared ones", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const bob = await upsertPerson(db, { tenantId: "t1", aadObjectId: "b1", name: "Bob" });
+    const q = fakeQuery({ calls: [] });
+    const turn = (def = definition) => runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: def, person, text: "x", askConfirmation: async () => {} });
+    await turn();
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain("taught you");
+    await addLearning(db, "t1", { definitionId: definition.id, text: "Call scheduled runs reminders", taughtByPersonId: person.id, chatId: "c1" });
+    await addLearning(db, "t1", { definitionId: definition.id, text: "Bob's wife is Jo", taughtByPersonId: bob.id, ownerPersonId: bob.id });
+    await turn();
+    expect(String(q.seen.at(-1)!.systemPrompt)).toContain("- Call scheduled runs reminders");
+    expect(String(q.seen.at(-1)!.systemPrompt)).not.toContain("Jo");
+    expect(q.seen.at(-1)!.mcpServers).toHaveProperty("learnings");
+    const personal = { ...definition, identity: "person" as const, mcpServers: [] };
+    await db.update(chats).set({ ownerPersonId: bob.id }).where(eq(chats.id, "c1"));
+    await turn(personal);
+    expect(String(q.seen.at(-1)!.systemPrompt)).toMatch(/- Call scheduled runs reminders\n- Bob's wife is Jo/);
   });
 
   it("a saved server named like a built-in neither loads nor shadows it", async () => {
