@@ -95,7 +95,7 @@ describe("handleMessage", () => {
   it("says so and skips the engine when nothing is assigned", async () => {
     const s = await setup(false);
     await s.run(msg("groupChat"));
-    expect(s.sent).toEqual(["No bot is set up for this chat yet. An admin can choose one on the admin site, under Assignments."]);
+    expect(s.sent).toEqual(["No bot is set up for this chat yet. An admin can choose one by mentioning me with switch, or on the admin site under Assignments."]);
     expect(s.runTurn).not.toHaveBeenCalled();
   });
 
@@ -742,6 +742,25 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(JSON.stringify(await by(s.ann.id, c.id))).toContain("You can't choose this bot.");
     expect(JSON.stringify(await by(s.ann.id, "forged"))).toContain("You can't choose this bot.");
     expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("in a group chat an admin gets the card of company bots and chooses; anyone else is told how, and can't choose", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    await ensurePersonalDefinition(s.db, "t1", "m");
+    await setRole(s.db, "t1", s.ann.id, "admin");
+    const group = (text: string, from: string) => handleMessage(s.deps, { ...msg("groupChat"), text, from: { aadObjectId: from, name: from } }, s.io);
+    await group("hello", "u2");
+    expect(s.sent).toEqual(["No bot is set up for this chat yet. An admin can choose one by mentioning me with switch, or on the admin site under Assignments."]);
+    await group("hello", "u1");
+    expect(s.titles(s.cards[0])).toEqual(["Helper"]);
+    expect(JSON.stringify(await handleChoose(s.deps, { tenantId: "t1", chatId: "c1", personId: s.bob.id }, a.id))).toContain("You can't choose this bot.");
+    expect(await s.assigned()).toEqual([]);
+    expect(JSON.stringify(await handleChoose(s.deps, { tenantId: "t1", chatId: "c1", personId: s.ann.id }, a.id))).toContain("You're now talking to Helper.");
+    expect(await s.assigned()).toEqual([a.id]);
+    await group("switch", "u1");
+    expect(s.cards).toHaveLength(2);
+    expect(s.runTurn).not.toHaveBeenCalled();
   });
 
   it("leaves My assistant off the card of a person without the flag", async () => {

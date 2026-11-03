@@ -1,9 +1,9 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import express from "express";
 import type { Request, Router } from "express";
 import { listDefinitions, setChatDefinition, setChatLabel } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
-import { chatAssignments, chats } from "../db/schema.js";
+import { auditEvents, chatAssignments, chats, people } from "../db/schema.js";
 import { isAdmin } from "./access.js";
 import { html, layout, pageHead, scroll } from "./html.js";
 import { adminOf, wrap } from "./http.js";
@@ -22,24 +22,33 @@ export function assignmentRoutes(db: Db): Router {
     wrap(async (_req, res) => {
       const { actor, csrf } = adminOf(res);
       if (!isAdmin(actor)) return page(res, 403, "Not allowed.");
-      const [defs, rows] = await Promise.all([
+      const [defs, rows, talkers] = await Promise.all([
         listDefinitions(db, actor.tenantId),
         db
-          .select({ id: chats.id, type: chats.conversationType, label: chats.label, lastSeenAt: chats.lastSeenAt, definitionId: chatAssignments.definitionId })
+          .select({ id: chats.id, type: chats.conversationType, label: chats.label, lastSeenAt: chats.lastSeenAt, definitionId: chatAssignments.definitionId, owner: people.name })
           .from(chats)
           .leftJoin(chatAssignments, eq(chatAssignments.chatId, chats.id))
+          .leftJoin(people, eq(people.id, chats.ownerPersonId))
           .where(eq(chats.tenantId, actor.tenantId))
           .orderBy(sql`${chats.lastSeenAt} desc nulls last`, desc(chats.createdAt)),
+        // who has spoken in each chat, from the messages recorded there
+        db
+          .select({ chatId: auditEvents.chatId, names: sql<string>`string_agg(distinct ${people.name}, ', ')` })
+          .from(auditEvents)
+          .innerJoin(people, eq(people.id, auditEvents.personId))
+          .where(and(eq(auditEvents.tenantId, actor.tenantId), eq(auditEvents.kind, "message")))
+          .groupBy(auditEvents.chatId),
       ]);
+      const who = new Map(talkers.map((t) => [t.chatId, t.names]));
       const csrfField = html`<input type="hidden" name="csrf" value="${csrf}">`;
       const body = rows.map((c) => {
         const url = `/admin/assignments/${encodeURIComponent(c.id)}`;
         return html`<tr><td><form class="inline-edit" method="post" action="${url}/label">${csrfField}<input class="be-input" name="label" value="${c.label ?? ""}" placeholder="${c.id.slice(-12)}" maxlength="80" aria-label="Label"> <button class="be-btn sm">save</button></form></td>
-<td>${c.type}</td><td>${c.lastSeenAt?.toISOString() ?? ""}</td>
+<td>${c.type}</td><td>${c.type === "personal" ? (c.owner ?? "") : (who.get(c.id) ?? "")}</td><td>${c.lastSeenAt?.toISOString() ?? ""}</td>
 <td><form class="inline-edit" method="post" action="${url}">${csrfField}<select class="be-select" name="definitionId" aria-label="Bot"><option value="">none</option>${defs.filter((d) => c.type === "personal" || d.identity !== "person").map((d) => html`<option value="${d.id}" ${d.id === c.definitionId ? "selected" : ""}>${d.label}</option>`)}</select> <button class="be-btn sm">save</button></form></td></tr>`;
       });
       res.type("html").send(layout({ title: "Assignments", body: html`${pageHead("Assignments")}${
-        rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Chat</th><th>Type</th><th>Last seen</th><th>Bot</th></tr></thead><tbody>${body}</tbody></table>`) : html`<div class="be-empty">No chats yet.</div>`
+        rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Chat</th><th>Type</th><th>Who</th><th>Last seen</th><th>Bot</th></tr></thead><tbody>${body}</tbody></table>`) : html`<div class="be-empty">No chats yet.</div>`
       }`, actor, csrf }));
     }),
   );

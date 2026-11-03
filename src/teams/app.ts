@@ -142,6 +142,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         tenantId: conversation.tenantId,
         chatId: conversation.id,
         conversationType,
+        ...(conversation.name ? { name: conversation.name } : {}),
         from: { aadObjectId: from.aadObjectId, name: from.name ?? "" },
         text: (ctx.activity.text ?? "").trim(),
         receivedAt,

@@ -6,7 +6,8 @@ import { definitionsForChat, ensurePersonalDefinition, upsertDefinition } from "
 import { chats } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
-import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { recordChatOwner, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { beginAction } from "../audit/audit.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -51,6 +52,21 @@ describe("assignments screen", () => {
     });
   const assigned = async (chat: string) => (await definitionsForChat(db, chat)).map((d) => d.id);
   const path = (chat: string) => `/admin/assignments/${encodeURIComponent(chat)}`;
+
+  it("shows the chat's Teams name until an admin labels it, the owner of a personal chat, and who has spoken in a group chat", async () => {
+    await upsertChat(db, { id: "g1", tenantId: T, conversationType: "groupChat", name: "Project Falcon" });
+    await upsertChat(db, { id: "g1", tenantId: T, conversationType: "groupChat" }); // a later message without the name keeps it
+    expect((await db.select().from(chats).where(eq(chats.id, "g1")))[0].label).toBe("Project Falcon");
+    await recordChatOwner(db, "chat-1", id.Ann);
+    for (const who of ["Ann", "Hal"]) await beginAction(db, { tenantId: T, chatId: "g1", definitionId: a, personId: id[who], kind: "message", summary: "hi" });
+    const page = await (await get("/admin/assignments", "Ann")).text();
+    expect(page).toContain('value="Project Falcon"');
+    expect(page).toMatch(/<td>groupChat<\/td><td>Ann, Hal<\/td>/);
+    expect(page).toMatch(/<td>personal<\/td><td>Ann<\/td>/);
+    await post(path("g1") + "/label", "Ann", [["label", "Falcon team"]]);
+    await upsertChat(db, { id: "g1", tenantId: T, conversationType: "groupChat", name: "Project Falcon" });
+    expect((await db.select().from(chats).where(eq(chats.id, "g1")))[0].label).toBe("Falcon team");
+  });
 
   it("upsertChat stamps lastSeenAt", async () => {
     const [row] = await db.select().from(chats).where(eq(chats.id, "chat-1"));

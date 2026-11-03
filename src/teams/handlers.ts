@@ -5,8 +5,8 @@ import { chats } from "../db/schema.js";
 import type { TurnTimings } from "../db/schema.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { ProgressEvent, RunResult, RunTurnInput } from "../engine/runner.js";
-import { assignToChat, definitionsForChat, setChatDefinition, usableDefinitions } from "../bots/definitions.js";
-import { mayUseDefinition } from "../admin/access.js";
+import { assignToChat, definitionsForChat, listDefinitions, setChatDefinition, usableDefinitions } from "../bots/definitions.js";
+import { isAdmin, loadActor, mayUseDefinition } from "../admin/access.js";
 import { findPersonId, getTenantSettings, recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { botTitle, chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
 import type { AdaptiveCard } from "./cards.js";
@@ -15,6 +15,8 @@ export type IncomingMessage = {
   tenantId: string;
   chatId: string;
   conversationType: string;
+  /** What Teams calls the chat, when it has a name (a group chat's topic). */
+  name?: string;
   from: { aadObjectId: string; name: string };
   text: string;
   receivedAt?: Date;
@@ -158,7 +160,7 @@ export async function handleMessage(
   const { db } = deps;
   await upsertTenant(db, { id: msg.tenantId });
   const person = await upsertPerson(db, { tenantId: msg.tenantId, aadObjectId: msg.from.aadObjectId, name: msg.from.name });
-  await upsertChat(db, { id: msg.chatId, tenantId: msg.tenantId, conversationType: msg.conversationType });
+  await upsertChat(db, { id: msg.chatId, tenantId: msg.tenantId, conversationType: msg.conversationType, ...(msg.name ? { name: msg.name } : {}) });
   await saveConversationReference(db, msg.chatId, msg.conversationReference);
   let [definition] = await definitionsForChat(db, msg.chatId);
   if (msg.conversationType === "personal") {
@@ -176,7 +178,11 @@ export async function handleMessage(
       definition = usable[0];
     }
   }
-  if (!definition) return void (await io.send("No bot is set up for this chat yet. An admin can choose one on the admin site, under Assignments."));
+  if (msg.conversationType !== "personal" && (!definition || msg.text.trim().toLowerCase() === "switch")) {
+    const bots = await groupBots(db, msg.tenantId, person.id);
+    if (bots?.length) return void (await io.sendCard(chooseBotCard(bots)));
+  }
+  if (!definition) return void (await io.send("No bot is set up for this chat yet. An admin can choose one by mentioning me with switch, or on the admin site under Assignments."));
   // Personal acts as one person: only in their own one-to-one chat, whatever the assignment says
   if (definition.identity === "person" && (msg.conversationType !== "personal" || (await ownerOf(db, msg.chatId)) !== person.id)) return void (await io.send("This assistant is private to its owner."));
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
@@ -302,7 +308,14 @@ export const choosePayload = (action: unknown): string => {
   return String(src.definitionId ?? "");
 };
 
-/** The owner picks the bot for their one-to-one chat; anything else (another person, a bot they may not use) changes nothing. */
+/** The company bots an admin may put in a group chat (it answers everyone there, so only an admin chooses); undefined for anyone else. */
+async function groupBots(db: Db, tenantId: string, personId: string) {
+  const actor = await loadActor(db, tenantId, personId);
+  if (!actor || !isAdmin(actor)) return undefined;
+  return (await listDefinitions(db, tenantId)).filter((d) => d.identity === "service");
+}
+
+/** The owner picks the bot for their one-to-one chat, an admin for a group chat; anything else changes nothing. */
 export async function handleChoose(
   deps: Pick<HandlerDeps, "db" | "defaultModel">,
   who: { tenantId: string; chatId: string; personId: string | undefined },
@@ -312,6 +325,12 @@ export async function handleChoose(
   const refused = resultCard("You can't choose this bot.");
   if (!who.personId) return refused;
   const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(and(eq(chats.id, who.chatId), eq(chats.tenantId, who.tenantId)));
+  if (chat && chat.type !== "personal") {
+    const bots = await groupBots(db, who.tenantId, who.personId);
+    if (!bots?.some((d) => d.id === definitionId)) return refused;
+    await setChatDefinition(db, who.tenantId, who.chatId, definitionId);
+    return chooseBotCard(bots, definitionId);
+  }
   if (chat?.type !== "personal" || chat.owner !== who.personId) return refused;
   const usable = await usableDefinitions(db, who.tenantId, who.personId, deps.defaultModel);
   if (!usable.some((d) => d.id === definitionId)) return refused;

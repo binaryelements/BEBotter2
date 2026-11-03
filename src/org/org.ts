@@ -29,12 +29,14 @@ export async function upsertPerson(
 
 export async function upsertChat(
   db: Db,
-  { id, tenantId, conversationType }: { id: string; tenantId: string; conversationType: string },
+  { id, tenantId, conversationType, name }: { id: string; tenantId: string; conversationType: string; name?: string },
 ): Promise<Chat> {
+  // name: what Teams calls the chat (a group chat's topic); it becomes the label until an admin sets one
+  const label = name?.trim().slice(0, 80) || null;
   const [row] = await db
     .insert(chats)
-    .values({ id, tenantId, conversationType, lastSeenAt: new Date() })
-    .onConflictDoUpdate({ target: chats.id, set: { conversationType, lastSeenAt: new Date() } })
+    .values({ id, tenantId, conversationType, label, lastSeenAt: new Date() })
+    .onConflictDoUpdate({ target: chats.id, set: { conversationType, lastSeenAt: new Date(), label: sql`coalesce(${chats.label}, excluded.label)` } })
     .returning();
   return row;
 }
