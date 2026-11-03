@@ -870,18 +870,18 @@ describe("runTurn", () => {
     expect(Object.keys((q.seen[0]!.mcpServers!.knowledge as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools).sort()).toEqual(["list", "read", "search"]);
   });
 
-  it("a Graph write always asks, even when an admin set it free, and its audit row keeps recipients and subject but never the body", async () => {
+  it("a Graph write asks by default, runs freely when an admin set it free, and its audit row keeps recipients and subject but never the body", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
     const personal = { ...definition, identity: "person" as const, graph: ["mail.send" as const] };
-    await setToolRule(db, definition.id, "mcp__m365__send_mail", "free"); // stored by hand: the page locks it
+    await setToolRule(db, definition.id, "mcp__m365__send_mail", "free");
     const input = { to: ["bea@example.test"], subject: "Quarterly figures", body: "the secret body text" };
     const q = fakeQuery({ calls: [["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]] });
     const asked: ConfirmationRequest[] = [];
     // every card expires at once, so the test never waits for a click
     await runTurn(deps(db, q.fn, new Confirmations((fn) => (fn(), 0))), { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", askConfirmation: async (r) => void asked.push(r) });
-    expect(asked.map((r) => [r.toolName, r.input])).toEqual([["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]]);
-    expect(q.decisions).toEqual(["deny", "deny"]);
+    expect(asked.map((r) => [r.toolName, r.input])).toEqual([["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]]);
+    expect(q.decisions).toEqual(["allow", "deny"]);
     const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
     expect(rows).toHaveLength(2);
     expect(JSON.stringify(rows)).not.toContain("secret body");

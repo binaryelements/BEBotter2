@@ -30,7 +30,7 @@ export const browserMcpServer = (): McpServerConfig => ({
  * Not on this list, so it asks: file_upload (the bot's files leave). run_code_unsafe runs on the server, not in the page; the runner removes it.
  */
 export const BROWSER_READS = [
-  "evaluate",
+  "evaluate", "drag", "drop", "emulate_media", "network_request",
   "navigate", "navigate_back", "navigate_forward", "reload", "snapshot", "take_screenshot", "click", "hover", "type", "press_key",
   "press_sequentially", "fill_form", "select_option", "check", "uncheck", "wait_for", "tabs", "close", "resize", "handle_dialog", "find",
   "console_messages", "network_requests", "verify_element_visible", "verify_list_visible", "verify_text_visible", "verify_value",

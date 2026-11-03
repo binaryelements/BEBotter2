@@ -22,8 +22,8 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__computer__bash: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
   ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "read_attachment", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
-  // Graph writes act as the person, so like an approval they always ask and no admin rule can free them
-  ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"].map((t) => [`mcp__m365__${t}`, "approve"])),
+  // Graph writes act as the person: they ask by default, and an admin may set one free per bot
+  ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"].map((t) => [`mcp__m365__${t}`, "write"])),
 };
 
 const MAIL_READS = new Set(["list_inboxes", "list_messages", "read_thread", "search_mail", "get_attachment", "mark_read"]);
@@ -45,7 +45,7 @@ export function defaultClass(toolName: string, def: BotDefinition, connectionSer
   return server?.readOnlyTools.includes(m[2]!) ? "read" : "write";
 }
 
-/** The default with the bot's rule on top; approve-class (connection approval, Graph writes) always asks, whatever the rule. */
+/** The default with the bot's rule on top; approve-class (connection approval) always asks, whatever the rule. */
 export function classify(toolName: string, def: BotDefinition, connectionServers: ConnectionServers = [], rule?: ToolRule): ToolClass {
   const base = defaultClass(toolName, def, connectionServers);
   if (base === "approve" || !rule) return base;

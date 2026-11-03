@@ -198,7 +198,8 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
   const actionsOf = async (def: BotDefinition, linked: Connection[]) => {
     const [tools, rules] = await Promise.all([knownTools(db, def.id), toolRulesFor(db, def.id)]);
     const readOnly = mcpReadOnly(activeMcp(linked));
-    return tools.map((tool) => {
+    // run_code_unsafe is blocked by the runner, so a rule for it would mean nothing
+    return tools.filter((t) => t !== "mcp__browser__browser_run_code_unsafe").map((tool) => {
       const base = defaultClass(tool, def, readOnly);
       const fallback: ToolRule = base === "read" ? "free" : "confirm";
       const current: ToolRule = base === "approve" ? "confirm" : (rules.get(tool) ?? fallback);
