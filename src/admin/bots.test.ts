@@ -8,6 +8,7 @@ import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
+import { fakeSsh } from "../connections/ssh.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
 import { addLearning, listLearnings } from "../learnings/store.js";
 import { eq } from "drizzle-orm";
@@ -39,7 +40,8 @@ describe("bots screen", () => {
     const app = express();
     app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m-default", fetchUsers: async () => [],
       // no MCP server answers here, so listing a server's tools always fails
-      fetchFn: (async () => { throw Object.assign(new Error("down"), { cause: { code: "ECONNREFUSED" } }); }) as typeof fetch }));
+      fetchFn: (async () => { throw Object.assign(new Error("down"), { cause: { code: "ECONNREFUSED" } }); }) as typeof fetch,
+      ssh: fakeSsh(), sql: async () => ({ columns: ["?"], rows: [[1]] }) }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());
@@ -85,6 +87,23 @@ describe("bots screen", () => {
     expect(page).not.toContain("s3cret");
     expect(JSON.stringify((await getDefinition(db, T, d.id))!.mcpServers)).not.toContain("s3cret");
     expect(await (await get("/admin/bots", "Ann")).text()).not.toContain("s3cret");
+  });
+
+  it("an admin adds an sql connection with its password and gives it to a bot; the page never shows the password", async () => {
+    const d = await def("helper");
+    const res = await post("/admin/connections", "Ann", [
+      ["name", "sap"], ["kind", "sql"], ["target", "sql1.example.test"], ["mode", "read-only"], ["engine", "mssql"], ["database", "SBO"], ["username", "reader"], ["secret", "pw-top"], ["definitionId", d.id],
+    ]);
+    expect(res.status).toBe(200); // the test page, straight after saving
+    const tested = await res.text();
+    expect(tested).toContain("Connected\n?\n1");
+    expect(tested).not.toContain("pw-top");
+    const page = await (await get("/admin/connections", "Ann")).text();
+    expect(page).toMatch(/<td>sap<\/td><td>sql<\/td><td>sql1\.example\.test<\/td><td>read-only<\/td><td>active<\/td>/);
+    expect(page).toContain(`/admin/bots/${d.id}?tab=connections`);
+    expect(page).not.toContain("pw-top");
+    expect((await post("/admin/connections", "Ann", [["name", "sap"], ["kind", "sql"], ["target", "x"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"]])).status).toBe(400);
+    expect((await post("/admin/connections", "Hal", [["name", "x"], ["kind", "http"], ["target", "https://x.test/"], ["mode", "read-only"]])).status).toBe(403);
   });
 
   it("saving the main form keeps the stored headers byte-identical", async () => {
@@ -250,7 +269,7 @@ describe("bots screen", () => {
       expect(all).toMatch(/lnk<\/td>[\s\S]*?Helper/); // the Connections screen names the bot that uses it
       expect((await get(`/admin/connections`, "Hal")).status).toBe(403);
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
-      expect(await listConnectionsFor(db, T, d.id)).toHaveLength(0);
+      expect((await listConnectionsFor(db, T, d.id)).map((x) => x.id)).not.toContain(c);
     });
     it("revoke shows the public key and the connection can no longer run", async () => {
       const c = await conn("rev");

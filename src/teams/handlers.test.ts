@@ -728,6 +728,27 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(JSON.stringify(card)).toContain("You're now talking to Other.");
   });
 
+  it("in a one-to-one chat a bot's name switches to it: alone it only switches, with a question it also answers", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    const b = await s.service("it", "IT Support");
+    await s.db.update(botDefinitions).set({ displayName: "Mickey" }).where(eq(botDefinitions.id, b.id));
+    await s.say("hi"); // two bots, none chosen: the card
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    await s.say("mickey");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(await s.assigned()).toEqual([b.id]);
+    expect(JSON.stringify(s.cards[1])).toContain("You're now talking to Mickey · IT Support.");
+    await s.say("Helper, what's up?");
+    expect(await s.assigned()).toEqual([a.id]);
+    expect(s.sent).toEqual(["**Helper**\n\nreply"]);
+    expect((s.runTurn.mock.calls[0] as any)[0].text).toBe("Helper, what's up?");
+    await s.say("hi mickey!");
+    expect(await s.assigned()).toEqual([b.id]);
+    expect(s.cards).toHaveLength(3);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a choose from anyone but the owner, or of a bot the owner may not use, and changes nothing", async () => {
     const s = await chat();
     const a = await s.service("helper", "Helper");

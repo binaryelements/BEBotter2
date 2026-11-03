@@ -151,7 +151,7 @@ export async function needsSignIn(
   if (owner && owner !== personId) return false;
   const usable = await usableDefinitions(db, m.tenantId, personId, deps.defaultModel);
   const [assigned] = await definitionsForChat(db, m.chatId);
-  const definition = assigned ?? (usable.length === 1 ? usable[0] : undefined);
+  const definition = usable.find((d) => addressedByName(m.text, d)) ?? assigned ?? (usable.length === 1 ? usable[0] : undefined);
   return definition?.identity === "person" && usable.some((d) => d.id === definition.id);
 }
 
@@ -170,6 +170,13 @@ export async function handleMessage(
     await recordChatOwner(db, msg.chatId, person.id);
     const usable = await usableDefinitions(db, msg.tenantId, person.id, deps.defaultModel);
     if (msg.text.trim().toLowerCase() === "switch" && usable.length) return void (await io.sendCard(chooseBotCard(usable)));
+    // "Jennifer, …" switches the chat to that bot and asks it; "Jennifer" alone only switches
+    const named = usable.find((d) => addressedByName(msg.text, d));
+    if (named) {
+      if (named.id !== definition?.id) await setChatDefinition(db, msg.tenantId, msg.chatId, named.id);
+      definition = named;
+      if (justName(msg.text, named)) return void (await io.sendCard(chooseBotCard(usable, named.id)));
+    }
     if (definition && !usable.some((d) => d.id === definition!.id)) {
       await io.send(`You no longer have access to ${botTitle(definition)}.`);
       return void (usable.length && (await io.sendCard(chooseBotCard(usable))));
@@ -317,10 +324,16 @@ export const choosePayload = (action: unknown): string => {
   return String(src.definitionId ?? "");
 };
 
-/** "Mickey, …" or "hey mickey …": the message starts with the bot's name (its display name, or its label). */
-export const addressedByName = (text: string, d: { displayName: string | null; label: string }): boolean => {
+const nameRe = (d: { displayName: string | null; label: string }): RegExp | undefined => {
   const name = (d.displayName || d.label).trim();
-  return !!name && new RegExp(`^\\W*(?:hey|hi|ok|okay|thanks)?\\W*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "iu").test(text);
+  return name ? new RegExp(`^\\W*(?:hey|hi|ok|okay|thanks)?\\W*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "iu") : undefined;
+};
+/** "Mickey, …" or "hey mickey …": the message starts with the bot's name (its display name, or its label). */
+export const addressedByName = (text: string, d: { displayName: string | null; label: string }): boolean => !!nameRe(d)?.test(text);
+/** "Mickey" or "hi mickey!" and nothing more: the person wants to talk to it, not ask it something. */
+export const justName = (text: string, d: { displayName: string | null; label: string }): boolean => {
+  const re = nameRe(d);
+  return !!re?.test(text) && /^\W*$/u.test(text.replace(re, ""));
 };
 
 /** The company bots an admin may put in a group chat (it answers everyone there, so only an admin chooses); undefined for anyone else. */

@@ -8,7 +8,12 @@ import {
 } from "../bots/definitions.js";
 import { count, eq } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
-import { activeMcp, ConnectionError, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
+import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
+import type { ConnectionKind, ConnectionMode } from "../connections/store.js";
+import { SQL_ENGINES } from "../connections/sql.js";
+import type { SqlRunner } from "../connections/sql.js";
+import { systemSsh } from "../connections/ssh.js";
+import type { SshRunner } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import type { BotDefinition, Connection } from "../db/schema.js";
 import { defaultClass } from "../engine/gate.js";
@@ -43,9 +48,10 @@ const many = (req: Request, name: string) => {
 const list = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
 
-export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: string; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch }): Router {
+export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: string; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner }): Router {
   const { db, secretsKey, defaultModel, onSaved, mail } = deps;
   const fetchFn = deps.fetchFn ?? fetch;
+  const connDeps = { db, secretsKey, fetchFn, ssh: deps.ssh ?? systemSsh(), ...(deps.sql ? { sql: deps.sql } : {}) };
   const router = express.Router();
   const render = (res: Response, title: string, body: SafeHtml) => {
     const { actor, csrf } = adminOf(res);
@@ -103,20 +109,81 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
     wrap(async (_req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      const [conns, links] = await Promise.all([
+      const [conns, links, defs] = await Promise.all([
         listConnections(db, actor.tenantId),
         db.select({ connectionId: definitionConnections.connectionId, id: botDefinitions.id, label: botDefinitions.label, name: botDefinitions.displayName })
           .from(definitionConnections).innerJoin(botDefinitions, eq(botDefinitions.id, definitionConnections.definitionId))
           .where(eq(botDefinitions.tenantId, actor.tenantId)),
+        listDefinitions(db, actor.tenantId),
       ]);
+      const csrf = csrfField(res);
       const rows = conns.map((c) => {
         const bots = links.filter((l) => l.connectionId === c.id);
-        return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}</td>
+        return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td>${c.mode}</td><td>${c.status}</td>
 <td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
-<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrfField(res)}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
+<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`}</td>
+<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
       });
       render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1></div></header>
-${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Used by</th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : html`<div class="be-empty">no connections yet: a bot sets one up when asked in chat</div>`}`);
+${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Used by</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
+<details class="add" id="add"><summary>add a connection…</summary>
+<form method="post" action="/admin/connections">${csrf}
+<div class="fields">
+<label>name<span class="hint">lowercase, digits and dashes</span><input name="name" required></label>
+<label>kind<select name="kind"><option value="ssh">ssh</option><option value="sql">sql database</option><option value="mcp">MCP server</option><option value="http">http API</option></select></label>
+<label>target<span class="hint">ssh/sql: host name; mcp/http: URL</span><input name="target" required></label>
+<label>mode<select name="mode"><option value="read-only">read-only</option><option value="change">change</option></select></label>
+<label>username<span class="hint">ssh and sql</span><input name="username"></label>
+<label>port<span class="hint">blank for the usual one</span><input name="port" inputmode="numeric"></label>
+<label>database engine<span class="hint">sql only</span><select name="engine">${SQL_ENGINES.map((e) => html`<option>${e}</option>`)}</select></label>
+<label>database<span class="hint">sql only</span><input name="database"></label>
+<label>header name<span class="hint">mcp/http: where the secret goes, e.g. Authorization</span><input name="headerName"></label>
+<label>secret<span class="hint">sql password, or the header value (e.g. Bearer …); stored encrypted, never shown again</span><input type="password" name="secret" autocomplete="off"></label>
+</div>
+<p>give to: ${defs.filter((d) => d.identity !== "person").map((d) => html`<label><input type="checkbox" name="definitionId" value="${d.id}"> ${d.displayName ? `${d.displayName} · ${d.label}` : d.label}</label> `)}</p>
+<p class="muted">ssh: a key pair is made for the connection; install its public key on the target, then press test.</p>
+<button class="be-btn primary">add connection</button></form></details>`);
+    }),
+  );
+
+  router.post(
+    "/connections",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const kind = field(req, "kind") as ConnectionKind;
+      const target = field(req, "target").trim();
+      const port = field(req, "port").trim() ? Number(field(req, "port")) : undefined;
+      const headerName = field(req, "headerName").trim() || undefined;
+      const secret = field(req, "secret");
+      let config: Record<string, unknown> = {};
+      if (kind === "ssh") config = { username: field(req, "username").trim(), port: port ?? 22 };
+      if (kind === "sql") config = { engine: field(req, "engine"), port, database: field(req, "database").trim(), username: field(req, "username").trim() };
+      if (kind === "http") config = headerName ? { auth: { in: "header", name: headerName } } : {};
+      if (kind === "mcp") {
+        // the server's own read-only marks decide which tools run without a card; an unreachable server is still saved
+        const tools = await listMcpToolInfo(fetchFn, { target, headers: headerName && secret ? { [headerName]: secret } : {} }).catch(() => []);
+        config = { ...(headerName ? { headerName } : {}), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) };
+      }
+      const c = await createConnection(connDeps, actor.tenantId, {
+        kind, name: field(req, "name").trim(), target, mode: field(req, "mode") as ConnectionMode, config: config as never, secret, personId: actor.personId, definitionIds: many(req, "definitionId"),
+      }).catch((e) => { throw e instanceof ConnectionError ? new DirectoryError(e.message) : e; });
+      if (c.kind === "ssh") return res.redirect(303, "/admin/connections");
+      await testPage(res, actor, c.id); // the secret was just typed in, so a typo shows up now rather than in a bot's chat
+    }),
+  );
+
+  const testPage = async (res: Response, actor: { tenantId: string; personId: string }, id: string) => {
+    const output = await adminVerify(connDeps, actor.tenantId, id, actor.personId).catch((e) => (e instanceof ConnectionError ? `Failed: ${e.message}` : Promise.reject(e)));
+    render(res, "Connection test", html`<h1>Connection test</h1><pre>${output}</pre><p><a href="/admin/connections">Back</a></p>`);
+  };
+
+  router.post(
+    "/connections/:connectionId/verify",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await testPage(res, actor, req.params.connectionId);
     }),
   );
 

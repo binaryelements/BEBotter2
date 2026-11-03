@@ -10,7 +10,7 @@ import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
 import type { SqlRunner } from "./sql.js";
 import {
-  approveConnection, connectionMcpConfigs, getConnection, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
+  adminVerify, approveConnection, connectionMcpConfigs, createConnection, getConnection, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
 } from "./store.js";
 
 const key = randomBytes(32);
@@ -331,5 +331,25 @@ describe("connections store", () => {
     answer = { columns: [], rows: [], affected: 3 };
     expect(await runSql(sqlDeps, "t1", defId, "sap-rw", "update t set x = 1", "change")).toBe("3 rows affected");
     expect(ran.at(-1)!.readOnly).toBe(false);
+  });
+
+  it("an admin creates connections with the secret typed in: active at once and linked to the chosen bots; ssh goes active on the admin's test", async () => {
+    const ran: string[] = [];
+    const sqlDeps = { ...deps, sql: (async (_t, query) => (ran.push(query), { columns: ["?"], rows: [[1]] })) as SqlRunner };
+    const base = { mode: "read-only" as const, personId, definitionIds: [defId, otherDefId] };
+    await expect(createConnection(deps, "t1", { ...base, kind: "sql", name: "sap", target: "sql1.example.test", config: { engine: "mssql", database: "SBO", username: "reader" } as never })).rejects.toThrow(/password/);
+    const sap = await createConnection(deps, "t1", { ...base, kind: "sql", name: "sap", target: "sql1.example.test", config: { engine: "mssql", database: "SBO", username: "reader" } as never, secret: "pw-1" });
+    expect(sap.status).toBe("active");
+    expect(sap.approvedByPersonId).toBe(personId);
+    expect((await listConnectionsFor(db, "t1", otherDefId)).map((c) => c.name)).toEqual(["sap"]);
+    expect(await adminVerify(sqlDeps, "t1", sap.id, personId)).toBe("Connected\n?\n1");
+    expect(await runSql(sqlDeps, "t1", defId, "sap", "select 1", "read-only")).toBe("?\n1");
+    await expect(createConnection(deps, "t1", { ...base, kind: "sql", name: "sap", target: "x", config: { engine: "mysql", database: "d", username: "u" } as never, secret: "p" })).rejects.toThrow(/already exists/);
+    const pve = await createConnection(deps, "t1", { ...base, kind: "ssh", name: "pve2", target: "pve2.example.test", mode: "change", config: { port: 22, username: "root" } });
+    expect(pve.status).toBe("pending");
+    expect(pve.publicKey).toBe("ssh-ed25519 AAAAfake admin@pve2");
+    expect(await adminVerify(deps, "t1", pve.id, personId)).toMatch(/^Connected/);
+    expect((await getConnection(db, "t1", "pve2"))!.status).toBe("active");
+    expect(await adminVerify(deps, "t1", (await createConnection(deps, "t1", { ...base, kind: "http", name: "api", target: "https://api.example.test/", config: {} })).id, personId)).toMatch(/probe path/);
   });
 });

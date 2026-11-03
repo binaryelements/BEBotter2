@@ -178,6 +178,41 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
 }
 
+export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; definitionIds: string[] };
+
+/** An admin sets a connection up with its secret typed in, so it is approved at once; ssh still needs its key installed and a verify. */
+export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, tenantId: string, input: AdminConnectionInput): Promise<Connection> {
+  const { db } = deps;
+  const config = checkRequest({ ...input, definitionId: "" });
+  if (needsSecret({ kind: input.kind, config }) && !input.secret?.trim()) fail(input.kind === "sql" ? "Give the password" : "Give the secret that goes in the header");
+  const existing = await getConnection(db, tenantId, input.name);
+  if (existing && existing.status !== "revoked") fail(`A connection named ${input.name} already exists`);
+  const key = input.kind === "ssh" ? await deps.ssh.generateKey(`admin@${input.name}`) : undefined;
+  const secret = key?.privateKey ?? (input.secret?.trim() || undefined);
+  const values = {
+    kind: input.kind, target: input.target, config, mode: input.mode, status: key ? "pending" : "active",
+    secretCipher: secret ? encrypt(deps.secretsKey, secret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
+    requestedByPersonId: input.personId, approvedByPersonId: input.personId, updatedAt: new Date(),
+  };
+  const [row] = existing
+    ? await db.update(connections).set(values).where(and(byId(tenantId, existing.id), eq(connections.status, "revoked"))).returning()
+    : await db.insert(connections).values({ id: crypto.randomUUID(), tenantId, name: input.name, ...values }).onConflictDoNothing().returning();
+  if (!row) fail(`A connection named ${input.name} already exists`);
+  if (existing) await db.delete(definitionConnections).where(eq(definitionConnections.connectionId, row!.id));
+  for (const definitionId of input.definitionIds) await setLinked(db, tenantId, definitionId, row!.id, true);
+  return row!;
+}
+
+/** An admin's test of any connection: ssh pins the host key and goes active (the admin approves by pressing the button). */
+export async function adminVerify(deps: ConnectionDeps, tenantId: string, id: string, personId: string): Promise<string> {
+  const [c] = await deps.db.select().from(connections).where(byId(tenantId, id));
+  if (!c) fail("Connection not found");
+  if (c!.kind === "http") return "http connections are tested by the bot with a probe path";
+  const r = await verifyRow(deps, c!);
+  if (r.status === "awaiting-approval") await approveConnection(deps.db, tenantId, c!.name, personId);
+  return r.output;
+}
+
 async function setStatus(db: Db, c: Connection, set: Partial<Pick<Connection, "status" | "hostKey">>): Promise<void> {
   await db.update(connections).set({ ...set, updatedAt: new Date() }).where(and(byId(c.tenantId, c.id), eq(connections.status, c.status)));
 }
@@ -204,7 +239,11 @@ export async function verifyConnection(
   name: string,
   probe?: { path: string },
 ): Promise<{ status: Connection["status"]; output: string }> {
-  const c = await linkedConnection(deps.db, tenantId, definitionId, name);
+  return verifyRow(deps, await linkedConnection(deps.db, tenantId, definitionId, name), probe);
+}
+
+async function verifyRow(deps: ConnectionDeps, c: Connection, probe?: { path: string }): Promise<{ status: Connection["status"]; output: string }> {
+  const { name } = c;
   if (c.status === "revoked") fail("The connection was revoked");
   if (c.status === "blocked") fail(BLOCKED);
   if (needsSecret(c) && !c.secretCipher) return { status: c.status, output: "Waiting for the secret" };
