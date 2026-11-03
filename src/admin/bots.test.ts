@@ -37,7 +37,9 @@ describe("bots screen", () => {
     await setMembership(db, T, sales, id.Hal, "head");
     await setMembership(db, T, eng, id.Eve, "head");
     const app = express();
-    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m-default", fetchUsers: async () => [] }));
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m-default", fetchUsers: async () => [],
+      // no MCP server answers here, so listing a server's tools always fails
+      fetchFn: (async () => { throw Object.assign(new Error("down"), { cause: { code: "ECONNREFUSED" } }); }) as typeof fetch }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());
@@ -71,7 +73,11 @@ describe("bots screen", () => {
     const add = await post(`/admin/bots/${d.id}/servers`, "Ann", [
       ["name", "tickets"], ["transport", "http"], ["url", "https://mcp.example.test/"], ["headerName", "Authorization"], ["headerValue", "Bearer s3cret"], ["readOnlyTools", "list_a, list_b"],
     ]);
-    expect(add.status).toBe(303);
+    // saved even though its tools could not be listed, and the page says so without the header
+    expect(add.status).toBe(400);
+    const why = await add.text();
+    expect(why).toContain("tickets was saved, but its tools could not be listed: Request failed: ECONNREFUSED");
+    expect(why).not.toContain("s3cret");
     const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
     expect(page).toContain("tickets");
     expect(page).toContain("headers set");
@@ -671,5 +677,55 @@ describe("bot page tabs and arming", () => {
     expect(second.status).toBe(303);
     expect(second.headers.get("location")).toBe(`/admin/bots/${botId}?tab=email`);
     expect((await db.select().from(mailboxes).where(eq(mailboxes.definitionId, botId)))[0].status).toBe("removed");
+  });
+});
+
+describe("adding an MCP server", () => {
+  it("a pasted claude mcp add command adds the server, lists its tools, frees the read-only ones, and one switch sets a whole group", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: T });
+    const ann = (await upsertPerson(db, { tenantId: T, aadObjectId: "aad-Ann", name: "Ann" })).id;
+    await setRole(db, T, ann, "admin");
+    const botId = (await upsertDefinition(db, secretsKey, T, { name: "finance", label: "Finance", persona: "p" })).id;
+    const seen: Headers[] = [];
+    let up = true;
+    const fetchFn = (async (_u: string | URL | Request, init?: RequestInit) => {
+      if (!up) throw Object.assign(new Error("down"), { cause: { code: "ECONNREFUSED" } });
+      seen.push(new Headers(init?.headers));
+      const msg = JSON.parse(String(init?.body)) as { id?: number; method: string };
+      if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = msg.method === "initialize" ? { protocolVersion: "2025-06-18" }
+        : { tools: [{ name: "list-invoices", annotations: { readOnlyHint: true } }, { name: "create-invoice" }, { name: "list-contacts" }] };
+      return Response.json({ jsonrpc: "2.0", id: msg.id, result });
+    }) as typeof fetch;
+    const app = express();
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [], fetchFn }));
+    const { url, close } = await serve(app);
+    const post = (path: string, body: [string, string][]) => fetch(url + path, {
+      method: "POST", redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, ann) },
+      body: new URLSearchParams([["csrf", "csrf-1"], ...body]).toString(),
+    });
+    try {
+      const res = await post(`/admin/bots/${botId}/servers`, [["commandLine", `claude mcp add --transport http xero https://xero.example.test/abc --header "Authorization: Bearer tok-1"`]]);
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe(`/admin/bots/${botId}?tab=actions`);
+      const def = (await getDefinition(db, T, botId))!;
+      expect(def.mcpServers).toEqual([expect.objectContaining({ name: "xero", transport: "http", url: "https://xero.example.test/abc", headersCipher: expect.any(String) })]);
+      expect(JSON.stringify(def.mcpServers)).not.toContain("tok-1");
+      expect(seen[0]!.get("authorization")).toBe("Bearer tok-1");
+      expect(Object.fromEntries(await toolRulesFor(db, botId))).toEqual({ "mcp__xero__list-invoices": "free" });
+      const page = await (await fetch(`${url}/admin/bots/${botId}?tab=actions`, { headers: { cookie: sessionCookie(secretsKey, T, ann) } })).text();
+      expect(page).toContain("create-invoice");
+      expect(page).toContain('name="all:xero"');
+      expect((await post(`/admin/bots/${botId}/actions`, [["all:xero", "free"], ["rule:mcp__xero__create-invoice", "confirm"]])).status).toBe(303);
+      expect(Object.fromEntries(await toolRulesFor(db, botId))).toEqual({ "mcp__xero__list-invoices": "free", "mcp__xero__create-invoice": "free", "mcp__xero__list-contacts": "free" });
+      up = false;
+      const failed = await (await post(`/admin/bots/${botId}/servers/xero/tools`, [])).text();
+      expect(failed).toContain("xero&#39;s tools could not be listed");
+      expect(failed).not.toContain("tok-1");
+    } finally {
+      await close();
+    }
   });
 });

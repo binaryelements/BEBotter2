@@ -1,3 +1,4 @@
+import { parseMcpAdd } from "../bots/mcp-command.js";
 import { PERSONA_TEMPLATES, personaTemplate } from "../bots/templates.js";
 import express from "express";
 import type { Request, Response, Router } from "express";
@@ -6,12 +7,14 @@ import {
   updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
 import { count, eq } from "drizzle-orm";
-import { activeMcp, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
+import { listMcpToolInfo } from "../connections/http.js";
+import { activeMcp, ConnectionError, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
 import type { Db } from "../db/client.js";
 import type { BotDefinition, Connection } from "../db/schema.js";
 import { defaultClass } from "../engine/gate.js";
 import type { ToolRule } from "../engine/gate.js";
-import { knownTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
+import { knownTools, recordTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
+import { decrypt } from "../secrets/cipher.js";
 import { beginAction, completeAction } from "../audit/audit.js";
 import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionConnections, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
@@ -40,8 +43,9 @@ const many = (req: Request, name: string) => {
 const list = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
 
-export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: string; onSaved?: (definitionId: string) => void; mail?: MailDeps }): Router {
+export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: string; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch }): Router {
   const { db, secretsKey, defaultModel, onSaved, mail } = deps;
+  const fetchFn = deps.fetchFn ?? fetch;
   const router = express.Router();
   const render = (res: Response, title: string, body: SafeHtml) => {
     const { actor, csrf } = adminOf(res);
@@ -197,6 +201,26 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
     }${sendAs}`;
   };
 
+  /**
+   * Connects to an http server the admin added, lists its tools onto the Actions tab, and starts the ones the server
+   * marks read-only on "Runs freely" (only where no rule is set yet). The server is already saved; a failure says why.
+   */
+  const discoverTools = async (tenantId: string, definitionId: string, name: string, justAdded: boolean) => {
+    const s = (await getDefinition(db, tenantId, definitionId))?.mcpServers.find((x) => x.name === name);
+    if (!s) throw new DirectoryError("No such server");
+    if (s.transport !== "http" || !s.url) throw new DirectoryError("Only an http server can be listed here; a stdio server's tools appear once the bot has started");
+    let tools: { name: string; readOnly: boolean }[];
+    try {
+      tools = await listMcpToolInfo(fetchFn, { target: s.url, headers: s.headersCipher ? (JSON.parse(decrypt(secretsKey, s.headersCipher)) as Record<string, string>) : {} });
+    } catch (e) {
+      const why = e instanceof ConnectionError ? e.message : "it could not be reached";
+      throw new DirectoryError(`${justAdded ? `${name} was saved, but its` : `${name}'s`} tools could not be listed: ${why}. Check the URL and header, then press "list tools" beside it.`);
+    }
+    await recordTools(db, definitionId, tools.map((t) => `mcp__${name}__${t.name}`));
+    const rules = await toolRulesFor(db, definitionId);
+    for (const t of tools) if (t.readOnly && !rules.has(`mcp__${name}__${t.name}`)) await setToolRule(db, definitionId, `mcp__${name}__${t.name}`, "free");
+  };
+
   const RULE_LABEL: Record<ToolRule, string> = { free: "Runs freely", confirm: "Needs confirmation" };
   // every tool the engine announced for the bot, with its default and the admin's rule; approve-class is locked
   const actionsOf = async (def: BotDefinition, linked: Connection[]) => {
@@ -222,8 +246,12 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
             (r) => html`<label><input type="radio" name="rule:${a.tool}" value="${r}" ${a.current === r ? "checked" : ""}><span>${RULE_LABEL[r]}${a.fallback === r ? " (default)" : ""}</span></label>`,
           )}</div>`
     }</td></tr>`;
+    // one switch per group sets every tool in it (locked ones stay asking); "as below" keeps the rows' own choices
+    const groupSwitch = (g: string) => html`<div class="be-seg" role="radiogroup" aria-label="all ${g}">${(["", "free", "confirm"] as const).map(
+      (r) => html`<label><input type="radio" name="all:${g}" value="${r}" ${r === "" ? "checked" : ""}><span>${r ? `all: ${RULE_LABEL[r]}` : "as below"}</span></label>`,
+    )}</div>`;
     return html`<h2>Actions</h2><form method="post" action="/admin/bots/${def.id}/actions">${csrfField(res, "actions")}${[...groups.keys()].sort().map(
-      (g) => html`<h3>${g}</h3>${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}`,
+      (g) => html`<h3>${g}</h3>${groups.get(g)!.length > 1 ? groupSwitch(g) : ""}${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}`,
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
 
@@ -292,11 +320,13 @@ ${person ? "" : html`<fieldset><legend>departments</legend>${depts.map((d) => ht
 ${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: give it one below, or ask the bot in chat to set one up</div>`}
 ${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}
 <h2>MCP servers</h2>
-${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th></tr></thead><tbody>${def.mcpServers.map(
-            (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ") || "none"}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm danger">remove</button></form></td></tr>`,
+${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th><th></th></tr></thead><tbody>${def.mcpServers.map(
+            (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ") || "none"}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td>${s.transport === "http" ? html`<form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/tools">${csrf}<button class="be-btn sm" title="connects, lists its tools on the Actions tab so you can choose which run freely">list tools</button></form>` : ""}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm danger">remove</button></form></td></tr>`,
           )}</tbody></table>`) : html`<div class="be-empty">no MCP servers</div>`}
 <details class="add"><summary>add an MCP server…</summary>
 <form method="post" action="/admin/bots/${def.id}/servers">${csrf}
+<p><label>paste a claude mcp add command<span class="hint">fills in everything below; the header is stored encrypted</span><textarea name="commandLine" rows="3" autocomplete="off" spellcheck="false" placeholder="claude mcp add --transport http name https://… --header &quot;Authorization: Bearer …&quot;"></textarea></label></p>
+<p class="muted">or fill in:</p>
 <div class="fields">
 <label>name<input name="name" required></label>
 <label>transport<select name="transport"><option>http</option><option>stdio</option></select></label>
@@ -428,7 +458,9 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th>
       // only tools the bot has are read from the form; all are checked before any is saved
       const changes: ((typeof actions)[number] & { want: ToolRule })[] = [];
       for (const a of actions) {
-        const want = field(req, `rule:${a.tool}`);
+        const all = field(req, `all:${toolSource(a.tool)}`);
+        if (a.locked && all === "free") continue;
+        const want = all === "free" || all === "confirm" ? all : field(req, `rule:${a.tool}`);
         if (want !== "free" && want !== "confirm") continue;
         if (a.locked && want === "free") throw new DirectoryError(`${a.tool} always needs confirmation`);
         if (want !== a.current) changes.push({ ...a, want });
@@ -453,16 +485,31 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th>
       if (headerName && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(headerName)) throw new DirectoryError("Invalid header name");
       if (headerValue && (/[\r\n\0]/.test(headerValue) || !headerValue.trim())) throw new DirectoryError("Invalid header value");
       const transport = field(req, "transport");
-      await addMcpServer(db, secretsKey, actor.tenantId, req.params.id, {
-        name: field(req, "name").trim(),
-        transport: transport as "http" | "stdio", // zod rejects anything else
-        url: field(req, "url").trim() || undefined,
-        command: field(req, "command").trim() || undefined,
-        args: list(field(req, "args")),
-        headers: headerName ? { [headerName]: headerValue } : undefined,
-        readOnlyTools: list(field(req, "readOnlyTools")),
-      });
-      res.redirect(303, back(req, req.params.id));
+      const pasted = field(req, "commandLine").trim();
+      const server = pasted
+        ? parseMcpAdd(pasted)
+        : {
+            name: field(req, "name").trim(),
+            transport: transport as "http" | "stdio", // zod rejects anything else
+            url: field(req, "url").trim() || undefined,
+            command: field(req, "command").trim() || undefined,
+            args: list(field(req, "args")),
+            headers: headerName ? { [headerName]: headerValue } : undefined,
+          };
+      await addMcpServer(db, secretsKey, actor.tenantId, req.params.id, { ...server, readOnlyTools: list(field(req, "readOnlyTools")) });
+      if (server.transport === "http") await discoverTools(actor.tenantId, req.params.id, server.name, true);
+      res.redirect(303, server.transport === "http" ? `/admin/bots/${req.params.id}?tab=actions` : back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/servers/:name/tools",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await serviceBot(actor.tenantId, req.params.id);
+      await discoverTools(actor.tenantId, req.params.id, req.params.name, false);
+      res.redirect(303, `/admin/bots/${req.params.id}?tab=actions`);
     }),
   );
 

@@ -22,7 +22,7 @@ import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 
-export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps };
+export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch };
 
 export function adminRouter(deps: AdminDeps): Router {
   const { db } = deps;
@@ -82,7 +82,7 @@ export function adminRouter(deps: AdminDeps): Router {
 
   router.use(overviewRoutes(db));
   router.use(peopleRoutes(db, deps.fetchUsers));
-  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail }));
+  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail, fetchFn: deps.fetchFn }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
