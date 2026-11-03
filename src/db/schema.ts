@@ -21,7 +21,8 @@ export type TurnTimings = { receivedAt: string; engineReadyAt?: string; firstOut
 export type ConnectionConfig =
   | { port: number; username: string }
   | { auth?: { in: "header" | "query"; name: string; prefix?: string } }
-  | { headerName?: string; readOnlyTools: string[] };
+  | { headerName?: string; readOnlyTools: string[] }
+  | { engine: "postgres" | "mysql" | "mssql"; port: number; database: string; username: string; tls?: boolean };
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
@@ -213,8 +214,8 @@ export const connections = pgTable(
     id: text("id").primaryKey(),
     tenantId: text("tenant_id").notNull().references(() => tenants.id),
     name: text("name").notNull(),
-    kind: text("kind").notNull(), // ssh | http | mcp
-    target: text("target").notNull(), // ssh host, http base URL, mcp server URL
+    kind: text("kind").notNull(), // ssh | http | mcp | sql
+    target: text("target").notNull(), // ssh host, http base URL, mcp server URL, database host
     config: jsonb("config").$type<ConnectionConfig>().notNull(),
     mode: text("mode").notNull(), // read-only | change
     status: text("status").notNull(), // pending | awaiting-approval | active | blocked | revoked

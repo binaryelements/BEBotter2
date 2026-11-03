@@ -8,8 +8,9 @@ import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
+import type { SqlRunner } from "./sql.js";
 import {
-  approveConnection, connectionMcpConfigs, getConnection, runHttp, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
+  approveConnection, connectionMcpConfigs, getConnection, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
 } from "./store.js";
 
 const key = randomBytes(32);
@@ -281,5 +282,41 @@ describe("connections store", () => {
     await runHttp(deps, "t1", defId, "desk-rw", { method: "GET", path: "me" }, "read-only");
     await runHttp(deps, "t1", defId, "desk-rw", { method: "POST", path: "tickets", body: "{}" }, "change");
     expect(fetched.map((f) => f.init.method)).toEqual(["GET", "GET", "POST"]);
+  });
+
+  it("sql: needs a password, contacts nothing before approval, reads in a rolled-back read-only transaction and masks the password", async () => {
+    const ran: { host: string; database: string; password: string; query: string; readOnly: boolean }[] = [];
+    let answer: Awaited<ReturnType<SqlRunner>> | Error = { columns: ["n", "name"], rows: [[1, "Ann"], [2, null]] };
+    const sqlDeps = { ...deps, sql: (async (t, query, readOnly) => {
+      ran.push({ host: t.host, database: t.database, password: t.password, query, readOnly });
+      if (answer instanceof Error) throw answer;
+      return answer;
+    }) as SqlRunner };
+    const sql = { kind: "sql" as const, name: "sap", target: "sql1.example.test", config: { engine: "mssql" as const, database: "SBO", username: "reader" } as never };
+    await expect(request({ ...sql, config: { engine: "oracle", database: "x", username: "u" } as never })).rejects.toThrow(/engine/);
+    await expect(request({ ...sql, target: "-oProxyCommand=x" })).rejects.toThrow(/host/);
+    await expect(request({ ...sql, config: { engine: "mysql", username: "u" } as never })).rejects.toThrow(/database/);
+    const { connection } = await request(sql);
+    expect(connection.config).toEqual({ engine: "mssql", port: 1433, database: "SBO", username: "reader" });
+    expect(connection.status).toBe("pending");
+    await expect(approveConnection(db, "t1", "sap", personId)).rejects.toThrow(/secret/);
+    await setSecret("sap", "pw-xyz");
+    await expect(verifyConnection(sqlDeps, "t1", defId, "sap")).rejects.toThrow(/not approved yet/);
+    await expect(runSql(sqlDeps, "t1", defId, "sap", "select 1", "read-only")).rejects.toThrow(/not active/);
+    expect(ran).toEqual([]);
+    await approveConnection(db, "t1", "sap", personId, { kind: "sql", target: sql.target, mode: "read-only" });
+    expect((await verifyConnection(sqlDeps, "t1", defId, "sap")).output).toBe("Connected\nn\tname\n1\tAnn\n2\tNULL");
+    expect(await runSql(sqlDeps, "t1", defId, "sap", "select n, name from t", "read-only")).toBe("n\tname\n1\tAnn\n2\tNULL");
+    expect(ran.at(-1)).toEqual({ host: "sql1.example.test", database: "SBO", password: "pw-xyz", query: "select n, name from t", readOnly: true });
+    await expect(runSql(sqlDeps, "t1", defId, "sap", "delete from t", "change")).rejects.toThrow(/read-only connection/);
+    await expect(runSql(sqlDeps, "t1", otherDefId, "sap", "select 1", "read-only")).rejects.toThrow(/No connection/);
+    answer = new Error("Login failed for user 'reader' with password pw-xyz");
+    await expect(runSql(sqlDeps, "t1", defId, "sap", "select 1", "read-only")).rejects.toThrow("SQL failed: Login failed for user 'reader' with password [secret]");
+    await request({ ...sql, name: "sap-rw", mode: "change" });
+    await setSecret("sap-rw", "pw-2");
+    await approveConnection(db, "t1", "sap-rw", personId);
+    answer = { columns: [], rows: [], affected: 3 };
+    expect(await runSql(sqlDeps, "t1", defId, "sap-rw", "update t set x = 1", "change")).toBe("3 rows affected");
+    expect(ran.at(-1)!.readOnly).toBe(false);
   });
 });

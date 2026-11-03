@@ -8,9 +8,10 @@ export type ToolRule = "free" | "confirm";
 
 const BUILT_IN: Record<string, ToolClass> = {
   ...Object.fromEntries(["list", "read", "search", "write"].map((t) => [`mcp__knowledge__${t}`, "read"])),
-  ...Object.fromEntries(["list", "request", "verify", "ssh_read", "http_read"].map((t) => [`mcp__connections__${t}`, "read"])),
+  ...Object.fromEntries(["list", "request", "verify", "ssh_read", "http_read", "sql_read"].map((t) => [`mcp__connections__${t}`, "read"])),
   mcp__connections__ssh_change: "write",
   mcp__connections__http_change: "write",
+  mcp__connections__sql_change: "write",
   mcp__connections__approve: "approve",
   mcp__routine__remind: "read",
   mcp__routine__background: "read",

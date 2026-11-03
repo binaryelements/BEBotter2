@@ -6,7 +6,7 @@ import type { Db } from "../db/client.js";
 import { people } from "../db/schema.js";
 import type { Connection } from "../db/schema.js";
 import { createSecretLink } from "./secret-links.js";
-import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, needsSecret, requestConnection, runHttp, runSsh, verifyConnection } from "./store.js";
+import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, needsSecret, requestConnection, runHttp, runSql, runSsh, verifyConnection } from "./store.js";
 import type { ConnectionDeps } from "./store.js";
 
 type Ctx = { tenantId: string; definitionId: string; personId: string; confirmedBy: () => string | undefined };
@@ -48,10 +48,11 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
         "request",
         "Request access to a system. ssh: target is the host, give username (and port if not 22); you get the public key to have installed. " +
           "http: target is the base URL; auth says where the service adds the secret. mcp: target is the server URL; readOnlyTools names the tools that only read. " +
+          "sql: target is the database server's host; give engine (postgres, mysql or mssql), database and username (port if not the usual one, tls if the server needs it); the password always comes through the secret link. " +
           "read-only connections must use an account or token that can only read. " +
-          "Secrets are never typed into the chat: when an http or mcp connection needs one, the result holds a one-time link (30 minutes, only for the person asking); send them that link instead.",
+          "Secrets are never typed into the chat: when an http, mcp or sql connection needs one, the result holds a one-time link (30 minutes, only for the person asking); send them that link instead.",
         {
-          kind: z.enum(["ssh", "http", "mcp"]),
+          kind: z.enum(["ssh", "http", "mcp", "sql"]),
           name: z.string(),
           target: z.string(),
           mode: z.enum(["read-only", "change"]),
@@ -61,15 +62,19 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
           headerName: z.string().optional(),
           readOnlyTools: z.array(z.string()).optional(),
           needsSecret: z.boolean().optional(),
+          engine: z.enum(["postgres", "mysql", "mssql"]).optional(),
+          database: z.string().optional(),
+          tls: z.boolean().optional(),
         },
         (a) =>
           run(async () => {
-            const config =
+            const config: Record<string, unknown> =
               a.kind === "ssh" ? { port: a.port ?? 22, username: a.username ?? "" }
               : a.kind === "http" ? (a.auth ? { auth: a.auth } : {})
+              : a.kind === "sql" ? { engine: a.engine, port: a.port, database: a.database, username: a.username, tls: a.tls }
               : { ...(a.headerName ? { headerName: a.headerName } : {}), readOnlyTools: a.readOnlyTools ?? [] };
             const { connection, publicKey } = await requestConnection(deps, tenantId, {
-              kind: a.kind, name: a.name, target: a.target, mode: a.mode, config, needsSecret: a.needsSecret, definitionId, personId: ctx.personId,
+              kind: a.kind, name: a.name, target: a.target, mode: a.mode, config: config as never, needsSecret: a.needsSecret, definitionId, personId: ctx.personId,
             });
             const waiting = needsSecret(connection) && !connection.secretCipher && connection.status !== "revoked";
             // only the person who asked for the connection may supply its secret
@@ -81,7 +86,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       ),
       tool(
         "verify",
-        "Check that a requested connection works once the person says the access is in place. http and mcp connections are not contacted until approved. A changed host key blocks the connection until an admin resets it. For http give probePath, a path for a read-only GET under the connection's URL. Once a connection is active, map the system read-only and record what you learn with the knowledge tools.",
+        "Check that a requested connection works once the person says the access is in place. http, mcp and sql connections are not contacted until approved. A changed host key blocks the connection until an admin resets it. For http give probePath, a path for a read-only GET under the connection's URL. Once a connection is active, map the system read-only and record what you learn with the knowledge tools.",
         { name: z.string(), probePath: z.string().optional() },
         ({ name, probePath }) =>
           run(async () => {
@@ -91,10 +96,10 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       ),
       tool(
         "approve",
-        "Approve a requested connection (an ssh one after it is verified; http and mcp once their secret is in); an admin or department head confirms it. Give the connection's kind, target, mode and, for mcp, its read-only tools exactly as stored, so the approver sees what they approve.",
+        "Approve a requested connection (an ssh one after it is verified; http, mcp and sql once their secret is in); an admin or department head confirms it. Give the connection's kind, target, mode and, for mcp, its read-only tools exactly as stored, so the approver sees what they approve.",
         {
           name: z.string(),
-          kind: z.enum(["ssh", "http", "mcp"]),
+          kind: z.enum(["ssh", "http", "mcp", "sql"]),
           target: z.string(),
           mode: z.enum(["read-only", "change"]),
           readOnlyTools: z.array(z.string()).optional(),
@@ -130,6 +135,18 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
           query: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional(), body: z.string().optional(),
         },
         ({ name, ...req }) => run(() => runHttp(deps, tenantId, definitionId, name, req, "change")),
+      ),
+      tool(
+        "sql_read",
+        `Run one SQL statement on an active sql connection, inside a read-only transaction that is rolled back (SQL Server: only with a login that cannot write). Add LIMIT or TOP: at most 200 rows come back. ${READ_ONLY_RULE}`,
+        { name: z.string(), query: z.string() },
+        ({ name, query }) => run(() => runSql(deps, tenantId, definitionId, name, query, "read-only")),
+      ),
+      tool(
+        "sql_change",
+        "Run one SQL statement that changes data on an active change sql connection; it is committed. Each call is confirmed in the chat unless an admin set it to run freely.",
+        { name: z.string(), query: z.string() },
+        ({ name, query }) => run(() => runSql(deps, tenantId, definitionId, name, query, "change")),
       ),
     ],
   });
