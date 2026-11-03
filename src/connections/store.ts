@@ -151,6 +151,14 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   if (existing && existing.status !== "revoked") {
     if (existing.kind !== input.kind || existing.target !== input.target)
       fail(`A connection named ${input.name} already exists for a different ${existing.kind !== input.kind ? "kind" : "target"}`);
+    // not yet approved: a corrected request (where the secret goes, read-only tools, mode) replaces the old one
+    if (existing.status === "pending" && (JSON.stringify(existing.config) !== JSON.stringify(config) || existing.mode !== input.mode)) {
+      // a secret given for the old settings may belong somewhere else now, so it is asked for again (an ssh key stays)
+      const [row] = await db.update(connections)
+        .set({ config, mode: input.mode, ...(existing.kind === "ssh" ? {} : { secretCipher: null }), updatedAt: new Date() })
+        .where(and(byId(tenantId, existing.id), eq(connections.status, "pending"))).returning();
+      if (row) return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
+    }
     return { connection: existing, ...(existing.publicKey ? { publicKey: existing.publicKey } : {}) };
   }
   const key = input.kind === "ssh" ? await deps.ssh.generateKey(`${definition!.name}@${input.name}`) : undefined;

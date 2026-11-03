@@ -236,6 +236,19 @@ describe("connections store", () => {
     expect(new Headers(fetched.at(-1)!.init.headers).get("authorization")).toBe("Bearer tok-123");
   });
 
+  it("a corrected request replaces a pending connection's settings; an approved one keeps its own", async () => {
+    await request({ ...mcp, config: { readOnlyTools: [] } });
+    expect((await getConnection(db, "t1", "tickets"))!.config).toEqual({ readOnlyTools: [] });
+    const { connection } = await request(mcp);
+    expect(connection.config).toEqual(mcp.config);
+    expect(connection.status).toBe("pending");
+    await setSecret("tickets", "mcp-tok");
+    await approveConnection(db, "t1", "tickets", personId);
+    const again = await request({ ...mcp, config: { readOnlyTools: ["everything"] } });
+    expect(again.connection.config).toEqual(mcp.config);
+    expect(again.connection.status).toBe("active");
+  });
+
   it("approve needs the secret in first and pins what the approver saw", async () => {
     await request(http);
     await expect(approveConnection(db, "t1", "helpdesk", personId)).rejects.toThrow(/secret/);
