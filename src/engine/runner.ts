@@ -80,7 +80,14 @@ type EngineSetup = Awaited<ReturnType<typeof engineSetup>>;
 /** Everything a turn's engine options depend on, shared by turns and prewarm so a warmed process is the one a turn would start. */
 async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean) {
   const { db } = deps;
-  const containerId = definition.computer ? await ensureComputer(db, deps.docker, deps.computerImage, definition.id) : undefined;
+  // a computer that can't start (no Docker on this host, image missing) costs the bot its computer, not the whole reply
+  const containerId = definition.computer
+    ? await ensureComputer(db, deps.docker, deps.computerImage, definition.id).catch((e: { code?: string; message?: string }) => {
+        console.error(`computer unavailable for ${definition.id}:`, e?.code ?? e?.message ?? "unknown");
+        return undefined;
+      })
+    : undefined;
+  const noComputer = definition.computer && !containerId ? " Your computer is switched on but could not start right now; if a task needs it, say so." : "";
   const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id);
   const [mailbox] = deps.agentmailUrl ? await db.select().from(mailboxes).where(eq(mailboxes.definitionId, definition.id)) : [];
   // the bot's own agent key goes to the SDK subprocess as a header, never to the model or the computer
@@ -141,7 +148,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         mail
           ? `Your own email address is ${mail.address}.`
           : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-      }${DEFAULTS_NOTE}${rulesText}${learningsNote(learnt)}`,
+      }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}`,
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
       allowedTools: [], // a tool named here bypasses canUseTool

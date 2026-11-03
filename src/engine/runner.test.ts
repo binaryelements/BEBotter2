@@ -182,6 +182,17 @@ describe("runTurn", () => {
     expect(seen[0]!.includePartialMessages).toBe(true);
   });
 
+  it("a computer that cannot start leaves the bot without one and says so, and the reply still runs", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db, { computer: true });
+    const q = fakeQuery({ calls: [] });
+    const noDocker = new Proxy({}, { get: () => async () => { throw Object.assign(new Error("connect ENOENT /var/run/docker.sock"), { code: "ENOENT" }); } });
+    const result = await runTurn({ ...deps(db, q.fn), docker: noDocker as never }, { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    expect(result.text).toBe("Done.");
+    expect(Object.keys(q.seen[0]!.mcpServers!)).not.toContain("computer");
+    expect(q.seen[0]!.systemPrompt).toContain("Your computer is switched on but could not start right now");
+  });
+
   it("allows the read tool, confirms the write tool with the asker and audits both", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db, { computer: true });
