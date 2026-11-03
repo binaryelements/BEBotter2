@@ -139,6 +139,8 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
       allowedTools: [], // a tool named here bypasses canUseTool
+      // runs code in the browser server's process, which can read this container's files and secrets; nobody should be asked to judge that code
+      disallowedTools: ["mcp__browser__browser_run_code_unsafe"],
       permissionMode: "default",
       settingSources: [],
       persistSession: true,

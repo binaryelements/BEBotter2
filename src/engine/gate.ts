@@ -14,6 +14,8 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__connections__approve: "approve",
   mcp__routine__remind: "read",
   mcp__routine__background: "read",
+  mcp__routine__reminders: "read",
+  mcp__routine__cancel_reminder: "read", // only this chat's own one-offs
   mcp__routine__post: "read",
   mcp__computer__bash: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),

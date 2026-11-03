@@ -6,9 +6,9 @@ import { ensurePersonalDefinition, getDefinition, listDefinitions, setAllowedDep
 import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
-import { listRoutines } from "../routines/store.js";
+import { createRoutine, listRoutines } from "../routines/store.js";
 import { eq } from "drizzle-orm";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { MailError } from "../mail/agentmail.js";
@@ -271,6 +271,21 @@ describe("bots screen", () => {
       expect(await listRoutines(db, T, d.id)).toHaveLength(1); // the first press changes nothing
       await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", [["confirm", "yes"]]);
       expect(await listRoutines(db, T, d.id)).toHaveLength(0);
+    });
+    it("lists what is waiting or repeating, and folds one-offs that already ran away", async () => {
+      const d = await def("helper");
+      const chatId = "chat-r2";
+      await db.insert(chats).values({ id: chatId, tenantId: T, conversationType: "personal", label: "Mine" } as typeof chats.$inferInsert);
+      await db.insert(chatAssignments).values({ chatId, definitionId: d.id } as typeof chatAssignments.$inferInsert);
+      const soon = new Date(Date.now() + 3600_000);
+      await createRoutine(db, T, { definitionId: d.id, chatId, prompt: "Waiting reminder", runAt: soon, createdByPersonId: id.Ann });
+      const done = await createRoutine(db, T, { definitionId: d.id, chatId, prompt: "Finished flight search", runAt: soon, createdByPersonId: id.Ann, background: true });
+      await db.update(routines).set({ lastRunAt: new Date(), enabled: false }).where(eq(routines.id, done.id));
+      const page = await (await get(`/admin/bots/${d.id}?tab=routines`, "Ann")).text();
+      const [live, folded] = page.split("already ran (1)");
+      expect(live).toContain("Waiting reminder");
+      expect(live).not.toContain("Finished flight search");
+      expect(folded).toMatch(/Finished flight search<\/td><td>background job/);
     });
     it("a foreign-tenant or unknown connection id gives 400 and changes nothing", async () => {
       await upsertTenant(db, { id: "other" });
@@ -585,7 +600,7 @@ describe("bot page tabs and arming", () => {
   const get = (path: string) => fetch(url + path, { redirect: "manual", headers: { cookie: cookie() } }).then((r) => r.text());
 
   it("each tab shows its own section and not the others", async () => {
-    const section: Record<string, string> = { persona: "Persona text.", email: "remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines</h2>" };
+    const section: Record<string, string> = { persona: "Persona text.", email: "remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines and reminders</h2>" };
     for (const [tab, mark] of Object.entries(section)) {
       const page = await get(`/admin/bots/${botId}?tab=${tab}`);
       expect(page).toContain(mark);

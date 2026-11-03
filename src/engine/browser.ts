@@ -25,8 +25,12 @@ export const browserMcpServer = (): McpServerConfig => ({
   env: Object.fromEntries(["PATH", "HOME", "PLAYWRIGHT_BROWSERS_PATH"].filter((k) => process.env[k]).map((k) => [k, process.env[k]!])),
 });
 
-/** Looking, clicking and typing in a throwaway profile; running page code and uploading the bot's files are not on this list, so they ask. */
+/**
+ * Looking, clicking, typing and page scripts in a throwaway profile: a page script can do nothing a click cannot, and asking stalls background jobs.
+ * Not on this list, so it asks: file_upload (the bot's files leave). run_code_unsafe runs on the server, not in the page; the runner removes it.
+ */
 export const BROWSER_READS = [
+  "evaluate",
   "navigate", "navigate_back", "navigate_forward", "reload", "snapshot", "take_screenshot", "click", "hover", "type", "press_key",
   "press_sequentially", "fill_form", "select_option", "check", "uncheck", "wait_for", "tabs", "close", "resize", "handle_dialog", "find",
   "console_messages", "network_requests", "verify_element_visible", "verify_list_visible", "verify_text_visible", "verify_value",

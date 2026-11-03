@@ -276,6 +276,7 @@ describe("runTurn", () => {
     expect(q.seen[0]!.mcpServers!.browser).toMatchObject({ type: "stdio", args: expect.arrayContaining(["--headless", "--isolated", expect.stringMatching(/X11; Linux x86_64.*Chrome\/\d+/)]) });
     expect(q.seen[0]!.tools).toEqual(["WebSearch", "WebFetch"]);
     expect(q.seen.at(-1)!.mcpServers).not.toHaveProperty("browser");
+    expect(q.seen[0]!.disallowedTools).toContain("mcp__browser__browser_run_code_unsafe"); // runs on the server, not in the page
   });
 
   it("a saved server named like a built-in neither loads nor shadows it", async () => {

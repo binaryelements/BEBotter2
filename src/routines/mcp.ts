@@ -3,7 +3,7 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
-import { createRoutine, listRoutines } from "./store.js";
+import { createRoutine, deleteRoutine, listRoutines } from "./store.js";
 
 type Ctx = { tenantId: string; definitionId: string; chatId: string; personId: string; post?: (text: string) => Promise<void> };
 
@@ -18,6 +18,8 @@ const MAX_BACKGROUND = 3;
 const MAX_AHEAD_MS = 366 * 24 * 3600_000;
 
 export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfigWithInstance {
+  const pendingHere = async () =>
+    (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled && r.schedule === null);
   const tools = [
     tool(
       "remind",
@@ -37,6 +39,25 @@ export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfig
         }
       },
     ),
+    tool("reminders", "List the reminders and background jobs still waiting in this chat, with their ids.", {}, async () => {
+      try {
+        const waiting = await pendingHere();
+        if (!waiting.length) return ok("Nothing is waiting in this chat");
+        return ok(waiting.map((r) => `${r.id} | ${r.runAt?.toISOString() ?? ""} | ${r.background ? "background job" : "reminder"} | ${r.prompt.slice(0, 200)}`).join("\n"));
+      } catch (e) {
+        return fail(e);
+      }
+    }),
+    tool("cancel_reminder", "Cancel a reminder or background job in this chat, by the id `reminders` lists. Recurring routines are an admin's to change on the admin site.", { id: z.string() }, async ({ id }) => {
+      try {
+        // only a one-off waiting in this chat: another chat's reminders, and an admin's recurring routines, are not this chat's to cancel
+        if (!(await pendingHere()).some((r) => r.id === id)) throw new DirectoryError("No such reminder waiting in this chat");
+        await deleteRoutine(deps.db, ctx.tenantId, id);
+        return ok("Cancelled");
+      } catch (e) {
+        return fail(e);
+      }
+    }),
     // offered in a chat only: a job starting jobs could fan out without anyone watching
     ...(ctx.post
       ? []

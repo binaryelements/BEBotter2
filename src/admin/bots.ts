@@ -303,11 +303,19 @@ ${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Nam
 </div>
 <button class="be-btn primary">add server</button></form></details>`;
         } else if (tab === "routines") {
-          const routineRows = rts.map((r) => html`<tr><td>${r.prompt.slice(0, 80)}</td><td>${r.schedule ?? r.runAt?.toISOString() ?? ""}</td><td>${chatLabel.get(r.chatId) ?? r.chatId.slice(-12)}</td><td>${yesNo(r.quiet)}</td><td>${yesNo(r.enabled)}</td><td>${r.grantPersonId ? (personName.get(r.grantPersonId) ?? "—") : "—"}</td>
-<td><form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="be-btn sm">${r.enabled ? "disable" : "enable"}</button></form>
-<form method="post" action="/admin/bots/${def.id}/routines/${r.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form></td></tr>`);
-          section = html`<h2>Routines</h2>
-${scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>When</th><th>Chat</th><th>Quiet</th><th>Enabled</th><th>Grant</th><th></th></tr></thead><tbody>${routineRows}</tbody></table>`)}
+          const { timezone } = await getTenantSettings(db, actor.tenantId);
+          const when = (d: Date | null) => (d ? new Intl.DateTimeFormat("en-AU", { timeZone: timezone, dateStyle: "medium", timeStyle: "short" }).format(d) : "");
+          const kind = (r: (typeof rts)[number]) => (r.schedule ? "repeats" : r.background ? "background job" : "reminder");
+          const row = (r: (typeof rts)[number]) => html`<tr><td>${r.prompt.slice(0, 80)}</td><td>${kind(r)}</td><td>${r.schedule ?? when(r.runAt)}</td><td>${chatLabel.get(r.chatId) ?? r.chatId.slice(-12)}</td><td>${yesNo(r.quiet)}</td><td>${yesNo(r.enabled)}</td><td>${r.grantPersonId ? (personName.get(r.grantPersonId) ?? "—") : "—"}</td>
+<td>${r.schedule || r.enabled ? html`<form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="be-btn sm">${r.enabled ? "disable" : "enable"}</button></form>` : ""}
+<form method="post" action="/admin/bots/${def.id}/routines/${r.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form></td></tr>`;
+          const table = (rows: typeof rts) => scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>Kind</th><th>When</th><th>Chat</th><th>Quiet</th><th>Enabled</th><th>Grant</th><th></th></tr></thead><tbody>${rows.map(row)}</tbody></table>`);
+          // a one-off that has run is finished history, not something waiting
+          const ran = rts.filter((r) => !r.schedule && r.lastRunAt);
+          const live = rts.filter((r) => !ran.includes(r));
+          section = html`<h2>Routines and reminders</h2>
+${live.length ? table(live) : html`<div class="be-empty">Nothing waiting or repeating.</div>`}
+${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${table(ran)}</details>` : ""}
 <form method="post" action="/admin/bots/${def.id}/routines">${csrf}
 <p><label>chat <select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>schedule <input name="schedule" placeholder="0 9 * * 1-5" required></label> <label><input type="checkbox" name="quiet"> quiet</label> <label><input type="checkbox" name="grant"> grant my access</label></p>
 <p><label>prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn">add routine</button></form>`;
