@@ -1,3 +1,4 @@
+import { PERSONA_TEMPLATES, personaTemplate } from "../bots/templates.js";
 import express from "express";
 import type { Request, Response, Router } from "express";
 import {
@@ -117,9 +118,10 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
 
   router.get(
     "/bots",
-    wrap(async (_req, res) => {
+    wrap(async (req, res) => {
       const { actor } = adminOf(res);
       const admin = isAdmin(actor);
+      const t = personaTemplate(req.query.template);
       const [{ defs }, settings, domain] = await Promise.all([visibleBots(db, actor), getTenantSettings(db, actor.tenantId), admin ? mailDomain() : undefined]);
       render(
         res,
@@ -127,10 +129,12 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
         html`<header class="be-pagehead"><div class="pt"><h1>Bots</h1></div></header>
 ${await botsTable(db, actor.tenantId, defs)}${
           admin
-            ? html`<details class="be-section"><summary class="be-btn">add bot…</summary><form method="post" action="/admin/bots">${csrfField(res)}
-<p><label>name <input name="displayName" maxlength="60"></label> <label>handle <input name="name" required></label> <label>label <input name="label" required></label> <label>model <input name="model" value="${settings.defaultModel ?? defaultModel}"></label></p>
+            ? html`<details class="be-section" id="add"${t ? html` open` : ""}><summary class="be-btn">add bot…</summary>
+<p class="muted">start from a template: ${PERSONA_TEMPLATES.map((p, i) => html`${i ? " · " : ""}<a href="/admin/bots?template=${p.id}#add">${p.title}</a>`)}</p>
+<form method="post" action="/admin/bots">${csrfField(res)}
+<p><label>name <input name="displayName" maxlength="60" value="${t?.name ?? ""}"></label> <label>handle <input name="name" required value="${t?.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") ?? ""}"></label> <label>label <input name="label" required value="${t?.label ?? ""}"></label> <label>model <input name="model" value="${settings.defaultModel ?? defaultModel}"></label></p>
 ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" autocomplete="off"></label> @${domain}</p>` : ""}
-<p><label>persona<textarea name="persona"></textarea></label></p><button class="be-btn primary">create</button></form></details>`
+<p><label>persona<textarea name="persona" rows="10">${t?.persona ?? ""}</textarea></label></p><button class="be-btn primary">create</button></form></details>`
             : ""
         }`,
       );

@@ -52,6 +52,17 @@ describe("bots screen", () => {
     });
   const def = async (name: string) => (await listDefinitions(db, T)).find((d) => d.name === name)!;
 
+  it("a persona template fills the add-bot form; an unknown one leaves it empty", async () => {
+    const page = await (await get("/admin/bots?template=it-support", "Ann")).text();
+    expect(page).toContain('id="add" open');
+    expect(page).toContain('href="/admin/bots?template=finance#add"');
+    expect(page).toMatch(/name="displayName" maxlength="60" value="Iris"[\s\S]*name="name" required value="it-support"[\s\S]*name="label" required value="IT Support"/);
+    expect(page).toMatch(/<textarea name="persona" rows="10">You are Iris, IT support/);
+    const blank = await (await get("/admin/bots?template=nope", "Ann")).text();
+    expect(blank).not.toContain('id="add" open');
+    expect(blank).toContain('<textarea name="persona" rows="10"></textarea>');
+  });
+
   it("an admin creates a bot, adds a server with a header, and never sees the header value", async () => {
     const res = await post("/admin/bots", "Ann", [["name", "helper"], ["label", "Helper"], ["persona", "Be useful."], ["model", "m1"]]);
     expect(res.status).toBe(303);
