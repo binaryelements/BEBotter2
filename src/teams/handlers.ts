@@ -9,6 +9,7 @@ import { assignToChat, definitionsForChat, listDefinitions, setChatDefinition, u
 import { isAdmin, loadActor, mayUseDefinition } from "../admin/access.js";
 import { findPersonId, getTenantSettings, recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { botTitle, chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
+import { recordOverheard, takeOverheard, withOverheard } from "./overheard.js";
 import type { AdaptiveCard } from "./cards.js";
 
 export type IncomingMessage = {
@@ -17,6 +18,8 @@ export type IncomingMessage = {
   conversationType: string;
   /** What Teams calls the chat, when it has a name (a group chat's topic). */
   name?: string;
+  /** Group chats: the message @mentioned the bot. Without the permission to read every message, Teams only sends these. */
+  mentioned?: boolean;
   from: { aadObjectId: string; name: string };
   text: string;
   receivedAt?: Date;
@@ -178,6 +181,11 @@ export async function handleMessage(
       definition = usable[0];
     }
   }
+  // a group chat the bot may hear in full: it answers only when @mentioned or addressed by name, and keeps the rest as context
+  if (msg.conversationType !== "personal" && msg.mentioned === false && !(definition && addressedByName(msg.text, definition))) {
+    await recordOverheard(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, name: person.name, text: msg.text, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) });
+    return;
+  }
   if (msg.conversationType !== "personal" && (!definition || msg.text.trim().toLowerCase() === "switch")) {
     const bots = await groupBots(db, msg.tenantId, person.id);
     if (bots?.length) return void (await io.sendCard(chooseBotCard(bots)));
@@ -259,12 +267,13 @@ export async function handleMessage(
       if (!(await endStream(final))) await status.finish(labelled);
     };
     try {
+      const heard = personal ? [] : await takeOverheard(db, msg.chatId);
       const result = await deps.runTurn({
         tenantId: msg.tenantId,
         chatId: msg.chatId,
         definition,
         person,
-        text: msg.text,
+        text: withOverheard(heard, msg.text),
         receivedAt: msg.receivedAt,
         ...(graphToken ? { graphToken } : {}),
         askConfirmation: async (req) => {
@@ -306,6 +315,12 @@ export const choosePayload = (action: unknown): string => {
   const obj = (action ?? {}) as { data?: unknown; definitionId?: unknown };
   const src = obj.data && typeof obj.data === "object" ? (obj.data as typeof obj) : obj;
   return String(src.definitionId ?? "");
+};
+
+/** "Mickey, …" or "hey mickey …": the message starts with the bot's name (its display name, or its label). */
+export const addressedByName = (text: string, d: { displayName: string | null; label: string }): boolean => {
+  const name = (d.displayName || d.label).trim();
+  return !!name && new RegExp(`^\\W*(?:hey|hi|ok|okay|thanks)?\\W*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "iu").test(text);
 };
 
 /** The company bots an admin may put in a group chat (it answers everyone there, so only an admin chooses); undefined for anyone else. */

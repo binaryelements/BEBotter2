@@ -11,10 +11,10 @@ import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { setAllowedDepartments } from "../bots/definitions.js";
-import { auditEvents, chatAssignments, chats } from "../db/schema.js";
+import { auditEvents, botDefinitions, chatAssignments, chats } from "../db/schema.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { recordChatOwner, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { SLOW_NOTE, choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
+import { SLOW_NOTE, addressedByName, choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
 import { confirmerPolicy } from "../admin/access.js";
 import type { IncomingMessage } from "./handlers.js";
 
@@ -761,6 +761,26 @@ describe("choosing the bot in a one-to-one chat", () => {
     await group("switch", "u1");
     expect(s.cards).toHaveLength(2);
     expect(s.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("in a group chat it hears without answering, then answers a mention or its name with what it heard", async () => {
+    const s = await chat();
+    const a = await s.service("it", "IT Support");
+    await s.db.update(botDefinitions).set({ displayName: "Mickey" }).where(eq(botDefinitions.id, a.id));
+    const group = (text: string, mentioned: boolean, from = "u2") => handleMessage(s.deps, { ...msg("groupChat"), text, mentioned, from: { aadObjectId: from, name: from === "u1" ? "Ann" : "Bob" } }, s.io);
+    await group("the printer is down", false);
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    await group("I'll check the toner", false, "u1");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(s.sent).toEqual([]);
+    await group("mickey, r u there?", false);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+    expect((s.runTurn.mock.calls[0] as any)[0].text).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nBob: the printer is down\nAnn: I'll check the toner]\n\nmickey, r u there?");
+    await group("fixed now", true);
+    expect((s.runTurn.mock.calls[1] as any)[0].text).toBe("fixed now");
+    expect(addressedByName("Hey Mickey: help", { displayName: "Mickey", label: "IT" })).toBe(true);
+    expect(addressedByName("Mickeys are mice", { displayName: "Mickey", label: "IT" })).toBe(false);
+    expect(addressedByName("it support, help", { displayName: null, label: "IT Support" })).toBe(true);
   });
 
   it("leaves My assistant off the card of a person without the flag", async () => {

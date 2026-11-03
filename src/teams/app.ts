@@ -143,6 +143,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         chatId: conversation.id,
         conversationType,
         ...(conversation.name ? { name: conversation.name } : {}),
+        ...(conversationType !== "personal" ? { mentioned: ctx.activity.getMentions(ctx.activity).some((m) => m.mentioned?.id === ctx.activity.recipient?.id) } : {}),
         from: { aadObjectId: from.aadObjectId, name: from.name ?? "" },
         text: (ctx.activity.text ?? "").trim(),
         receivedAt,

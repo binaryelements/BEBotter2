@@ -51,7 +51,7 @@ The Teams package must carry `webApplicationInfo` with the same client ID and re
 
 ## Teams packages
 
-`teams-app/manifest.json` is the production manifest (version 1.1.0). The staging package is the same with the staging client ID in `id`, `bots[0].botId` and `webApplicationInfo`, and "(staging)" in the name. Zip `manifest.json`, `color.png` and `outline.png`, and upload in Teams admin centre, Manage apps, the app, Upload file. Bump `version` on every change.
+`teams-app/manifest.json` is the production manifest (version 1.2.0; 1.2.0 adds the resource-specific permissions `ChatMessage.Read.Chat` and `ChannelMessage.Read.Group`, so the bot hears every message in group chats and channels, not only @mentions; whoever adds the app to a chat consents to it there). The staging package is the same with the staging client ID in `id`, `bots[0].botId` and `webApplicationInfo`, and "(staging)" in the name. Zip `manifest.json`, `color.png` and `outline.png`, and upload in Teams admin centre, Manage apps, the app, Upload file. Bump `version` on every change.
 
 ## Working on the code
 
@@ -82,7 +82,7 @@ Branch `feature/read-attachment` (deployed to staging, PR to open after trying i
 
 1. **Production database backups: none yet.** Turn on Coolify scheduled backups for both Postgres containers (decide on off-site storage).
 2. Production Microsoft 365 sign-in setup (above), then upload the 1.1.0 package and switch My assistant on for people.
-3. Group chat memory and summaries: designed in spec section 4.12 (branch `feature/chat-memory`, spec only). Postgres, on by default in group chats (only an admin turns it off), personal chats can opt out, admin views daily/monthly summaries. Needs a plan and a Teams permission to read chat messages.
+3. Group chat memory: the listening half is built (`src/teams/overheard.ts`, 3 Nov 2026). In a group chat the bot answers only when @mentioned or addressed by name ("Mickey, …"); everything else is kept in `chat_messages` and handed to its next turn there, then pruned with the audit retention. Admins switch listening off per chat on Assignments. Still from spec 4.12: daily/monthly summaries for admins, and the "stop listening" opt-out in personal chats.
 4. Addressing a bot by name per message (spec 4.13, next step).
 5. A separate Teams identity per bot (wanted later).
 6. Computers: decide whether they move to a separate VM, and whether the admin site shows the bot's screen.

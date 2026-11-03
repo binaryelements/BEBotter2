@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 
 export type McpServerRecord = {
   name: string;
@@ -61,8 +61,27 @@ export const chats = pgTable("chats", {
   label: text("label"),
   ownerPersonId: text("owner_person_id").references(() => people.id), // whose 1:1 chat it is
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  // group chats: the bot keeps what is said when it is not addressed, as context for when it is; an admin turns it off
+  listening: boolean("listening").notNull().default(true),
   createdAt: createdAt(),
 });
+
+/** What a group chat said while the bot was not addressed; handed to the bot on its next turn there, then pruned with the audit. */
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    chatId: text("chat_id").notNull().references(() => chats.id),
+    personId: text("person_id").references(() => people.id),
+    name: text("name").notNull(),
+    text: text("text").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }), // when a turn read it
+  },
+  (t) => [index("chat_messages_chat_idx").on(t.chatId, t.at)],
+);
+export type ChatMessage = typeof chatMessages.$inferSelect;
 
 export const botDefinitions = pgTable(
   "bot_definitions",
