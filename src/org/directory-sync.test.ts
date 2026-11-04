@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
+import { people } from "../db/schema.js";
 import { createDepartment, listDepartments, listPeople, setMembership, setPersonalBot, setRole } from "./directory.js";
 import { graphFetchUsers, syncPeople } from "./directory-sync.js";
 import type { DirectoryUser } from "./directory-sync.js";
-import { upsertPerson, upsertTenant } from "./org.js";
+import { getTenantSettings, setTenantSettings, upsertPerson, upsertTenant } from "./org.js";
 
 const T = "tenant-1";
 const user = (id: string, over: Partial<DirectoryUser> = {}): DirectoryUser => ({
@@ -40,6 +41,27 @@ describe("syncPeople", () => {
     expect((await listDepartments(db, T))[0].members).toHaveLength(1);
 
     expect(await syncPeople(db, T, async () => users)).toEqual({ added: 0, updated: 0, skipped: 2 });
+  });
+
+  it("keeps each person's place from the directory and makes the commonest one the company default", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: T });
+    const users = [
+      user("ann", { city: "Melbourne", country: "Australia" }),
+      user("bob", { city: "Sydney", country: "Australia" }),
+      user("cat", { city: " Melbourne ", country: "Australia" }),
+      user("dan", { city: null, country: null, officeLocation: "Level 3" }),
+      user("eve", { country: "Singapore" }),
+    ];
+    await syncPeople(db, T, async () => users);
+    const places = async () => Object.fromEntries((await db.select({ name: people.name, location: people.location }).from(people)).map((p) => [p.name, p.location]));
+    expect(await places()).toEqual({ ANN: "Melbourne, Australia", BOB: "Sydney, Australia", CAT: "Melbourne, Australia", DAN: "Level 3", EVE: "Singapore" });
+    expect(await getTenantSettings(db, T)).toMatchObject({ location: "Melbourne", country: "Australia" });
+    // an admin's own setting is kept
+    await setTenantSettings(db, T, { ...(await getTenantSettings(db, T)), location: "Geelong", country: "Australia" });
+    await syncPeople(db, T, async () => [user("ann", { city: "Perth", country: "Australia" })]);
+    expect(await getTenantSettings(db, T)).toMatchObject({ location: "Geelong" });
+    expect((await places()).ANN).toBe("Perth, Australia");
   });
 
   it("falls back on empty values, skips users without a name, email or id, and never blanks a stored email", async () => {
@@ -99,7 +121,7 @@ describe("graphFetchUsers", () => {
     expect(calls[0].url).toBe("https://login.microsoftonline.com/tid-1/oauth2/v2.0/token");
     const form = new URLSearchParams(String(calls[0].init?.body));
     expect(Object.fromEntries(form)).toEqual({ client_id: "client-1", client_secret: "secret-1", grant_type: "client_credentials", scope: "https://graph.microsoft.com/.default" });
-    expect(calls[1].url).toBe("https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType&$top=999");
+    expect(calls[1].url).toBe("https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType,city,country,officeLocation&$top=999");
     expect(new Headers(calls[1].init?.headers).get("authorization")).toBe("Bearer tok");
     expect(calls[2].url).toBe("https://graph.microsoft.com/v1.0/users?page2");
   });

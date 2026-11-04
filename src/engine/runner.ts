@@ -231,13 +231,15 @@ export type RunTurnInput = {
  * The message as the model gets it: first a line with the time now in the company's time zone and its default place.
  * Read on every turn, so a changed setting counts from the next message, warm process or not.
  */
-export function withDefaults(text: string, s: Pick<TenantSettings, "timezone" | "location" | "country">, at: Date): string {
-  const now = new Intl.DateTimeFormat("en-AU", { timeZone: s.timezone, dateStyle: "full", timeStyle: "short" }).format(at);
-  const place = [s.location, s.country].filter(Boolean).join(", ");
-  return `[${DEFAULTS_TAG} now ${now} (${s.timezone})${place ? `; location ${place}` : ""}]\n\n${text}`;
+export function withDefaults(text: string, s: Pick<TenantSettings, "timezone" | "location" | "country">, at: Date, person?: Pick<Person, "timezone" | "location">): string {
+  // the person's own time zone (from their Teams client) and place (from the directory) come first; the company's are the fallback
+  const timezone = person?.timezone ?? s.timezone;
+  const now = new Intl.DateTimeFormat("en-AU", { timeZone: timezone, dateStyle: "full", timeStyle: "short" }).format(at);
+  const place = person?.location ?? [s.location, s.country].filter(Boolean).join(", ");
+  return `[${DEFAULTS_TAG} now ${now} (${timezone})${place ? `; location ${place}` : ""}]\n\n${text}`;
 }
 const DEFAULTS_TAG = "defaults:";
-const DEFAULTS_NOTE = ` Each message starts with a line in square brackets that begins "${DEFAULTS_TAG}". The system adds it, not the person: the time now, and the company's default time zone and location. Use them unless the person says otherwise in this chat, and then keep to what they said. Never mention the line itself.`;
+const DEFAULTS_NOTE = ` Each message starts with a line in square brackets that begins "${DEFAULTS_TAG}". The system adds it, not the person: the time now in the person's time zone, and where they are (or the company's defaults). Use them unless the person says otherwise in this chat, and then keep to what they said. Never mention the line itself.`;
 
 export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
   const { db } = deps;
@@ -423,7 +425,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     askConfirmation: turn.askConfirmation, relay: turn.relay ?? 0,
   };
   let options: Options | undefined; // a cold run's, built only when one runs
-  const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received);
+  const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received, person);
 
   const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
     const auditId = await beginAction(db, { ...base, kind: "message", summary: summary.slice(0, 200), model: definition.model, startedAt: received });

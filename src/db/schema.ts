@@ -48,6 +48,8 @@ export const people = pgTable(
     role: text("role").notNull().default("user"),
     personalBot: boolean("personal_bot").notNull().default(false),
     email: text("email"),
+    timezone: text("timezone"), // from their Teams client, e.g. Australia/Melbourne
+    location: text("location"), // from the directory: "Melbourne, Australia"
     createdAt: createdAt(),
   },
   (t) => [unique().on(t.tenantId, t.aadObjectId)],

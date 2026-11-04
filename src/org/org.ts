@@ -17,13 +17,16 @@ export async function upsertTenant(db: Db, { id, name }: { id: string; name?: st
 
 export async function upsertPerson(
   db: Db,
-  { tenantId, aadObjectId, name }: { tenantId: string; aadObjectId: string; name: string },
+  { tenantId, aadObjectId, name, timezone }: { tenantId: string; aadObjectId: string; name: string; timezone?: string },
 ): Promise<Person> {
+  const tz = timezone && validTimeZone(timezone) ? timezone : undefined;
   const [row] = await db
     .insert(people)
-    .values({ id: crypto.randomUUID(), tenantId, aadObjectId, name })
-    .onConflictDoUpdate({ target: [people.tenantId, people.aadObjectId], set: { name } })
+    .values({ id: crypto.randomUUID(), tenantId, aadObjectId, name, ...(tz ? { timezone: tz } : {}) })
+    .onConflictDoUpdate({ target: [people.tenantId, people.aadObjectId], set: { name, ...(tz ? { timezone: tz } : {}) } })
     .returning();
+  // the company's time zone, until an admin sets one: the first person's, since UTC is nobody's
+  if (tz) await db.update(tenants).set({ timezone: tz }).where(and(eq(tenants.id, tenantId), eq(tenants.timezone, "UTC")));
   return row;
 }
 

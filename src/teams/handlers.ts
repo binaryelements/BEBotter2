@@ -20,7 +20,7 @@ export type IncomingMessage = {
   name?: string;
   /** Group chats: the message @mentioned the bot. Without the permission to read every message, Teams only sends these. */
   mentioned?: boolean;
-  from: { aadObjectId: string; name: string };
+  from: { aadObjectId: string; name: string; /** the sender's Teams client time zone, e.g. Australia/Melbourne */ timezone?: string };
   text: string;
   receivedAt?: Date;
   conversationReference: unknown;
@@ -162,7 +162,7 @@ export async function handleMessage(
 ): Promise<void> {
   const { db } = deps;
   await upsertTenant(db, { id: msg.tenantId });
-  const person = await upsertPerson(db, { tenantId: msg.tenantId, aadObjectId: msg.from.aadObjectId, name: msg.from.name });
+  const person = await upsertPerson(db, { tenantId: msg.tenantId, aadObjectId: msg.from.aadObjectId, name: msg.from.name, ...(msg.from.timezone ? { timezone: msg.from.timezone } : {}) });
   await upsertChat(db, { id: msg.chatId, tenantId: msg.tenantId, conversationType: msg.conversationType, ...(msg.name ? { name: msg.name } : {}) });
   await saveConversationReference(db, msg.chatId, msg.conversationReference);
   let [definition] = await definitionsForChat(db, msg.chatId);

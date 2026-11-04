@@ -785,6 +785,11 @@ describe("runTurn", () => {
   it("the defaults line leaves out a place that is not set", () => {
     expect(withDefaults("hi", { timezone: "UTC", location: null, country: "Australia" }, new Date("2026-11-02T13:30:00Z"))).toBe("[defaults: now Monday, 2 November 2026 at 1:30 pm (UTC); location Australia]\n\nhi");
     expect(withDefaults("hi", { timezone: "UTC", location: null, country: null }, new Date("2026-11-02T13:30:00Z"))).toBe("[defaults: now Monday, 2 November 2026 at 1:30 pm (UTC)]\n\nhi");
+    // the person's own zone and place win over the company's
+    expect(withDefaults("hi", { timezone: "UTC", location: "Sydney", country: "Australia" }, new Date("2026-11-02T13:30:00Z"), { timezone: "Australia/Melbourne", location: "Melbourne, Australia" }))
+      .toBe("[defaults: now Tuesday, 3 November 2026 at 12:30 am (Australia/Melbourne); location Melbourne, Australia]\n\nhi");
+    expect(withDefaults("hi", { timezone: "UTC", location: "Sydney", country: "Australia" }, new Date("2026-11-02T13:30:00Z"), { timezone: null, location: null }))
+      .toBe("[defaults: now Monday, 2 November 2026 at 1:30 pm (UTC); location Sydney, Australia]\n\nhi");
   });
 
   it("the prompt names the actions an admin set to run freely or to need a card", async () => {

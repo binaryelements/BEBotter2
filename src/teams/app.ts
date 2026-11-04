@@ -167,7 +167,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         conversationType,
         ...(name ? { name } : {}),
         ...(conversationType !== "personal" ? { mentioned: ctx.activity.getMentions(ctx.activity).some((m) => m.mentioned?.id === ctx.activity.recipient?.id) } : {}),
-        from: { aadObjectId: from.aadObjectId, name: from.name ?? "" },
+        from: { aadObjectId: from.aadObjectId, name: from.name ?? "", ...(ctx.activity.localTimezone ? { timezone: ctx.activity.localTimezone } : {}) },
         text: (ctx.activity.text ?? "").trim(),
         receivedAt,
         conversationReference: ctx.activity.getConversationReference(),
