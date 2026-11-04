@@ -64,7 +64,9 @@ describe("activity screen", () => {
     const t = await (await get("/admin/activity", "Ann")).text();
     expect(t).toContain("Eve");
     expect(t).toContain("Alpha");
-    expect(t).toContain("mcp__x__y");
+    expect(t).toContain("<td>x y</td>"); // the tool as words, with its server
+    expect(t).toContain('<option value="">any bot</option>');
+    expect(t).toContain('<option value="chat-2" >chat-2</option>');
     expect(t).toContain("message");
     expect(t).toContain("confirmed by Hal");
     expect(t).not.toContain(">older<");
@@ -83,8 +85,8 @@ describe("activity screen", () => {
 
   it("filters combine", async () => {
     const t = await (await get(`/admin/activity?person=${id.Eve}&status=failed&chat=chat-2&bot=${bot}`, "Ann")).text();
-    expect(t).toContain("Eve");
-    expect(t).not.toContain("Sam");
+    expect(t).toContain("<td>Eve</td>");
+    expect(t).not.toContain("<td>Sam</td>"); // Sam stays in the person dropdown, not the rows
     const none = await (await get(`/admin/activity?person=${id.Eve}&status=done`, "Ann")).text();
     expect(none).not.toContain("Eve</td>");
     const arr = await get(`/admin/activity?status=done&status=failed`, "Ann");
@@ -125,7 +127,7 @@ describe("activity screen", () => {
     expect(r.headers.get("content-disposition")).toBe('attachment; filename="activity.csv"');
     expect(r.headers.get("cache-control")).toBe("no-store");
     const csv = await r.text();
-    expect(csv.startsWith("time,person,bot,tool,status,summary,confirmed_by\r\n")).toBe(true);
+    expect(csv.startsWith("time,person,bot,chat,tool,status,summary,confirmed_by\r\n")).toBe(true);
     expect(csv).toContain('"\'=SUM(1,2)","Hal"');
     expect(csv).toContain('"said ""hi"", there\nline two"');
     for (const s of ["-1", "+1", "@x", "\tx"]) expect(csv).toContain(`"'${s}"`);

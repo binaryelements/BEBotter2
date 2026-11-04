@@ -60,6 +60,9 @@ describe("audit", () => {
 
   it("summarises bash commands, other MCP tools and plain tools", () => {
     expect(summarise("mcp__computer__bash", { command: "ls -la" })).toBe("ls -la");
+    expect(summarise("mcp__connections__ssh_read", { name: "pve1", command: "uptime" })).toBe("pve1: uptime");
+    expect(summarise("mcp__connections__sql_read", { name: "sap", query: "select 1" })).toBe("sap: select 1");
+    expect(summarise("mcp__connections__http_change", { name: "api", method: "POST", path: "/orders", body: "{}" })).toBe("api: POST /orders");
     expect(summarise("mcp__computer__bash", { command: "x".repeat(300) })).toHaveLength(200);
     expect(summarise("mcp__tickets__close_ticket", { id: 7 })).toBe('close_ticket {"id":7}');
     expect(summarise("mcp__computer__bash", "not an object")).toBe("mcp__computer__bash");

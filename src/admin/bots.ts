@@ -36,6 +36,7 @@ import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 import { armedPage, isArmed } from "./arm.js";
 import { botsTable, visibleBots } from "./overview.js";
+import { chatNames } from "./chat-names.js";
 
 const field = (req: Request, name: string) => {
   const v = (req.body as Record<string, unknown> | undefined)?.[name];
@@ -350,7 +351,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
           db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, actor.tenantId)),
         ]);
         const linkedIds = new Set(linked.map((c) => c.id));
-        const chatLabel = new Map(assigned.map((c) => [c.id, c.label ?? c.id.slice(-12)]));
+        const chatLabel = await chatNames(db, actor.tenantId);
         const personName = new Map(ppl.map((p) => [p.id, p.name]));
         // one endpoint saves the whole definition, so each of the two forms carries the other's fields unchanged
         const person = def.identity === "person";

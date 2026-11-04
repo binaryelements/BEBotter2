@@ -120,6 +120,12 @@ export function summarise(toolName: string, rawInput: unknown): string {
   if (toolName === "mcp__computer__bash") {
     return typeof input?.command === "string" ? input.command.slice(0, 200) : toolName;
   }
+  // a connection call reads as "<connection>: <what was run>"
+  const conn = /^mcp__connections__(ssh|sql|http)_(read|change)$/.exec(toolName);
+  if (conn && typeof input?.name === "string") {
+    const what = conn[1] === "http" ? `${String(input.method ?? "GET")} ${String(input.path ?? "")}` : String(input.command ?? input.query ?? "");
+    return `${input.name}: ${what}`.slice(0, 200);
+  }
   if (toolName.startsWith("mcp__")) {
     const tool = toolName.slice(toolName.lastIndexOf("__") + 2);
     return `${tool} ${JSON.stringify(toolInput)}`.slice(0, 200);

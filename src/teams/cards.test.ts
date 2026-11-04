@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
+import { chooseBotCard, confirmationCard, resultCard, toolLabel, toolWords, withRoleLabel } from "./cards.js";
 
 describe("cards", () => {
   const block = (text: string, extra: Record<string, unknown> = {}, run: Record<string, unknown> = {}) => ({ type: "RichTextBlock", ...extra, inlines: [{ type: "TextRun", text, ...run }] });
@@ -45,6 +45,15 @@ describe("cards", () => {
   it("toolWords drops the MCP prefix and underscores only", () => {
     expect(toolWords("mcp__conn-desk__close_ticket")).toBe("close ticket");
     expect(toolWords("WebSearch")).toBe("WebSearch");
+  });
+
+  it("toolLabel names the connection, the MCP server or neither for house tools", () => {
+    expect(toolLabel("mcp__connections__ssh_read", { name: "pve1", command: "uptime" })).toBe("ssh read pve1");
+    expect(toolLabel("mcp__connections__sql_change", { name: "sap" })).toBe("sql change sap");
+    expect(toolLabel("mcp__conn-desk__close_ticket")).toBe("desk: close ticket");
+    expect(toolLabel("mcp__Xero__list-invoices")).toBe("Xero list invoices");
+    expect(toolLabel("mcp__m365__list_events")).toBe("list events");
+    expect(toolLabel("WebSearch")).toBe("WebSearch");
   });
 
   it("resultCard is one TextBlock", () => {
