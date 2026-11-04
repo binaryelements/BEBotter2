@@ -8,7 +8,8 @@ import { auditEvents, chatAssignments, departmentMembers, mailboxes, people } fr
 import type { BotDefinition } from "../db/schema.js";
 import type { Actor } from "./access.js";
 import { isAdmin } from "./access.js";
-import { chip, html, layout, scroll } from "./html.js";
+import { chip, html, layout, raw, scroll } from "./html.js";
+import { chatNames } from "./chat-names.js";
 import { inputWords, whenFor, whenIn } from "./words.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
@@ -58,6 +59,10 @@ export function localStart(now: Date, timeZone: string, unit: "day" | "month"): 
   return new Date(local - wall(new Date(first)).offset);
 }
 
+const PERIODS = ["today", "7d", "30d"] as const;
+type Period = (typeof PERIODS)[number];
+const PERIOD_WORDS: Record<Period, string> = { today: "today", "7d": "7 days", "30d": "30 days" };
+
 const median = (xs: number[]) => {
   if (!xs.length) return undefined;
   const s = [...xs].sort((a, b) => a - b);
@@ -80,36 +85,84 @@ export function overviewRoutes(db: Db): Router {
       const empty = !!personIds && !personIds.length || !definitionIds.length;
       const now = new Date();
       const { timezone } = await getTenantSettings(db, actor.tenantId);
+      const period = (PERIODS as readonly string[]).includes(String(_req.query.period)) ? (String(_req.query.period) as Period) : "7d";
+      const days = period === "today" ? 1 : period === "7d" ? 7 : 30;
       const day = localStart(now, timezone, "day");
       const month = localStart(now, timezone, "month");
-      // shortcut: the month's rows are summed in memory; use SQL sums when volumes grow.
-      const [pending, recent, monthRows, chatRows] = empty
-        ? [[], [], [], []]
+      const from = new Date(day.getTime() - (days - 1) * 86_400_000);
+      const before = new Date(from.getTime() - days * 86_400_000); // the period before, for the comparison lines
+      // shortcut: the rows are summed in memory; use SQL sums when volumes grow.
+      const [pending, allRows, chatRows, people_, chatName] = empty
+        ? [[], [], [], [], new Map<string, string>()]
         : await Promise.all([
             listActions(db, { ...scope, status: "pending", limit: 50 }),
-            listActions(db, { ...scope, limit: 10 }),
-            listActions(db, { ...scope, limit: 10_000 }).then((rows) => rows.filter((r) => r.startedAt >= month)),
+            listActions(db, { ...scope, limit: 10_000 }).then((rows) => rows.filter((r) => r.startedAt >= (before < month ? before : month))),
             db.select({ id: chatAssignments.chatId }).from(chatAssignments).where(inArray(chatAssignments.definitionId, definitionIds)),
+            db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, actor.tenantId)),
+            chatNames(db, actor.tenantId),
           ]);
+      const personName = new Map(people_.map((p) => [p.id, p.name]));
       // the confirmation window is 10 minutes: an older pending row can no longer be approved
       const waiting = pending.filter((r) => r.kind === "tool" && r.startedAt.getTime() > now.getTime() - 10 * 60_000);
-      const today = monthRows.filter((r) => r.startedAt >= day);
-      const replies = today.flatMap((r) => (r.kind === "message" && r.timings?.sentAt ? [(Date.parse(r.timings.sentAt) - Date.parse(r.timings.receivedAt)) / 1000] : []));
-      const typical = median(replies);
-      const spend = monthRows.reduce((sum, r) => sum + Number(r.costUsd ?? 0), 0);
+      const rows = allRows.filter((r) => r.startedAt >= from);
+      const prev = allRows.filter((r) => r.startedAt >= before && r.startedAt < from);
+      const monthRows = allRows.filter((r) => r.startedAt >= month);
+      const messages = rows.filter((r) => r.kind === "message");
+      const tools = rows.filter((r) => r.kind === "tool");
+      const secs = (r: (typeof rows)[number]) => (r.timings?.sentAt ? [(Date.parse(r.timings.sentAt) - Date.parse(r.timings.receivedAt)) / 1000] : []);
+      const replyTimes = messages.flatMap(secs);
+      const typical = median(replyTimes);
+      const slowest = replyTimes.length ? Math.max(...replyTimes) : undefined;
+      const spend = (xs: typeof rows) => xs.reduce((sum, r) => sum + Number(r.costUsd ?? 0), 0);
+      const failed = tools.filter((r) => r.status === "failed");
+      const served = new Set(messages.flatMap((r) => (r.personId ? [r.personId] : [])));
+      const prevMessages = prev.filter((r) => r.kind === "message").length;
+      const change = prevMessages ? `${messages.length >= prevMessages ? "+" : ""}${Math.round(((messages.length - prevMessages) / prevMessages) * 100)}% on the ${PERIOD_WORDS[period]} before` : "no earlier period to compare";
       const name = new Map(defs.map((d) => [d.id, d.displayName ?? d.name]));
+      const bot = new Map(defs.map((d) => [d.id, d]));
       const stamp = whenIn(timezone, now);
-      const tile =(label: string, value: string, cls = "") => html`<div class="be-tile ${cls}"><div class="be-eyebrow">${label}</div><div class="v">${value}</div></div>`;
-      const body = html`<header class="be-pagehead"><div class="pt"><h1>Overview</h1></div></header>
-${waiting.map((r) => html`<div class="be-notice warn"><span><b>${name.get(r.definitionId) ?? ""}</b> is waiting for approval: ${r.summary}</span><span class="n">${stamp(r.startedAt)}</span></div>`)}
-<div class="be-tiles" style="margin-top:var(--space-12)">${tile("bots", String(defs.length))}${tile("chats", String(new Set(chatRows.map((c) => c.id)).size))}${tile("waiting approvals", String(waiting.length), waiting.length ? "warn" : "")}${tile("actions today", String(today.filter((r) => r.kind === "tool").length))}${tile("median reply time", typical === undefined ? "none today" : `${typical.toFixed(1)} s`)}${tile("spend this month", `$${spend.toFixed(2)}`)}</div>
-<section class="be-section"><h3>Bots</h3>${await botsTable(db, actor.tenantId, defs)}</section>
-<section class="be-section"><h3>Recent activity <a href="/admin/activity">all activity</a></h3>${
-        recent.length
-          ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Bot</th><th>Summary</th><th>Status</th></tr></thead><tbody>${recent.map((r) => html`<tr><td>${stamp(r.startedAt)}</td><td>${name.get(r.definitionId) ?? ""}</td><td>${inputWords(r.summary)}</td><td>${chip(r.status)}</td></tr>`)}</tbody></table>`)
+      const tile = (label: string, value: string, sub: string, cls = "") => html`<div class="be-tile ${cls}"><div class="be-eyebrow">${label}</div><div class="v">${value}</div><div class="s">${sub}</div></div>`;
+      // replies per local day for the last seven days, oldest first
+      const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" });
+      const weekday = new Intl.DateTimeFormat("en-AU", { timeZone: timezone, weekday: "short" });
+      const week = Array.from({ length: 7 }, (_, i) => new Date(day.getTime() - (6 - i) * 86_400_000));
+      const perDay = week.map((d) => ({ label: d.getTime() === day.getTime() ? "today" : weekday.format(d), n: allRows.filter((r) => r.kind === "message" && dayKey.format(r.startedAt) === dayKey.format(d)).length }));
+      const peak = Math.max(1, ...perDay.map((p) => p.n));
+      // by bot: personal assistants are one line with counts only
+      const byBot = new Map<string, { label: string; replies: number; cost: number }>();
+      for (const r of rows) {
+        const d = bot.get(r.definitionId);
+        const key = d?.identity === "person" ? "personal" : r.definitionId;
+        const label = d?.identity === "person" ? "Personal assistants" : d ? (d.displayName ? `${d.displayName} · ${d.label}` : d.label) : "";
+        const e = byBot.get(key) ?? { label, replies: 0, cost: 0 };
+        if (r.kind === "message") e.replies++;
+        e.cost += Number(r.costUsd ?? 0);
+        byBot.set(key, e);
+      }
+      const bots = [...byBot.values()].sort((a, b) => b.replies - a.replies);
+      const mostReplies = Math.max(1, ...bots.map((b) => b.replies));
+      const busiest = [...messages.reduce((m, r) => (r.personId ? m.set(r.personId, (m.get(r.personId) ?? 0) + 1) : m), new Map<string, number>())].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      const last = allRows.filter((r) => r.kind === "message").slice(0, 8);
+      const failedBy = [...failed.reduce((m, r) => { const s = (r.toolName ?? "").replace(/^mcp__(.+?)__.*/, "$1").replace(/^conn-/, ""); return m.set(s, (m.get(s) ?? 0) + 1); }, new Map<string, number>())].map(([s, n]) => `${n} ${s}`).join(" · ");
+      const switcher = html`<div class="be-seg" role="radiogroup" aria-label="period">${PERIODS.map((p) => html`<a href="/admin?period=${p}" class="${p === period ? "on" : ""}" ${p === period ? raw('aria-current="true"') : ""}>${PERIOD_WORDS[p]}</a>`)}</div>`;
+      const body = html`<header class="be-pagehead"><div class="pt"><h1>Dashboard</h1><p class="meta">${stamp(now)} · ${timezone.split("/").pop()!.replace(/_/g, " ")} · ${defs.length} bots · ${new Set(chatRows.map((c) => c.id)).size} chats</p></div><div class="act">${switcher}</div></header>
+${waiting.map((r) => html`<div class="be-notice warn"><span><b>${name.get(r.definitionId) ?? ""}</b> is waiting for approval: ${inputWords(r.summary)}</span><span class="n">${r.personId ? `asked by ${personName.get(r.personId) ?? ""} · ` : ""}${stamp(r.startedAt)}</span></div>`)}
+<div class="be-tiles" style="margin-top:var(--space-12)">${tile("replies", String(messages.length), change)}${tile("actions", String(tools.length), `${tools.filter((r) => r.authority?.type === "confirmation").length} confirmed · ${tools.filter((r) => r.status === "denied").length} declined`)}${tile("people served", String(served.size), `of ${people_.length}`)}${tile("median reply", typical === undefined ? "none" : `${typical.toFixed(1)} s`, slowest === undefined ? "" : `slowest ${slowest.toFixed(0)} s`)}${tile("spend", `$${spend(rows).toFixed(2)}`, `$${spend(monthRows).toFixed(2)} this month so far`)}${tile("failed", String(failed.length), failedBy || "none", failed.length ? "bad" : "")}${tile("waiting approvals", String(waiting.length), waiting.length ? "in the chats now" : "none", waiting.length ? "warn" : "")}</div>
+<div class="dash-cols">
+<section class="be-section"><h3>Replies per day</h3><div class="be-bars" role="img" aria-label="Replies per day: ${perDay.map((p) => `${p.label} ${p.n}`).join(", ")}">${perDay.map((p) => html`<div class="bar${p.label === "today" ? " today" : ""}" style="height:${Math.round((p.n / peak) * 100)}%" title="${p.label}: ${p.n}"></div>`)}</div><div class="be-bars-key">${perDay.map((p) => html`<span>${p.label}</span>`)}</div></section>
+<section class="be-section"><h3>By bot, ${PERIOD_WORDS[period]}</h3>${bots.length ? html`<table class="be-table lean"><tbody>${bots.map((b) => html`<tr><td>${b.label}</td><td class="w"><div class="be-meter"><div style="width:${Math.round((b.replies / mostReplies) * 100)}%"></div></div></td><td class="n">${b.replies} ${b.replies === 1 ? "reply" : "replies"} · $${b.cost.toFixed(2)}</td></tr>`)}</tbody></table>` : html`<div class="be-empty">Nothing yet.</div>`}
+<h3>Busiest people</h3><p class="be-mono muted">${busiest.length ? busiest.map(([p, n]) => `${personName.get(p) ?? "someone"} ${n}`).join(" · ") : "nobody yet"}</p></section>
+</div>
+<section class="be-section"><h3>Last messages <a href="/admin/activity">all activity</a></h3>${
+        last.length
+          ? scroll(html`<table class="be-table"><tbody>${last.map((r) => {
+              const d = bot.get(r.definitionId);
+              const who = html`${r.personId ? (personName.get(r.personId) ?? "") : "routine"} → <b>${name.get(r.definitionId) ?? ""}</b><div class="be-mono muted">${d?.identity === "person" ? "own chat · private" : (r.chatId && chatName.get(r.chatId)) || ""}</div>`;
+              return html`<tr><td class="be-mono muted">${stamp(r.startedAt)}</td><td>${who}</td><td>${d?.identity === "person" ? html`<span class="muted">1 reply</span>` : r.summary}</td><td>${r.status === "done" ? "" : chip(r.status)}</td></tr>`;
+            })}</tbody></table>`)
           : html`<div class="be-empty">Nothing yet.</div>`
       }</section>`;
-      res.type("html").send(layout({ title: "Overview", body, actor, csrf }));
+      res.type("html").send(layout({ title: "Dashboard", body, actor, csrf }));
     }),
   );
   return router;

@@ -40,7 +40,7 @@ export const themeOf = (cookieHeader: string | undefined) => {
 };
 
 const groups = [
-  { name: "", items: [{ label: "Overview", path: "overview", head: true }] },
+  { name: "", items: [{ label: "Dashboard", path: "overview", head: true }] },
   { name: "Bots", items: [{ label: "Bots", path: "bots", head: false }, { label: "Assignments", path: "assignments", head: false }, { label: "Connections", path: "connections", head: false }, { label: "Shared notes", path: "knowledge", head: true }] },
   { name: "People", items: [{ label: "People", path: "people", head: true }, { label: "Departments", path: "departments", head: true }] },
   { name: "Audit", items: [{ label: "Activity", path: "activity", head: true }, { label: "Settings", path: "settings", head: false }] },

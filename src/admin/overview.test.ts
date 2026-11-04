@@ -54,16 +54,21 @@ describe("overview", () => {
     const res = await get("/admin", "Ann");
     expect(res.status).toBe(200);
     const page = await res.text();
-    expect(page).toContain('<div class="be-eyebrow">bots</div><div class="v">2</div>');
+    expect(page).toContain("2 bots · 0 chats");
+    expect(page).toContain('<div class="be-eyebrow">replies</div><div class="v">2</div>');
     expect(page).toContain('waiting approvals</div><div class="v">2</div>');
-    expect(page).toContain('median reply time</div><div class="v">4.0 s</div>');
-    expect(page).toContain('spend this month</div><div class="v">$1.75</div>');
+    expect(page).toContain('median reply</div><div class="v">4.0 s</div><div class="s">slowest 6 s</div>');
+    expect(page).toContain('spend</div><div class="v">$1.75</div><div class="s">$1.75 this month so far</div>');
     expect(page).toContain("is waiting for approval: Send the quarterly mail");
     expect(page).not.toContain("is waiting for approval: Orphaned long ago"); // pending for over 10 minutes: no longer approvable, not counted
     expect(page).not.toContain("<button class=\"be-btn primary\">approve");
-    expect(page).toContain("Secret ops");
-    expect(page).toContain('aria-current="page">Overview</a>');
-    expect((await (await get("/admin/overview", "Ann")).text())).toContain("waiting approvals");
+    expect(page).toContain("Sales helper"); // by bot
+    expect(page).toContain('aria-current="page">Dashboard</a>');
+    expect(page).toContain('<span>today</span></div>'); // replies per day ends on today
+    expect(page).toContain("Hal 2"); // busiest people
+    const today = await (await get("/admin/overview?period=today", "Ann")).text();
+    expect(today).toContain('aria-current="true">today</a>');
+    expect(today).toContain('<div class="be-eyebrow">replies</div><div class="v">2</div>');
   });
 
   it("a head sees only their departments' bots and their numbers", async () => {
@@ -71,7 +76,7 @@ describe("overview", () => {
     expect(page).toContain("Sales helper");
     expect(page).not.toContain("Secret ops");
     expect(page).not.toContain("Beta private job");
-    expect(page).toContain('<div class="be-eyebrow">bots</div><div class="v">1</div>');
+    expect(page).toContain("1 bots · 0 chats");
     expect(page).toContain('waiting approvals</div><div class="v">1</div>');
     expect(page).not.toMatch(/bam_|amwh_/);
   });
