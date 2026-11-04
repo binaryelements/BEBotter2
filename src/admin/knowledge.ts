@@ -8,6 +8,7 @@ import { isAdmin } from "./access.js";
 import { armedPage, isArmed } from "./arm.js";
 import { html, layout, pageHead, scroll } from "./html.js";
 import { adminOf, wrap } from "./http.js";
+import { whenFor } from "./words.js";
 import { page } from "./oidc.js";
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -24,8 +25,9 @@ export function knowledgeRoutes(db: Db, key: Buffer): Router {
       const rows = query
         ? (await searchNotes(db, key, actor.tenantId, query, 100)).map((h) => ({ path: h.path, version: undefined, updatedAt: undefined }))
         : await listNotes(db, key, actor.tenantId);
+      const when = await whenFor(db, actor.tenantId);
       const tr = rows.map(
-        (n) => html`<tr><td><a href="/admin/knowledge/note?path=${encodeURIComponent(n.path)}">${n.path}</a></td><td>${n.version ?? ""}</td><td>${n.updatedAt?.toISOString().slice(0, 16) ?? ""}</td></tr>`,
+        (n) => html`<tr><td><a href="/admin/knowledge/note?path=${encodeURIComponent(n.path)}">${n.path}</a></td><td>${n.version ?? ""}</td><td>${when(n.updatedAt)}</td></tr>`,
       );
       res.type("html").send(
         layout({
@@ -59,6 +61,7 @@ ${isAdmin(actor) ? html`<form class="row" method="get" action="/admin/knowledge/
       const bot = new Map(defs.map((d) => [d.id, d.label]));
       const chat = new Map(cs.map((c) => [c.id, c.label]));
       const field = (name: string, value: string) => html`<input type="hidden" name="${name}" value="${value}">`;
+      const when = await whenFor(db, actor.tenantId);
       const tr = history.map((h) => {
         const who = (h.authorPersonId && person.get(h.authorPersonId)) || (h.authorDefinitionId && bot.get(h.authorDefinitionId)) || "—";
         const where = (h.chatId && chat.get(h.chatId)) || "—";
@@ -66,7 +69,7 @@ ${isAdmin(actor) ? html`<form class="row" method="get" action="/admin/knowledge/
           admin && !h.deleted
             ? html`<form method="post" action="/admin/knowledge/rollback"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}${field("version", String(h.version))}<button class="be-btn sm">roll back</button></form>`
             : "";
-        return html`<tr><td>${h.version}${h.deleted ? " (deleted)" : ""}</td><td>${who}</td><td>${where}</td><td>${h.createdAt.toISOString().slice(0, 16)}</td><td>${roll}</td></tr>`;
+        return html`<tr><td>${h.version}${h.deleted ? " (deleted)" : ""}</td><td>${who}</td><td>${where}</td><td>${when(h.createdAt)}</td><td>${roll}</td></tr>`;
       });
       res.type("html").send(
         layout({

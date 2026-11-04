@@ -37,6 +37,8 @@ import { page } from "./oidc.js";
 import { armedPage, isArmed } from "./arm.js";
 import { botsTable, visibleBots } from "./overview.js";
 import { chatNames } from "./chat-names.js";
+import { capabilityWords, chatTypeWords, cronWords, whenFor, whenIn } from "./words.js";
+import { toolWords } from "../teams/cards.js";
 
 const field = (req: Request, name: string) => {
   const v = (req.body as Record<string, unknown> | undefined)?.[name];
@@ -242,7 +244,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
   );
 
   const mailSectionFor = async (res: Response, id: string): Promise<SafeHtml> => {
-    if (!mail) return html`<div class="be-empty">Email is not set up.</div>`;
+    if (!mail) return html`<div class="be-empty">Email is not set up on this server. Set AGENTMAIL_ADMIN_KEY (and AGENTMAIL_URL) in the service's environment and restart it; then each bot can get its own address here.</div>`;
     const csrf = csrfField(res, "email");
     const box = await mailboxOf(id);
     const act = (path: string, label: string, extra: SafeHtml = html``) => html`<form method="post" action="/admin/bots/${id}/${path}">${csrf}${extra}<button class="be-btn${path.endsWith("/remove") ? " danger" : ""}">${label}</button></form>`;
@@ -307,7 +309,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
     if (!actions.length) return html`<div class="be-empty">Nothing yet. Actions appear once the bot has started.</div>`;
     const groups = new Map<string, typeof actions>();
     for (const a of actions) groups.set(toolSource(a.tool), [...(groups.get(toolSource(a.tool)) ?? []), a]);
-    const row = (a: (typeof actions)[number]) => html`<tr><td>${a.tool.replace(/^mcp__.+?__/, "")}</td><td>${
+    const row = (a: (typeof actions)[number]) => html`<tr><td title="${a.tool}">${toolWords(a.tool)}</td><td>${
       a.locked
         ? html`${RULE_LABEL.confirm} (locked)`
         : html`<div class="be-seg" role="radiogroup" aria-label="${a.tool}">${(["free", "confirm"] as const).map(
@@ -346,7 +348,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         const [depts, allowed, conns, linked, rts, assigned, ppl] = await Promise.all([
           listDepartments(db, actor.tenantId), allowedDepartments(db, def.id), listConnections(db, actor.tenantId), listConnectionsFor(db, actor.tenantId, def.id),
           listRoutines(db, actor.tenantId, def.id),
-          db.select({ id: chats.id, label: chats.label }).from(chatAssignments).innerJoin(chats, eq(chats.id, chatAssignments.chatId))
+          db.select({ id: chats.id, label: chats.label, conversationType: chats.conversationType, lastSeenAt: chats.lastSeenAt }).from(chatAssignments).innerJoin(chats, eq(chats.id, chatAssignments.chatId))
             .where(eq(chatAssignments.definitionId, def.id)),
           db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, actor.tenantId)),
         ]);
@@ -367,7 +369,8 @@ ${person ? "" : html`<fieldset><legend>departments</legend>${depts.map((d) => ht
         if (tab === "overview") {
           section = html`<dl class="be-kv"><div><dt>model</dt><dd>${def.model}</dd></div><div><dt>web search and browser</dt><dd>${yesNo(def.webSearch)}</dd></div>${person ? "" : html`<div><dt>computer</dt><dd>${yesNo(def.computer)}</dd></div><div><dt>departments</dt><dd>${depts.filter((d) => allowed.includes(d.id)).map((d) => d.name).join(", ") || "none"}</dd></div>`}</dl>${person ? html`<p>acts as each person who uses it</p>` : ""}${settings("overview")}`;
         } else if (tab === "m365") {
-          section = html`<form method="post" action="/admin/bots/${def.id}/m365">${csrf}<p>${GRAPH_CAPABILITIES.map((c) => html`<label><input type="checkbox" name="graph" value="${c}" ${def.graph.includes(c) ? "checked" : ""}> ${c}</label> `)}</p><p><button class="be-btn primary">save</button></p></form>`;
+          section = html`<p class="muted">What each person's assistant may do in their Microsoft 365, as them. Sending and changing still ask in the chat unless an admin sets the action free on the Actions tab.</p>
+<form method="post" action="/admin/bots/${def.id}/m365">${csrf}<p>${GRAPH_CAPABILITIES.map((c) => html`<label class="be-toggle"><input type="checkbox" name="graph" value="${c}" ${def.graph.includes(c) ? "checked" : ""}> ${capabilityWords(c)}</label> `)}</p><p><button class="be-btn primary">save</button></p></form>`;
         } else if (tab === "persona") {
           section = settings("persona");
         } else if (tab === "email") {
@@ -408,9 +411,9 @@ ${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Nam
 <button class="be-btn primary">add server</button></form></details>`;
         } else if (tab === "routines") {
           const { timezone } = await getTenantSettings(db, actor.tenantId);
-          const when = (d: Date | null) => (d ? new Intl.DateTimeFormat("en-AU", { timeZone: timezone, dateStyle: "medium", timeStyle: "short" }).format(d) : "");
+          const when = whenIn(timezone);
           const kind = (r: (typeof rts)[number]) => (r.schedule ? "repeats" : r.background ? "background job" : "reminder");
-          const row = (r: (typeof rts)[number]) => html`<tr><td>${r.prompt.slice(0, 80)}</td><td>${kind(r)}</td><td>${r.schedule ?? when(r.runAt)}</td><td>${chatLabel.get(r.chatId) ?? r.chatId.slice(-12)}</td><td>${yesNo(r.quiet)}</td><td>${yesNo(r.enabled)}</td><td>${r.grantPersonId ? (personName.get(r.grantPersonId) ?? "—") : "—"}</td>
+          const row = (r: (typeof rts)[number]) => html`<tr><td>${r.prompt.slice(0, 80)}</td><td>${kind(r)}</td><td>${r.schedule ? html`<span title="${r.schedule}">${cronWords(r.schedule)}</span>` : when(r.runAt)}</td><td>${chatLabel.get(r.chatId) ?? r.chatId.slice(-12)}</td><td>${yesNo(r.quiet)}</td><td>${yesNo(r.enabled)}</td><td>${r.grantPersonId ? (personName.get(r.grantPersonId) ?? "—") : "—"}</td>
 <td>${r.schedule || r.enabled ? html`<form method="post" action="/admin/bots/${def.id}/routines/${r.id}/enabled">${csrf}<input type="hidden" name="enabled" value="${r.enabled ? "off" : "on"}"><button class="be-btn sm">${r.enabled ? "disable" : "enable"}</button></form>` : ""}
 <form method="post" action="/admin/bots/${def.id}/routines/${r.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form></td></tr>`;
           const table = (rows: typeof rts) => scroll(html`<table class="be-table"><thead><tr><th>Prompt</th><th>Kind</th><th>When</th><th>Chat</th><th>Quiet</th><th>Enabled</th><th>Grant</th><th></th></tr></thead><tbody>${rows.map(row)}</tbody></table>`);
@@ -425,7 +428,7 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
 <p><label>prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn">add routine</button></form>`;
         } else if (tab === "learnings") {
           const rows = await listLearnings(db, actor.tenantId, def.id);
-          const day = (d: Date) => d.toISOString().slice(0, 10);
+          const day = await whenFor(db, actor.tenantId);
           // each row is its own form, so an admin rewords one teaching in place
           const row = (l: (typeof rows)[number]) => html`<tr><td><form method="post" action="/admin/bots/${def.id}/learnings/${l.id}">${csrf}<textarea name="text" rows="2" required>${l.text}</textarea><button class="be-btn sm">save</button></form></td>
 <td>${personName.get(l.taughtByPersonId) ?? "—"}</td><td>${l.chatId ? (chatLabel.get(l.chatId) ?? l.chatId.slice(-12)) : "admin site"}</td><td>${l.ownerPersonId ? `only ${personName.get(l.ownerPersonId) ?? "one person"}` : "everyone"}</td><td>${day(l.updatedAt)}</td>
@@ -435,7 +438,13 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
 ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th><th>Taught by</th><th>Where</th><th>Applies to</th><th>Changed</th><th></th></tr></thead><tbody>${rows.map(row)}</tbody></table>`) : html`<div class="be-empty">Nothing learnt yet.</div>`}
 <form method="post" action="/admin/bots/${def.id}/learnings">${csrf}<p><label>new learning<textarea name="text" required placeholder="Call scheduled runs reminders"></textarea></label></p><button class="be-btn">add learning</button></form>`;
         } else {
-          section = assigned.length ? html`<ul>${assigned.map((c) => html`<li>${chatLabel.get(c.id)}</li>`)}</ul>` : html`<div class="be-empty">No chats yet.</div>`;
+          // the chats this bot answers in; who and when come from the same place Assignments shows them
+          const seen = await whenFor(db, actor.tenantId);
+          section = assigned.length
+            ? html`${scroll(html`<table class="be-table"><thead><tr><th>Chat</th><th>Type</th><th>Last message</th><th></th></tr></thead><tbody>${assigned.map(
+                (c) => html`<tr><td>${chatLabel.get(c.id)}</td><td>${chatTypeWords(c.conversationType)}</td><td>${seen(c.lastSeenAt)}</td><td><a href="/admin/assignments">change on Assignments</a></td></tr>`,
+              )}</tbody></table>`)}`
+            : html`<div class="be-empty">No chats yet. An admin puts a bot in a group chat by typing "switch" there, or on <a href="/admin/assignments">Assignments</a>.</div>`;
         }
         body = html`${head(tab)}<div class="be-section">${section}</div>`;
       }

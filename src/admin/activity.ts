@@ -8,6 +8,8 @@ import type { AuditEvent } from "../db/schema.js";
 import { toolLabel } from "../teams/cards.js";
 import { isAdmin } from "./access.js";
 import { chatNames } from "./chat-names.js";
+import { inputWords, whenFor } from "./words.js";
+import type { When } from "./words.js";
 import { chip, html, layout, pageHead, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
@@ -40,14 +42,14 @@ async function names(db: Db, tenantId: string, scope: Scope, rows: AuditEvent[])
   };
 }
 
-const cells = (e: AuditEvent, n: Awaited<ReturnType<typeof names>>) => [
-  e.startedAt.toISOString().slice(0, 16),
+const cells = (e: AuditEvent, n: Awaited<ReturnType<typeof names>>, when?: When) => [
+  when ? when(e.startedAt) : e.startedAt.toISOString().slice(0, 16),
   (e.personId && n.person.get(e.personId)) || "",
   n.bot.get(e.definitionId) ?? "",
   (e.chatId && n.chat.get(e.chatId)) || "",
   e.toolName ? toolLabel(e.toolName, e.toolInput) : "message",
   e.status,
-  e.summary,
+  when ? inputWords(e.summary) : e.summary,
   e.authority ? (n.person.get(e.authority.personId) ?? "") : "",
 ];
 
@@ -75,7 +77,8 @@ function timingBar(e: AuditEvent): SafeHtml {
   if (!m) return html``;
   const fmt = (n: number) => `${n.toFixed(1)} s`;
   const label = `total ${fmt(m.total)}: ${m.parts.map((p) => `${p.name} ${fmt(p.secs)}`).join(", ")}`;
-  return html`<div class="be-timing" role="img" aria-label="${label}">${m.parts.map((p, i) => html`<span class="t${i + 1}" style="width:${m.total ? ((p.secs / m.total) * 100).toFixed(1) : 0}%"></span>`)}</div><ul class="be-timing-key">${m.parts.map((p, i) => html`<li class="t${i + 1}">${p.name} ${fmt(p.secs)}</li>`)}</ul><span class="be-muted">${fmt(m.total)} total</span>`;
+  // the breakdown is on hover; the row shows the bar and the total
+  return html`<div class="be-timing" role="img" aria-label="${label}" title="${label}">${m.parts.map((p, i) => html`<span class="t${i + 1}" style="width:${m.total ? ((p.secs / m.total) * 100).toFixed(1) : 0}%"></span>`)}</div><span class="be-muted" title="${label}">${fmt(m.total)}</span>`;
 }
 
 // A leading = + - @ tab or CR would run as a formula in a spreadsheet.
@@ -126,11 +129,12 @@ export function activityRoutes(db: Db): Router {
       const got = await fetchRows(req, res, PAGE);
       if (!got) return;
       const { rows, n } = got;
-      const keep = new URLSearchParams(FILTERS.flatMap((f) => (q(req, f) ? [[f, q(req, f)!]] : [])));
+      const when = await whenFor(db, actor.tenantId);
+      const keep =new URLSearchParams(FILTERS.flatMap((f) => (q(req, f) ? [[f, q(req, f)!]] : [])));
       const older = rows.length === PAGE ? new URLSearchParams([...keep, ["before", rows[rows.length - 1].id]]).toString() : "";
       const csv = keep.toString();
       const tr = rows.map((e) => {
-        const c = cells(e, n);
+        const c = cells(e, n, when);
         return html`<tr>${c.slice(0, 5).map((v) => html`<td>${v}</td>`)}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
       });
       const sel = { bot: q(req, "bot"), person: q(req, "person"), chat: q(req, "chat") };

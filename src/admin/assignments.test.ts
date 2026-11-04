@@ -61,8 +61,8 @@ describe("assignments screen", () => {
     for (const who of ["Ann", "Hal"]) await beginAction(db, { tenantId: T, chatId: "g1", definitionId: a, personId: id[who], kind: "message", summary: "hi" });
     const page = await (await get("/admin/assignments", "Ann")).text();
     expect(page).toContain('value="Project Falcon"');
-    expect(page).toMatch(/<td>groupChat<\/td><td>Ann, Hal<\/td>/);
-    expect(page).toMatch(/<td>personal<\/td><td>Ann<\/td>/);
+    expect(page).toMatch(/<td>group<\/td><td>Ann, Hal<\/td>/);
+    expect(page).toMatch(/<td>one-to-one<\/td><td>Ann<\/td>/);
     expect(page).toContain(">listening</button>");
     expect((await post(path("g1") + "/listening", "Ann", [["listening", "off"]])).status).toBe(303);
     expect((await db.select().from(chats).where(eq(chats.id, "g1")))[0].listening).toBe(false);

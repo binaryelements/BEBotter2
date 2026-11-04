@@ -57,7 +57,7 @@ export function adminRouter(deps: AdminDeps): Router {
     res.type("html").send(
       layout({
         title: "Sign in · BE Teammate",
-        body: html`<h1>Sign in</h1><p>The admin site for BE Teammate, Binary Elements' bots in Microsoft Teams.</p><p><a class="be-btn primary" href="/admin/auth/login">sign in with Microsoft</a></p>`,
+        body: html`<div class="be-card signin"><h1>Sign in</h1><p>The admin site for BE Teammate, Binary Elements' bots in Microsoft Teams.</p><p><a class="be-btn primary" href="/admin/auth/login">sign in with Microsoft</a></p></div>`,
       }),
     );
   });

@@ -9,6 +9,7 @@ import type { BotDefinition } from "../db/schema.js";
 import type { Actor } from "./access.js";
 import { isAdmin } from "./access.js";
 import { chip, html, layout, scroll } from "./html.js";
+import { inputWords, whenFor, whenIn } from "./words.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { getTenantSettings } from "../org/org.js";
@@ -26,11 +27,11 @@ export async function visibleBots(db: Db, actor: Actor): Promise<{ defs: BotDefi
   return { defs, allowed };
 }
 
-const stamp = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 16).replace("T", " ") : "never");
-
 /** Name, role, email, model, last active. */
 export async function botsTable(db: Db, tenantId: string, defs: BotDefinition[]): Promise<SafeHtml> {
   if (!defs.length) return html`<div class="be-empty">No bots yet.</div>`;
+  const when = await whenFor(db, tenantId);
+  const stamp = (d: Date | null | undefined) => when(d) || "never";
   const ids = defs.map((d) => d.id);
   const [boxes, last] = await Promise.all([
     db.select({ id: mailboxes.definitionId, address: mailboxes.address }).from(mailboxes).where(and(eq(mailboxes.tenantId, tenantId), inArray(mailboxes.definitionId, ids))),
@@ -97,14 +98,15 @@ export function overviewRoutes(db: Db): Router {
       const typical = median(replies);
       const spend = monthRows.reduce((sum, r) => sum + Number(r.costUsd ?? 0), 0);
       const name = new Map(defs.map((d) => [d.id, d.displayName ?? d.name]));
-      const tile = (label: string, value: string, cls = "") => html`<div class="be-tile ${cls}"><div class="be-eyebrow">${label}</div><div class="v">${value}</div></div>`;
+      const stamp = whenIn(timezone, now);
+      const tile =(label: string, value: string, cls = "") => html`<div class="be-tile ${cls}"><div class="be-eyebrow">${label}</div><div class="v">${value}</div></div>`;
       const body = html`<header class="be-pagehead"><div class="pt"><h1>Overview</h1></div></header>
 ${waiting.map((r) => html`<div class="be-notice warn"><span><b>${name.get(r.definitionId) ?? ""}</b> is waiting for approval: ${r.summary}</span><span class="n">${stamp(r.startedAt)}</span></div>`)}
 <div class="be-tiles" style="margin-top:var(--space-12)">${tile("bots", String(defs.length))}${tile("chats", String(new Set(chatRows.map((c) => c.id)).size))}${tile("waiting approvals", String(waiting.length), waiting.length ? "warn" : "")}${tile("actions today", String(today.filter((r) => r.kind === "tool").length))}${tile("median reply time", typical === undefined ? "none today" : `${typical.toFixed(1)} s`)}${tile("spend this month", `$${spend.toFixed(2)}`)}</div>
 <section class="be-section"><h3>Bots</h3>${await botsTable(db, actor.tenantId, defs)}</section>
 <section class="be-section"><h3>Recent activity <a href="/admin/activity">all activity</a></h3>${
         recent.length
-          ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Bot</th><th>Summary</th><th>Status</th></tr></thead><tbody>${recent.map((r) => html`<tr><td>${stamp(r.startedAt)}</td><td>${name.get(r.definitionId) ?? ""}</td><td>${r.summary}</td><td>${chip(r.status)}</td></tr>`)}</tbody></table>`)
+          ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Bot</th><th>Summary</th><th>Status</th></tr></thead><tbody>${recent.map((r) => html`<tr><td>${stamp(r.startedAt)}</td><td>${name.get(r.definitionId) ?? ""}</td><td>${inputWords(r.summary)}</td><td>${chip(r.status)}</td></tr>`)}</tbody></table>`)
           : html`<div class="be-empty">Nothing yet.</div>`
       }</section>`;
       res.type("html").send(layout({ title: "Overview", body, actor, csrf }));

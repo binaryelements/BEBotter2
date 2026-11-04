@@ -7,6 +7,7 @@ import type { Db } from "../db/client.js";
 import { auditEvents, chatAssignments, chats, people } from "../db/schema.js";
 import { isAdmin } from "./access.js";
 import { html, layout, pageHead, scroll } from "./html.js";
+import { chatTypeWords, whenFor } from "./words.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 
@@ -23,6 +24,7 @@ export function assignmentRoutes(db: Db): Router {
     wrap(async (_req, res) => {
       const { actor, csrf } = adminOf(res);
       if (!isAdmin(actor)) return page(res, 403, "Not allowed.");
+      const when = await whenFor(db, actor.tenantId);
       const [defs, rows, talkers] = await Promise.all([
         listDefinitions(db, actor.tenantId),
         db
@@ -45,7 +47,7 @@ export function assignmentRoutes(db: Db): Router {
       const body = rows.map((c) => {
         const url = `/admin/assignments/${encodeURIComponent(c.id)}`;
         return html`<tr><td><form class="inline-edit" method="post" action="${url}/label">${csrfField}<input class="be-input" name="label" value="${c.label ?? ""}" placeholder="${c.id.slice(-12)}" maxlength="80" aria-label="Label"> <button class="be-btn sm">save</button></form></td>
-<td>${c.type}</td><td>${c.type === "personal" ? (c.owner ?? "") : (who.get(c.id) ?? "")}</td><td>${c.lastSeenAt?.toISOString() ?? ""}</td>
+<td>${chatTypeWords(c.type)}</td><td>${c.type === "personal" ? (c.owner ?? "") : (who.get(c.id) ?? "")}</td><td>${when(c.lastSeenAt)}</td>
 <td>${c.type === "personal" ? "" : html`<form class="inline-edit" method="post" action="${url}/listening">${csrfField}<input type="hidden" name="listening" value="${c.listening ? "off" : "on"}"><button class="be-btn sm" title="${c.listening ? "the bot keeps what the chat says as context for when it is asked something; press to stop" : "the bot only sees messages that mention it; press to let it listen"}">${c.listening ? "listening" : "not listening"}</button></form>`}</td>
 <td><form class="inline-edit" method="post" action="${url}">${csrfField}<select class="be-select" name="definitionId" aria-label="Bot"><option value="">none</option>${defs.filter((d) => c.type === "personal" || d.identity !== "person").map((d) => html`<option value="${d.id}" ${d.id === c.definitionId ? "selected" : ""}>${d.label}</option>`)}</select> <button class="be-btn sm">save</button></form></td></tr>`;
       });

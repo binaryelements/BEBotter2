@@ -79,7 +79,7 @@ describe("activity screen", () => {
     await completeAction(db, a, { status: "done", timings: { receivedAt: iso(0), engineReadyAt: iso(3), firstOutputAt: iso(16), firstToolAt: iso(17), resultAt: iso(22), sentAt: iso(23), tools: 2 } });
     const t = await (await get("/admin/activity", "Ann")).text();
     expect(t).toContain('aria-label="total 23.0 s: engine ready 3.0 s, model and tools 19.0 s, delivery 1.0 s"');
-    expect(t).toContain("<li class=\"t2\">model and tools 19.0 s</li>");
+    expect(t).toContain('<span class="be-muted" title="total 23.0 s: engine ready 3.0 s, model and tools 19.0 s, delivery 1.0 s">23.0 s</span>'); // the breakdown on hover, the total in the row
     for (const w of ["13.0", "82.6", "4.3"]) expect(t).toContain(`style="width:${w}%"`); // 3 + 19 + 1 of 23 s
   });
 
