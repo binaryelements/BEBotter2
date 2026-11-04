@@ -98,7 +98,11 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
   };
   const mailMessage = (e: unknown): string | undefined => {
     if (e instanceof MailboxError) return e.reason === "taken" ? "That address is taken" : e.reason === "removed" ? "This email address was removed. Restore it instead." : e.message;
-    if (e instanceof MailError) return e.detail ? `BE AgentMail: ${e.detail}` : "BE AgentMail did not accept that. Try again later.";
+    if (e instanceof MailError) {
+      console.error("mailbox:", e.message); // method, path and status; never a key or a body
+      if (e.detail) return `BE AgentMail: ${e.detail}`;
+      return e.status ? `BE AgentMail answered ${e.status} without saying why. Try again; if it keeps happening, check BE AgentMail.` : "BE AgentMail did not answer within 3 seconds. Try again.";
+    }
     return undefined;
   };
   const SEND_AS_SHOWN = ["status", "state", "enabled", "active", "message", "detail", "reason"];
@@ -334,7 +338,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const admin = isAdmin(actor);
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
-      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div></header>${
+      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn sm" href="/admin/bots/${def.id}/try">try it</a></div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
       const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
@@ -392,7 +396,7 @@ ${person ? html`<p class="muted">Acts as each person who uses it, in their own c
           const mine = conns.filter((c) => linkedIds.has(c.id));
           const others = conns.filter((c) => !linkedIds.has(c.id) && c.status !== "revoked");
           section = html`<h2>Connections this bot uses</h2>
-${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: give it one below, or ask the bot in chat to set one up</div>`}
+${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: ${others.length ? "give it one below" : html`add an ssh, sql, MCP or http connection on the <a href="/admin/connections#add">Connections page</a>`}, or ask the bot in chat to set one up</div>`}
 ${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}
 <h2>MCP servers</h2>
 ${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th><th></th></tr></thead><tbody>${def.mcpServers.map(

@@ -1,7 +1,7 @@
 import { recordSent } from "../audit/audit.js";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { chats } from "../db/schema.js";
+import { auditEvents, chats, people } from "../db/schema.js";
 import type { TurnTimings } from "../db/schema.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { ProgressEvent, RunResult, RunTurnInput } from "../engine/runner.js";
@@ -20,6 +20,8 @@ export type IncomingMessage = {
   name?: string;
   /** Group chats: the message @mentioned the bot. Without the permission to read every message, Teams only sends these. */
   mentioned?: boolean;
+  /** Group chats: the message @mentioned someone other than the bot, so it is for them. */
+  mentionedOthers?: boolean;
   from: { aadObjectId: string; name: string; /** the sender's Teams client time zone, e.g. Australia/Melbourne */ timezone?: string };
   text: string;
   receivedAt?: Date;
@@ -189,7 +191,7 @@ export async function handleMessage(
     }
   }
   // a group chat the bot may hear in full: it answers only when @mentioned or addressed by name, and keeps the rest as context
-  if (msg.conversationType !== "personal" && msg.mentioned === false && !(definition && addressedByName(msg.text, definition))) {
+  if (msg.conversationType !== "personal" && msg.mentioned === false && !(definition && (addressedByName(msg.text, definition) || (await followUp(db, msg, definition.id, person.id))))) {
     await recordOverheard(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, name: person.name, text: msg.text, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) });
     return;
   }
@@ -330,6 +332,19 @@ const nameRe = (d: { displayName: string | null; label: string }): RegExp | unde
 };
 /** "Mickey, …" or "hey mickey …": the message starts with the bot's name (its display name, or its label). */
 export const addressedByName = (text: string, d: { displayName: string | null; label: string }): boolean => !!nameRe(d)?.test(text);
+/** For this long after the bot answers someone in a group chat, their next messages are follow-ups and need no name. */
+const FOLLOW_UP_MS = 2 * 60_000;
+/** A group-chat message is a follow-up when the bot answered its sender within the window and it is not aimed at someone else. */
+async function followUp(db: Db, msg: IncomingMessage, definitionId: string, personId: string): Promise<boolean> {
+  if (msg.mentionedOthers) return false;
+  const [last] = await db.select({ at: auditEvents.finishedAt }).from(auditEvents)
+    .where(and(eq(auditEvents.chatId, msg.chatId), eq(auditEvents.definitionId, definitionId), eq(auditEvents.personId, personId), eq(auditEvents.kind, "message"), isNotNull(auditEvents.finishedAt)))
+    .orderBy(desc(auditEvents.finishedAt)).limit(1);
+  if (!last?.at || (msg.receivedAt ?? new Date()).getTime() - last.at.getTime() > FOLLOW_UP_MS) return false;
+  // "Ann, can you…" is for Ann: a message that starts with a colleague's first name stays overheard
+  const others = await db.select({ name: people.name }).from(people).where(and(eq(people.tenantId, msg.tenantId), ne(people.id, personId)));
+  return !others.some((p) => addressedByName(msg.text, { displayName: p.name.split(/\s+/)[0] || null, label: p.name }));
+}
 /** "Mickey" or "hi mickey!" and nothing more: the person wants to talk to it, not ask it something. */
 export const justName = (text: string, d: { displayName: string | null; label: string }): boolean => {
   const re = nameRe(d);
