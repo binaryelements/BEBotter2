@@ -98,7 +98,11 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
   };
   const mailMessage = (e: unknown): string | undefined => {
     if (e instanceof MailboxError) return e.reason === "taken" ? "That address is taken" : e.reason === "removed" ? "This email address was removed. Restore it instead." : e.message;
-    if (e instanceof MailError) return e.detail ? `BE AgentMail: ${e.detail}` : "BE AgentMail did not accept that. Try again later.";
+    if (e instanceof MailError) {
+      console.error("mailbox:", e.message); // method, path and status; never a key or a body
+      if (e.detail) return `BE AgentMail: ${e.detail}`;
+      return e.status ? `BE AgentMail answered ${e.status} without saying why. Try again; if it keeps happening, check BE AgentMail.` : "BE AgentMail did not answer within 3 seconds. Try again.";
+    }
     return undefined;
   };
   const SEND_AS_SHOWN = ["status", "state", "enabled", "active", "message", "detail", "reason"];
