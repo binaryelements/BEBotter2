@@ -1,5 +1,6 @@
 import { isReservedMcpName } from "../bots/definitions.js";
 import type { BotDefinition } from "../db/schema.js";
+import { BROWSER_READS } from "./browser.js";
 
 export type ToolClass = "read" | "write" | "approve";
 /** An admin's choice for one bot's tool: free runs it as a read, confirm asks as a write. */
@@ -7,16 +8,24 @@ export type ToolRule = "free" | "confirm";
 
 const BUILT_IN: Record<string, ToolClass> = {
   ...Object.fromEntries(["list", "read", "search", "write"].map((t) => [`mcp__knowledge__${t}`, "read"])),
-  ...Object.fromEntries(["list", "request", "verify", "ssh_read", "http_read"].map((t) => [`mcp__connections__${t}`, "read"])),
+  ...Object.fromEntries(["list", "request", "verify", "ssh_read", "http_read", "sql_read"].map((t) => [`mcp__connections__${t}`, "read"])),
   mcp__connections__ssh_change: "write",
   mcp__connections__http_change: "write",
+  mcp__connections__sql_change: "write",
   mcp__connections__approve: "approve",
   mcp__routine__remind: "read",
+  mcp__routine__background: "read",
+  mcp__routine__reminders: "read",
+  mcp__routine__cancel_reminder: "read", // only this chat's own one-offs
+  // Martin's call: anyone's teaching applies at once; admins review and undo on the bot's Learnings tab
+  ...Object.fromEntries(["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
   mcp__routine__post: "read",
+  mcp__bots__tell_bot: "read", // the told bot's own tools ask their own confirmations
   mcp__computer__bash: "read",
-  ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
-  // Graph writes act as the person, so like an approval they always ask and no admin rule can free them
-  ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"].map((t) => [`mcp__m365__${t}`, "approve"])),
+  ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
+  ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "read_attachment", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
+  // Graph writes act as the person: they ask by default, and an admin may set one free per bot
+  ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"].map((t) => [`mcp__m365__${t}`, "write"])),
 };
 
 const MAIL_READS = new Set(["list_inboxes", "list_messages", "read_thread", "search_mail", "get_attachment", "mark_read"]);
@@ -38,7 +47,7 @@ export function defaultClass(toolName: string, def: BotDefinition, connectionSer
   return server?.readOnlyTools.includes(m[2]!) ? "read" : "write";
 }
 
-/** The default with the bot's rule on top; approve-class (connection approval, Graph writes) always asks, whatever the rule. */
+/** The default with the bot's rule on top; approve-class (connection approval) always asks, whatever the rule. */
 export function classify(toolName: string, def: BotDefinition, connectionServers: ConnectionServers = [], rule?: ToolRule): ToolClass {
   const base = defaultClass(toolName, def, connectionServers);
   if (base === "approve" || !rule) return base;

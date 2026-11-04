@@ -11,10 +11,10 @@ import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { setAllowedDepartments } from "../bots/definitions.js";
-import { auditEvents, chatAssignments, chats } from "../db/schema.js";
+import { auditEvents, botDefinitions, chatAssignments, chats } from "../db/schema.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { recordChatOwner, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
+import { SLOW_NOTE, addressedByName, choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
 import { confirmerPolicy } from "../admin/access.js";
 import type { IncomingMessage } from "./handlers.js";
 
@@ -95,7 +95,7 @@ describe("handleMessage", () => {
   it("says so and skips the engine when nothing is assigned", async () => {
     const s = await setup(false);
     await s.run(msg("groupChat"));
-    expect(s.sent).toEqual(["No bot is set up for this chat yet."]);
+    expect(s.sent).toEqual(["No bot is set up for this chat yet. An admin can choose one by mentioning me with switch, or on the admin site under Assignments."]);
     expect(s.runTurn).not.toHaveBeenCalled();
   });
 
@@ -118,7 +118,7 @@ describe("handleMessage", () => {
     s.runTurn.mockRejectedValueOnce(new Error("boom"));
     vi.spyOn(console, "error").mockImplementation(() => {});
     await s.run(msg("personal"));
-    expect(s.sent).toEqual(["Something went wrong on my side."]);
+    expect(s.sent).toEqual(["**Helper**\n\nSomething went wrong on my side."]);
   });
 });
 
@@ -308,7 +308,7 @@ describe("handleMessage status message", () => {
         throw new Error("boom");
       });
       await run(x);
-      expect(x.log).toEqual(["send:thinking", "update:id1:Something went wrong on my side."]);
+      expect(x.log).toEqual(["send:thinking", "update:id1:**Helper**\n\nSomething went wrong on my side."]);
     } finally {
       vi.useRealTimers();
     }
@@ -358,21 +358,30 @@ describe("handleMessage streaming", () => {
     }
   };
 
-  it("streams each delta as it arrives and ends with exactly the reply", () =>
+  it("streams the bot's name then each delta, and ends with what was streamed: Teams refuses a final message that does not carry on from it", () =>
     timed(async () => {
       const x = await streamSetup(async (t) => {
         t.progress!({ kind: "delta", text: "Hel" });
-        expect(x.log).toEqual(["chunk:Hel"]);
+        expect(x.log).toEqual(["chunk:**Helper**\n\nHel"]);
         t.progress!({ kind: "delta", text: "lo" });
         t.progress!({ kind: "text", text: "Hello" });
         t.progress!({ kind: "message-end" });
-        expect(x.log).toEqual(["chunk:Hel", "chunk:lo"]);
-      });
+        expect(x.log).toEqual(["chunk:**Helper**\n\nHel", "chunk:lo"]);
+      }, "Hello");
       await run(x);
-      expect(x.log).toEqual(["chunk:Hel", "chunk:lo", "end:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nHel", "chunk:lo", "end:**Helper**\n\nHello"]);
     }));
 
-  it("shows tools as informative updates until text starts, then none; a later message follows a blank line and the final message is exactly the reply", () =>
+  it("a reply the stream never showed is added after what was streamed, never in place of it", () =>
+    timed(async () => {
+      const x = await streamSetup(async (t) => {
+        t.progress!({ kind: "delta", text: "Looking" });
+      }, "Here it is");
+      await run(x);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nLooking", "end:**Helper**\n\nLooking\n\nHere it is"]);
+    }));
+
+  it("shows tools as informative updates until text starts, then none; a later message follows a blank line and the final message keeps it all", () =>
     timed(async () => {
       const x = await streamSetup(async (t, wait) => {
         t.progress!({ kind: "tool", toolName: "mcp__knowledge__search" });
@@ -383,9 +392,9 @@ describe("handleMessage streaming", () => {
         await wait(3000);
         t.progress!({ kind: "delta", text: "Answer" });
         t.progress!({ kind: "message-end" });
-      });
+      }, "Answer");
       await run(x);
-      expect(x.log).toEqual(["info:Working: search…", "chunk:Let me check.", "chunk:\n\nAnswer", "end:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["info:Working: search…", "chunk:**Helper**\n\nLet me check.", "chunk:\n\nAnswer", "end:**Helper**\n\nLet me check.\n\nAnswer"]);
     }));
 
   it("ends the stream with the text so far before a confirmation card and sends the reply after it as a new message", () =>
@@ -399,7 +408,30 @@ describe("handleMessage streaming", () => {
         t.progress!({ kind: "message-end" });
       });
       await run(x);
-      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:Checking", "end:Checking+card", "send:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["info:Working: WebSearch…", "chunk:**Helper**\n\nChecking", "end:**Helper**\n\nChecking+card", "send:**Helper**\n\nfinal"]);
+    }));
+
+  it("says once that it is still working when a reply passes 45 s, as a progress line or after the streamed text", () =>
+    timed(async () => {
+      const quiet = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "tool", toolName: "WebSearch" });
+        await wait(46_000);
+      }, "Answer");
+      await run(quiet);
+      expect(quiet.log).toEqual(["info:Working: WebSearch…", `info:${SLOW_NOTE}`, "end:**Helper**\n\nAnswer"]);
+
+      const talking = await streamSetup(async (t, wait) => {
+        t.progress!({ kind: "delta", text: "Checking flights." });
+        await wait(46_000);
+        t.progress!({ kind: "delta", text: "Found them" });
+      }, "Found them");
+      await run(talking);
+      expect(talking.log).toEqual([
+        "chunk:**Helper**\n\nChecking flights.",
+        `chunk:\n\n${SLOW_NOTE}`,
+        "chunk:\n\nFound them",
+        `end:**Helper**\n\nChecking flights.\n\n${SLOW_NOTE}\n\nFound them`,
+      ]);
     }));
 
   it("ends a stream that only showed progress with the card alone, so no progress line stays", () =>
@@ -459,7 +491,7 @@ describe("handleMessage streaming", () => {
       });
       x.fail.end = true;
       await run(x);
-      expect(x.log).toEqual(["chunk:Hi", "send:**Helper**\n\nfinal"]);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nHi", "send:**Helper**\n\nfinal"]);
     }));
 
   it("never streams in a group chat", () =>
@@ -491,7 +523,7 @@ describe("handleMessage streaming", () => {
       await run(x);
       const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("turn "));
       log.mockRestore();
-      expect(x.log).toEqual(["chunk:Hi", "end:**Helper**\n\nHi"]);
+      expect(x.log).toEqual(["chunk:**Helper**\n\nHi", "end:**Helper**\n\nHi"]);
       const [row] = await x.s.db.select().from(auditEvents).where(eq(auditEvents.kind, "message"));
       expect(row!.timings!.sentAt).toBeTruthy();
       expect(lines).toHaveLength(1);
@@ -558,7 +590,7 @@ it("greets with the tenant bot name when set", async () => {
   const db = await testDb();
   await upsertTenant(db, { id: "t1" });
   expect(membersAddedGreeting(await tenantBotName(db, "t1", "Bot"))).toContain("I'm Bot.");
-  await setTenantSettings(db, "t1", { botName: "Helper", retentionDays: 90, defaultModel: null, timezone: "UTC" });
+  await setTenantSettings(db, "t1", { botName: "Helper", retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null });
   expect(membersAddedGreeting(await tenantBotName(db, "t1", "Bot"))).toBe("Hi, I'm Helper. Mention me with a question or a job.");
 });
 
@@ -696,6 +728,27 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(JSON.stringify(card)).toContain("You're now talking to Other.");
   });
 
+  it("in a one-to-one chat a bot's name switches to it: alone it only switches, with a question it also answers", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    const b = await s.service("it", "IT Support");
+    await s.db.update(botDefinitions).set({ displayName: "Mickey" }).where(eq(botDefinitions.id, b.id));
+    await s.say("hi"); // two bots, none chosen: the card
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    await s.say("mickey");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(await s.assigned()).toEqual([b.id]);
+    expect(JSON.stringify(s.cards[1])).toContain("You're now talking to Mickey · IT Support.");
+    await s.say("Helper, what's up?");
+    expect(await s.assigned()).toEqual([a.id]);
+    expect(s.sent).toEqual(["**Helper**\n\nreply"]);
+    expect((s.runTurn.mock.calls[0] as any)[0].text).toBe("Helper, what's up?");
+    await s.say("hi mickey!");
+    expect(await s.assigned()).toEqual([b.id]);
+    expect(s.cards).toHaveLength(3);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a choose from anyone but the owner, or of a bot the owner may not use, and changes nothing", async () => {
     const s = await chat();
     const a = await s.service("helper", "Helper");
@@ -710,6 +763,45 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(JSON.stringify(await by(s.ann.id, c.id))).toContain("You can't choose this bot.");
     expect(JSON.stringify(await by(s.ann.id, "forged"))).toContain("You can't choose this bot.");
     expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("in a group chat an admin gets the card of company bots and chooses; anyone else is told how, and can't choose", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    await ensurePersonalDefinition(s.db, "t1", "m");
+    await setRole(s.db, "t1", s.ann.id, "admin");
+    const group = (text: string, from: string) => handleMessage(s.deps, { ...msg("groupChat"), text, from: { aadObjectId: from, name: from } }, s.io);
+    await group("hello", "u2");
+    expect(s.sent).toEqual(["No bot is set up for this chat yet. An admin can choose one by mentioning me with switch, or on the admin site under Assignments."]);
+    await group("hello", "u1");
+    expect(s.titles(s.cards[0])).toEqual(["Helper"]);
+    expect(JSON.stringify(await handleChoose(s.deps, { tenantId: "t1", chatId: "c1", personId: s.bob.id }, a.id))).toContain("You can't choose this bot.");
+    expect(await s.assigned()).toEqual([]);
+    expect(JSON.stringify(await handleChoose(s.deps, { tenantId: "t1", chatId: "c1", personId: s.ann.id }, a.id))).toContain("You're now talking to Helper.");
+    expect(await s.assigned()).toEqual([a.id]);
+    await group("switch", "u1");
+    expect(s.cards).toHaveLength(2);
+    expect(s.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("in a group chat it hears without answering, then answers a mention or its name with what it heard", async () => {
+    const s = await chat();
+    const a = await s.service("it", "IT Support");
+    await s.db.update(botDefinitions).set({ displayName: "Mickey" }).where(eq(botDefinitions.id, a.id));
+    const group = (text: string, mentioned: boolean, from = "u2") => handleMessage(s.deps, { ...msg("groupChat"), text, mentioned, from: { aadObjectId: from, name: from === "u1" ? "Ann" : "Bob" } }, s.io);
+    await group("the printer is down", false);
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    await group("I'll check the toner", false, "u1");
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(s.sent).toEqual([]);
+    await group("mickey, r u there?", false);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+    expect((s.runTurn.mock.calls[0] as any)[0].text).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nBob: the printer is down\nAnn: I'll check the toner]\n\nmickey, r u there?");
+    await group("fixed now", true);
+    expect((s.runTurn.mock.calls[1] as any)[0].text).toBe("fixed now");
+    expect(addressedByName("Hey Mickey: help", { displayName: "Mickey", label: "IT" })).toBe(true);
+    expect(addressedByName("Mickeys are mice", { displayName: "Mickey", label: "IT" })).toBe(false);
+    expect(addressedByName("it support, help", { displayName: null, label: "IT Support" })).toBe(true);
   });
 
   it("leaves My assistant off the card of a person without the flag", async () => {

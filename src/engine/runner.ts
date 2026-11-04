@@ -5,6 +5,7 @@ import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKMessage, SD
 import { confirmerPolicy } from "../admin/access.js";
 import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { definitionsForChat, mcpServerConfigs } from "../bots/definitions.js";
+import { tellMcpServer } from "../bots/tell.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
@@ -14,13 +15,18 @@ import { connectionMcpConfigs } from "../connections/store.js";
 import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
+import { learningsMcpServer } from "../learnings/mcp.js";
+import { learningsNote, listLearnings } from "../learnings/store.js";
 import type { Db } from "../db/client.js";
 import { chats, mailboxes, sessions } from "../db/schema.js";
+import { getTenantSettings } from "../org/org.js";
+import type { TenantSettings } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
 import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
 
 export type { TurnTimings };
 import type { Confirmations, Outcome } from "./confirm.js";
+import { browserMcpServer } from "./browser.js";
 import { classify } from "./gate.js";
 import type { LiveSessions } from "./live.js";
 import { recordTools, toolRule, toolRulesFor } from "./tool-rules.js";
@@ -40,10 +46,14 @@ export type RunnerDeps = {
   agentmailUrl?: string;
   /** For http connections and verifying mcp connections. */
   fetchFn: typeof fetch;
+  /** A PDF's or Office file's text, for attachments the person's assistant opens; without it they give their details only. */
+  readDocument?: (fileBase64: string, name: string) => Promise<string>;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
   /** Warm engine processes per chat and bot; without it every turn starts its own. */
   live?: LiveSessions;
+  /** The owner's Graph token for a one-to-one chat, outside their own turn: a bot telling their assistant needs it. */
+  personToken?: (chatId: string) => Promise<string | undefined>;
 };
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
 export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
@@ -63,7 +73,18 @@ const NOT_DONE = {
 };
 
 /** What a turn's SDK options act for. A live process outlives its turns, so its options read the turn running now through this. */
-type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void>; graphToken?: () => Promise<string | undefined>; signInLost: () => void };
+type TurnScope = {
+  personId: string;
+  person: Person;
+  canUseTool: CanUseTool;
+  afterTool: HookCallback;
+  confirmedBy: () => string | undefined;
+  post?: (text: string) => Promise<void>;
+  graphToken?: () => Promise<string | undefined>;
+  signInLost: () => void;
+  askConfirmation: RunTurnInput["askConfirmation"];
+  relay: number;
+};
 // live pool → key → the turn running on that key
 const liveTurns = new WeakMap<LiveSessions, Map<string, TurnScope>>();
 const turnsOn = (pool: LiveSessions) => liveTurns.get(pool) ?? liveTurns.set(pool, new Map()).get(pool)!;
@@ -73,7 +94,14 @@ type EngineSetup = Awaited<ReturnType<typeof engineSetup>>;
 /** Everything a turn's engine options depend on, shared by turns and prewarm so a warmed process is the one a turn would start. */
 async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean) {
   const { db } = deps;
-  const containerId = definition.computer ? await ensureComputer(db, deps.docker, deps.computerImage, definition.id) : undefined;
+  // a computer that can't start (no Docker on this host, image missing) costs the bot its computer, not the whole reply
+  const containerId = definition.computer
+    ? await ensureComputer(db, deps.docker, deps.computerImage, definition.id).catch((e: { code?: string; message?: string }) => {
+        console.error(`computer unavailable for ${definition.id}:`, e?.code ?? e?.message ?? "unknown");
+        return undefined;
+      })
+    : undefined;
+  const noComputer = definition.computer && !containerId ? " Your computer is switched on but could not start right now; if a task needs it, say so." : "";
   const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id);
   const [mailbox] = deps.agentmailUrl ? await db.select().from(mailboxes).where(eq(mailboxes.definitionId, definition.id)) : [];
   // the bot's own agent key goes to the SDK subprocess as a header, never to the model or the computer
@@ -91,6 +119,10 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     const names = rules.filter(([, r]) => r === rule).map(([t]) => t.replace(/^mcp__.+?__/, ""));
     return names.length ? ` ${words}: ${names.join(", ")}.` : "";
   };
+  // a Personal assistant is one bot shared by everyone, so it reads only the shared learnings and its chat owner's own
+  const personal = definition.identity === "person";
+  const owner = personal ? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null) : null;
+  const learnt = await listLearnings(db, tenantId, definition.id, owner);
   const rulesText =
     ruleNote("free", "An admin set these actions to run without a confirmation card, so run them and never say they need confirming") +
     ruleNote("confirm", "An admin set these actions to need a confirmation card in the chat");
@@ -115,6 +147,9 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
       graphToken: async () => current()?.graphToken?.(),
       signInLost: () => current()?.signInLost(),
+      get person() { return current()?.person; },
+      get relay() { return current()?.relay ?? 0; },
+      get askConfirmation() { return current()?.askConfirmation; },
     };
     const afterTool: HookCallback = async (...a) => current()?.afterTool(...a) ?? {};
     const canUseTool: CanUseTool = async (toolName, input, o) => {
@@ -130,10 +165,12 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         mail
           ? `Your own email address is ${mail.address}.`
           : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-      }${rulesText}`,
+      }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}`,
       cwd: deps.filesDir,
       tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
       allowedTools: [], // a tool named here bypasses canUseTool
+      // runs code in the browser server's process, which can read this container's files and secrets; nobody should be asked to judge that code
+      disallowedTools: ["mcp__browser__browser_run_code_unsafe"],
       permissionMode: "default",
       settingSources: [],
       persistSession: true,
@@ -144,10 +181,14 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       mcpServers: {
         ...mcpServerConfigs(definition, deps.secretsKey),
         ...(containerId ? { computer: computerMcpServer(deps.docker, containerId) } : {}),
+        ...(definition.webSearch ? { browser: browserMcpServer() } : {}),
         // Personal reads shared notes but stores nothing and reaches no company systems: what it saw in one person's mail must not reach others
         knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
         ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
         routine: routineMcpServer(deps, ctx),
+        learnings: learningsMcpServer(deps, ctx, personal),
+        // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
+        bots: tellMcpServer({ db, run: (t) => runTurn(deps, t as RunTurnInput), ...(deps.personToken ? { personToken: deps.personToken } : {}) }, ctx),
         ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
         ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
         ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
@@ -158,7 +199,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     };
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, learnt.map((l) => [l.id, l.text]), mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, buildOptions, fingerprint };
 }
 
@@ -179,10 +220,26 @@ export type RunTurnInput = {
   /** When the turn was asked for (the message arrived, the routine was due); defaults to now. */
   receivedAt?: Date;
   progress?: (event: ProgressEvent) => void;
-  routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void> };
+  routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void>; background?: boolean };
   /** The person's Microsoft Graph token, asked for per call; only for person definitions. Never stored, logged or shown to the model. */
   graphToken?: () => Promise<string | undefined>;
+  /** How many bots passed this on: a told bot (1) cannot tell further. */
+  relay?: number;
 };
+
+/**
+ * The message as the model gets it: first a line with the time now in the company's time zone and its default place.
+ * Read on every turn, so a changed setting counts from the next message, warm process or not.
+ */
+export function withDefaults(text: string, s: Pick<TenantSettings, "timezone" | "location" | "country">, at: Date, person?: Pick<Person, "timezone" | "location">): string {
+  // the person's own time zone (from their Teams client) and place (from the directory) come first; the company's are the fallback
+  const timezone = person?.timezone ?? s.timezone;
+  const now = new Intl.DateTimeFormat("en-AU", { timeZone: timezone, dateStyle: "full", timeStyle: "short" }).format(at);
+  const place = person?.location ?? [s.location, s.country].filter(Boolean).join(", ");
+  return `[${DEFAULTS_TAG} now ${now} (${timezone})${place ? `; location ${place}` : ""}]\n\n${text}`;
+}
+const DEFAULTS_TAG = "defaults:";
+const DEFAULTS_NOTE = ` Each message starts with a line in square brackets that begins "${DEFAULTS_TAG}". The system adds it, not the person: the time now in the person's time zone, and where they are (or the company's defaults). Use them unless the person says otherwise in this chat, and then keep to what they said. Never mention the line itself.`;
 
 export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
   const { db } = deps;
@@ -233,8 +290,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     }
   };
 
-  // a run under an admin grant starts clean: text from the chat must not steer it, and its context stays out of the chat's session
-  const ownSession = !!turn.routine?.grantPersonId;
+  // a run under an admin grant starts clean: text from the chat must not steer it, and its context stays out of the chat's session;
+  // a background job too, so the chat carries on beside it
+  const ownSession = !!turn.routine?.grantPersonId || !!turn.routine?.background;
   const [session] = ownSession ? [] : await db
     .select()
     .from(sessions)
@@ -362,8 +420,12 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   };
 
   let signInLost = false;
-  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true) };
+  const scope: TurnScope = {
+    personId: person.id, person, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true),
+    askConfirmation: turn.askConfirmation, relay: turn.relay ?? 0,
+  };
   let options: Options | undefined; // a cold run's, built only when one runs
+  const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received, person);
 
   const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
     const auditId = await beginAction(db, { ...base, kind: "message", summary: summary.slice(0, 200), model: definition.model, startedAt: received });
@@ -373,8 +435,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   const once = async (resume?: string): Promise<SDKResultMessage | undefined> => {
     resetTimings();
-    options ??= setup.buildOptions(() => scope);
-    for await (const msg of deps.queryFn({ prompt: turn.text, options: { ...options, ...(resume ? { resume } : {}) } })) {
+    // a background job works through many pages (each browser click is a step), so it gets more steps than a chat turn
+    options ??= { ...setup.buildOptions(() => scope), ...(turn.routine?.background ? { maxTurns: 100 } : {}) };
+    for await (const msg of deps.queryFn({ prompt, options: { ...options, ...(resume ? { resume } : {}) } })) {
       observe(msg);
       if (msg.type === "result") return msg;
     }
@@ -413,7 +476,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         started = true;
         return liveOptions(pool, liveKey, setup, session);
       };
-      const msg = await pool.send(liveKey, setup.fingerprint, start, turn.text, observe);
+      const msg = await pool.send(liveKey, setup.fingerprint, start, prompt, observe);
       // a warm process announces itself only once, so its engine is ready when the message goes in
       if (!started) Object.assign(timings, { live: true, engineReadyAt: sentAt });
       return msg;

@@ -5,17 +5,22 @@ import { chats } from "../db/schema.js";
 import type { TurnTimings } from "../db/schema.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { ProgressEvent, RunResult, RunTurnInput } from "../engine/runner.js";
-import { assignToChat, definitionsForChat, setChatDefinition, usableDefinitions } from "../bots/definitions.js";
-import { mayUseDefinition } from "../admin/access.js";
+import { assignToChat, definitionsForChat, listDefinitions, setChatDefinition, usableDefinitions } from "../bots/definitions.js";
+import { isAdmin, loadActor, mayUseDefinition } from "../admin/access.js";
 import { findPersonId, getTenantSettings, recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { botTitle, chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
+import { recordOverheard, takeOverheard, withOverheard } from "./overheard.js";
 import type { AdaptiveCard } from "./cards.js";
 
 export type IncomingMessage = {
   tenantId: string;
   chatId: string;
   conversationType: string;
-  from: { aadObjectId: string; name: string };
+  /** What Teams calls the chat, when it has a name (a group chat's topic). */
+  name?: string;
+  /** Group chats: the message @mentioned the bot. Without the permission to read every message, Teams only sends these. */
+  mentioned?: boolean;
+  from: { aadObjectId: string; name: string; /** the sender's Teams client time zone, e.g. Australia/Melbourne */ timezone?: string };
   text: string;
   receivedAt?: Date;
   conversationReference: unknown;
@@ -57,6 +62,8 @@ export type TeamsStream = { informative(text: string): void; chunk(text: string)
 
 const STATUS_AFTER_MS = 3000;
 const STATUS_EVERY_MS = 2000;
+const SLOW_AFTER_MS = 45_000;
+export const SLOW_NOTE = "_Still working on this one; it's taking a while. The answer will appear here._";
 
 /**
  * One status message for a slow turn: shown after 3 s, edited at most every 2 s (latest wins), then turned into the reply.
@@ -144,7 +151,7 @@ export async function needsSignIn(
   if (owner && owner !== personId) return false;
   const usable = await usableDefinitions(db, m.tenantId, personId, deps.defaultModel);
   const [assigned] = await definitionsForChat(db, m.chatId);
-  const definition = assigned ?? (usable.length === 1 ? usable[0] : undefined);
+  const definition = usable.find((d) => addressedByName(m.text, d)) ?? assigned ?? (usable.length === 1 ? usable[0] : undefined);
   return definition?.identity === "person" && usable.some((d) => d.id === definition.id);
 }
 
@@ -155,14 +162,21 @@ export async function handleMessage(
 ): Promise<void> {
   const { db } = deps;
   await upsertTenant(db, { id: msg.tenantId });
-  const person = await upsertPerson(db, { tenantId: msg.tenantId, aadObjectId: msg.from.aadObjectId, name: msg.from.name });
-  await upsertChat(db, { id: msg.chatId, tenantId: msg.tenantId, conversationType: msg.conversationType });
+  const person = await upsertPerson(db, { tenantId: msg.tenantId, aadObjectId: msg.from.aadObjectId, name: msg.from.name, ...(msg.from.timezone ? { timezone: msg.from.timezone } : {}) });
+  await upsertChat(db, { id: msg.chatId, tenantId: msg.tenantId, conversationType: msg.conversationType, ...(msg.name ? { name: msg.name } : {}) });
   await saveConversationReference(db, msg.chatId, msg.conversationReference);
   let [definition] = await definitionsForChat(db, msg.chatId);
   if (msg.conversationType === "personal") {
     await recordChatOwner(db, msg.chatId, person.id);
     const usable = await usableDefinitions(db, msg.tenantId, person.id, deps.defaultModel);
     if (msg.text.trim().toLowerCase() === "switch" && usable.length) return void (await io.sendCard(chooseBotCard(usable)));
+    // "Jennifer, …" switches the chat to that bot and asks it; "Jennifer" alone only switches
+    const named = usable.find((d) => addressedByName(msg.text, d));
+    if (named) {
+      if (named.id !== definition?.id) await setChatDefinition(db, msg.tenantId, msg.chatId, named.id);
+      definition = named;
+      if (justName(msg.text, named)) return void (await io.sendCard(chooseBotCard(usable, named.id)));
+    }
     if (definition && !usable.some((d) => d.id === definition!.id)) {
       await io.send(`You no longer have access to ${botTitle(definition)}.`);
       return void (usable.length && (await io.sendCard(chooseBotCard(usable))));
@@ -174,7 +188,16 @@ export async function handleMessage(
       definition = usable[0];
     }
   }
-  if (!definition) return void (await io.send("No bot is set up for this chat yet."));
+  // a group chat the bot may hear in full: it answers only when @mentioned or addressed by name, and keeps the rest as context
+  if (msg.conversationType !== "personal" && msg.mentioned === false && !(definition && addressedByName(msg.text, definition))) {
+    await recordOverheard(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, name: person.name, text: msg.text, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) });
+    return;
+  }
+  if (msg.conversationType !== "personal" && (!definition || msg.text.trim().toLowerCase() === "switch")) {
+    const bots = await groupBots(db, msg.tenantId, person.id);
+    if (bots?.length) return void (await io.sendCard(chooseBotCard(bots)));
+  }
+  if (!definition) return void (await io.send("No bot is set up for this chat yet. An admin can choose one by mentioning me with switch, or on the admin site under Assignments."));
   // Personal acts as one person: only in their own one-to-one chat, whatever the assignment says
   if (definition.identity === "person" && (msg.conversationType !== "personal" || (await ownerOf(db, msg.chatId)) !== person.id)) return void (await io.send("This assistant is private to its owner."));
   if (!(await mayUseDefinition(db, msg.tenantId, person.id, definition.id))) return void (await io.send("You don't have access to this bot."));
@@ -216,8 +239,8 @@ export async function handleMessage(
     const progress = (e: ProgressEvent) => {
       if (!stream) return status.progress(e);
       if (e.kind === "delta") {
-        // interim text may stream too; the final message is exactly the reply
-        const text = (newMessage && flowing ? "\n\n" : "") + e.text;
+        // interim text streams too, after the bot's name; Teams refuses a final message that does not carry on from what was streamed
+        const text = (flowing ? (newMessage ? "\n\n" : "") : withRoleLabel(name, "")) + e.text;
         newMessage = false;
         if (toStream((s) => s.chunk(text), (flowing ? soFar : "") + text)) flowing = true;
       } else if (e.kind === "tool") status.progress(e);
@@ -237,20 +260,31 @@ export async function handleMessage(
         return false;
       }
     };
-    const deliver = async (text: string) => {
+    // a reply still running after SLOW_AFTER_MS says so once, so nobody is left looking at a silent chat
+    const slow = setTimeout(() => {
+      if (flowing && stream) {
+        if (toStream((s) => s.chunk(`\n\n${SLOW_NOTE}`), `${soFar}\n\n${SLOW_NOTE}`)) newMessage = true;
+      } else status.progress({ kind: "text", text: SLOW_NOTE });
+    }, SLOW_AFTER_MS);
+    const deliver = async (reply: string) => {
+      clearTimeout(slow);
       await status.stop();
-      if (!(await endStream(text))) await status.finish(text);
+      const labelled = withRoleLabel(name, reply);
+      const final = !flowing ? labelled : soFar.trimEnd().endsWith(reply.trim()) ? soFar : `${soFar}\n\n${reply}`;
+      if (!(await endStream(final))) await status.finish(labelled);
     };
     try {
+      const heard = personal ? [] : await takeOverheard(db, msg.chatId);
       const result = await deps.runTurn({
         tenantId: msg.tenantId,
         chatId: msg.chatId,
         definition,
         person,
-        text: msg.text,
+        text: withOverheard(heard, msg.text),
         receivedAt: msg.receivedAt,
         ...(graphToken ? { graphToken } : {}),
         askConfirmation: async (req) => {
+          clearTimeout(slow); // the card says what it is waiting for
           status.supersede();
           // a stream must not stay open through a wait of up to 10 minutes: the card ends it, replacing any progress line;
           // the reply after the card is a new message
@@ -260,7 +294,7 @@ export async function handleMessage(
         },
         progress,
       });
-      await deliver(withRoleLabel(name, result.text));
+      await deliver(result.text);
       // a revoked token can keep coming back from the token service until the person is signed out
       if (result.signInLost)
         await io.signOut?.().catch((e: unknown) => console.error("graph sign-out failed:", e instanceof Error ? e.name : "unknown"));
@@ -290,7 +324,26 @@ export const choosePayload = (action: unknown): string => {
   return String(src.definitionId ?? "");
 };
 
-/** The owner picks the bot for their one-to-one chat; anything else (another person, a bot they may not use) changes nothing. */
+const nameRe = (d: { displayName: string | null; label: string }): RegExp | undefined => {
+  const name = (d.displayName || d.label).trim();
+  return name ? new RegExp(`^\\W*(?:hey|hi|ok|okay|thanks)?\\W*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "iu") : undefined;
+};
+/** "Mickey, …" or "hey mickey …": the message starts with the bot's name (its display name, or its label). */
+export const addressedByName = (text: string, d: { displayName: string | null; label: string }): boolean => !!nameRe(d)?.test(text);
+/** "Mickey" or "hi mickey!" and nothing more: the person wants to talk to it, not ask it something. */
+export const justName = (text: string, d: { displayName: string | null; label: string }): boolean => {
+  const re = nameRe(d);
+  return !!re?.test(text) && /^\W*$/u.test(text.replace(re, ""));
+};
+
+/** The company bots an admin may put in a group chat (it answers everyone there, so only an admin chooses); undefined for anyone else. */
+async function groupBots(db: Db, tenantId: string, personId: string) {
+  const actor = await loadActor(db, tenantId, personId);
+  if (!actor || !isAdmin(actor)) return undefined;
+  return (await listDefinitions(db, tenantId)).filter((d) => d.identity === "service");
+}
+
+/** The owner picks the bot for their one-to-one chat, an admin for a group chat; anything else changes nothing. */
 export async function handleChoose(
   deps: Pick<HandlerDeps, "db" | "defaultModel">,
   who: { tenantId: string; chatId: string; personId: string | undefined },
@@ -300,6 +353,12 @@ export async function handleChoose(
   const refused = resultCard("You can't choose this bot.");
   if (!who.personId) return refused;
   const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(and(eq(chats.id, who.chatId), eq(chats.tenantId, who.tenantId)));
+  if (chat && chat.type !== "personal") {
+    const bots = await groupBots(db, who.tenantId, who.personId);
+    if (!bots?.some((d) => d.id === definitionId)) return refused;
+    await setChatDefinition(db, who.tenantId, who.chatId, definitionId);
+    return chooseBotCard(bots, definitionId);
+  }
   if (chat?.type !== "personal" || chat.owner !== who.personId) return refused;
   const usable = await usableDefinitions(db, who.tenantId, who.personId, deps.defaultModel);
   if (!usable.some((d) => d.id === definitionId)) return refused;

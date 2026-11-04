@@ -40,7 +40,7 @@ export const themeOf = (cookieHeader: string | undefined) => {
 };
 
 const groups = [
-  { name: "", items: [{ label: "Overview", path: "overview", head: true }] },
+  { name: "", items: [{ label: "Dashboard", path: "overview", head: true }] },
   { name: "Bots", items: [{ label: "Bots", path: "bots", head: false }, { label: "Assignments", path: "assignments", head: false }, { label: "Connections", path: "connections", head: false }, { label: "Shared notes", path: "knowledge", head: true }] },
   { name: "People", items: [{ label: "People", path: "people", head: true }, { label: "Departments", path: "departments", head: true }] },
   { name: "Audit", items: [{ label: "Activity", path: "activity", head: true }, { label: "Settings", path: "settings", head: false }] },
@@ -89,9 +89,28 @@ export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csr
       : ""
   }</div></header>
 <div class="be-body">${menu.length ? html`<nav class="be-nav" aria-label="admin">${menu}</nav>` : ""}<main>${opts.body}</main></div>
+${/[?&]saved=1\b/.test(ctx?.url ?? "") ? html`<div class="be-saved" role="status">saved</div>` : ""}
+${raw(SHELL_SCRIPT)}
 </body>
 </html>`.value;
 }
+
+/**
+ * Two conveniences, both optional: a form marked data-autosave submits when a control changes (its save button hides),
+ * and every table's cells learn their column name so a phone can show rows as cards. Without script the buttons stay.
+ */
+const SHELL_SCRIPT = `<script>
+document.documentElement.classList.add("js");
+document.addEventListener("change", function (e) { var f = e.target && e.target.closest && e.target.closest("form[data-autosave]"); if (f) f.requestSubmit(); });
+document.querySelectorAll("table.be-table").forEach(function (t) {
+  var heads = Array.from(t.querySelectorAll("thead th")).map(function (th) { return th.textContent.trim(); });
+  if (!heads.length) return;
+  t.querySelectorAll("tbody tr").forEach(function (tr) { Array.from(tr.children).forEach(function (td, i) { if (heads[i]) td.setAttribute("data-l", heads[i]); }); });
+});
+</script>`;
+
+/** In a form marked data-autosave: the redirect after saving carries the "saved" mark. */
+export const AUTO = html`<input type="hidden" name="autosave" value="1">`;
 
 const chipClass: Record<string, string> = { done: "g", pending: "w", denied: "b", failed: "b", changed: "c" };
 /** A status always shows its word; colour only adds to it. */

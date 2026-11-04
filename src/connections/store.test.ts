@@ -8,8 +8,9 @@ import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
+import type { SqlRunner } from "./sql.js";
 import {
-  approveConnection, connectionMcpConfigs, getConnection, runHttp, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
+  adminVerify, approveConnection, connectionMcpConfigs, createConnection, getConnection, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
 } from "./store.js";
 
 const key = randomBytes(32);
@@ -235,6 +236,19 @@ describe("connections store", () => {
     expect(new Headers(fetched.at(-1)!.init.headers).get("authorization")).toBe("Bearer tok-123");
   });
 
+  it("a corrected request replaces a pending connection's settings; an approved one keeps its own", async () => {
+    await request({ ...mcp, config: { readOnlyTools: [] } });
+    expect((await getConnection(db, "t1", "tickets"))!.config).toEqual({ readOnlyTools: [] });
+    const { connection } = await request(mcp);
+    expect(connection.config).toEqual(mcp.config);
+    expect(connection.status).toBe("pending");
+    await setSecret("tickets", "mcp-tok");
+    await approveConnection(db, "t1", "tickets", personId);
+    const again = await request({ ...mcp, config: { readOnlyTools: ["everything"] } });
+    expect(again.connection.config).toEqual(mcp.config);
+    expect(again.connection.status).toBe("active");
+  });
+
   it("approve needs the secret in first and pins what the approver saw", async () => {
     await request(http);
     await expect(approveConnection(db, "t1", "helpdesk", personId)).rejects.toThrow(/secret/);
@@ -281,5 +295,61 @@ describe("connections store", () => {
     await runHttp(deps, "t1", defId, "desk-rw", { method: "GET", path: "me" }, "read-only");
     await runHttp(deps, "t1", defId, "desk-rw", { method: "POST", path: "tickets", body: "{}" }, "change");
     expect(fetched.map((f) => f.init.method)).toEqual(["GET", "GET", "POST"]);
+  });
+
+  it("sql: needs a password, contacts nothing before approval, reads in a rolled-back read-only transaction and masks the password", async () => {
+    const ran: { host: string; database: string; password: string; query: string; readOnly: boolean }[] = [];
+    let answer: Awaited<ReturnType<SqlRunner>> | Error = { columns: ["n", "name"], rows: [[1, "Ann"], [2, null]] };
+    const sqlDeps = { ...deps, sql: (async (t, query, readOnly) => {
+      ran.push({ host: t.host, database: t.database, password: t.password, query, readOnly });
+      if (answer instanceof Error) throw answer;
+      return answer;
+    }) as SqlRunner };
+    const sql = { kind: "sql" as const, name: "sap", target: "sql1.example.test", config: { engine: "mssql" as const, database: "SBO", username: "reader" } as never };
+    await expect(request({ ...sql, config: { engine: "oracle", database: "x", username: "u" } as never })).rejects.toThrow(/engine/);
+    await expect(request({ ...sql, target: "-oProxyCommand=x" })).rejects.toThrow(/host/);
+    await expect(request({ ...sql, config: { engine: "mysql", username: "u" } as never })).rejects.toThrow(/database/);
+    const { connection } = await request(sql);
+    expect(connection.config).toEqual({ engine: "mssql", port: 1433, database: "SBO", username: "reader" });
+    expect(connection.status).toBe("pending");
+    await expect(approveConnection(db, "t1", "sap", personId)).rejects.toThrow(/secret/);
+    await setSecret("sap", "pw-xyz");
+    await expect(verifyConnection(sqlDeps, "t1", defId, "sap")).rejects.toThrow(/not approved yet/);
+    await expect(runSql(sqlDeps, "t1", defId, "sap", "select 1", "read-only")).rejects.toThrow(/not active/);
+    expect(ran).toEqual([]);
+    await approveConnection(db, "t1", "sap", personId, { kind: "sql", target: sql.target, mode: "read-only" });
+    expect((await verifyConnection(sqlDeps, "t1", defId, "sap")).output).toBe("Connected\nn\tname\n1\tAnn\n2\tNULL");
+    expect(await runSql(sqlDeps, "t1", defId, "sap", "select n, name from t", "read-only")).toBe("n\tname\n1\tAnn\n2\tNULL");
+    expect(ran.at(-1)).toEqual({ host: "sql1.example.test", database: "SBO", password: "pw-xyz", query: "select n, name from t", readOnly: true });
+    await expect(runSql(sqlDeps, "t1", defId, "sap", "delete from t", "change")).rejects.toThrow(/read-only connection/);
+    await expect(runSql(sqlDeps, "t1", otherDefId, "sap", "select 1", "read-only")).rejects.toThrow(/No connection/);
+    answer = new Error("Login failed for user 'reader' with password pw-xyz");
+    await expect(runSql(sqlDeps, "t1", defId, "sap", "select 1", "read-only")).rejects.toThrow("SQL failed: Login failed for user 'reader' with password [secret]");
+    await request({ ...sql, name: "sap-rw", mode: "change" });
+    await setSecret("sap-rw", "pw-2");
+    await approveConnection(db, "t1", "sap-rw", personId);
+    answer = { columns: [], rows: [], affected: 3 };
+    expect(await runSql(sqlDeps, "t1", defId, "sap-rw", "update t set x = 1", "change")).toBe("3 rows affected");
+    expect(ran.at(-1)!.readOnly).toBe(false);
+  });
+
+  it("an admin creates connections with the secret typed in: active at once and linked to the chosen bots; ssh goes active on the admin's test", async () => {
+    const ran: string[] = [];
+    const sqlDeps = { ...deps, sql: (async (_t, query) => (ran.push(query), { columns: ["?"], rows: [[1]] })) as SqlRunner };
+    const base = { mode: "read-only" as const, personId, definitionIds: [defId, otherDefId] };
+    await expect(createConnection(deps, "t1", { ...base, kind: "sql", name: "sap", target: "sql1.example.test", config: { engine: "mssql", database: "SBO", username: "reader" } as never })).rejects.toThrow(/password/);
+    const sap = await createConnection(deps, "t1", { ...base, kind: "sql", name: "sap", target: "sql1.example.test", config: { engine: "mssql", database: "SBO", username: "reader" } as never, secret: "pw-1" });
+    expect(sap.status).toBe("active");
+    expect(sap.approvedByPersonId).toBe(personId);
+    expect((await listConnectionsFor(db, "t1", otherDefId)).map((c) => c.name)).toEqual(["sap"]);
+    expect(await adminVerify(sqlDeps, "t1", sap.id, personId)).toBe("Connected\n?\n1");
+    expect(await runSql(sqlDeps, "t1", defId, "sap", "select 1", "read-only")).toBe("?\n1");
+    await expect(createConnection(deps, "t1", { ...base, kind: "sql", name: "sap", target: "x", config: { engine: "mysql", database: "d", username: "u" } as never, secret: "p" })).rejects.toThrow(/already exists/);
+    const pve = await createConnection(deps, "t1", { ...base, kind: "ssh", name: "pve2", target: "pve2.example.test", mode: "change", config: { port: 22, username: "root" } });
+    expect(pve.status).toBe("pending");
+    expect(pve.publicKey).toBe("ssh-ed25519 AAAAfake admin@pve2");
+    expect(await adminVerify(deps, "t1", pve.id, personId)).toMatch(/^Connected/);
+    expect((await getConnection(db, "t1", "pve2"))!.status).toBe("active");
+    expect(await adminVerify(deps, "t1", (await createConnection(deps, "t1", { ...base, kind: "http", name: "api", target: "https://api.example.test/", config: {} })).id, personId)).toMatch(/probe path/);
   });
 });

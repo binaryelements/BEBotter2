@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 
 export type McpServerRecord = {
   name: string;
@@ -21,7 +21,8 @@ export type TurnTimings = { receivedAt: string; engineReadyAt?: string; firstOut
 export type ConnectionConfig =
   | { port: number; username: string }
   | { auth?: { in: "header" | "query"; name: string; prefix?: string } }
-  | { headerName?: string; readOnlyTools: string[] };
+  | { headerName?: string; readOnlyTools: string[] }
+  | { engine: "postgres" | "mysql" | "mssql"; port: number; database: string; username: string; tls?: boolean };
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
@@ -32,6 +33,8 @@ export const tenants = pgTable("tenants", {
   botName: text("bot_name"),
   defaultModel: text("default_model"),
   timezone: text("timezone").notNull().default("UTC"),
+  location: text("location"),
+  country: text("country"),
   createdAt: createdAt(),
 });
 
@@ -45,6 +48,8 @@ export const people = pgTable(
     role: text("role").notNull().default("user"),
     personalBot: boolean("personal_bot").notNull().default(false),
     email: text("email"),
+    timezone: text("timezone"), // from their Teams client, e.g. Australia/Melbourne
+    location: text("location"), // from the directory: "Melbourne, Australia"
     createdAt: createdAt(),
   },
   (t) => [unique().on(t.tenantId, t.aadObjectId)],
@@ -58,8 +63,27 @@ export const chats = pgTable("chats", {
   label: text("label"),
   ownerPersonId: text("owner_person_id").references(() => people.id), // whose 1:1 chat it is
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  // group chats: the bot keeps what is said when it is not addressed, as context for when it is; an admin turns it off
+  listening: boolean("listening").notNull().default(true),
   createdAt: createdAt(),
 });
+
+/** What a group chat said while the bot was not addressed; handed to the bot on its next turn there, then pruned with the audit. */
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    chatId: text("chat_id").notNull().references(() => chats.id),
+    personId: text("person_id").references(() => people.id),
+    name: text("name").notNull(),
+    text: text("text").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }), // when a turn read it
+  },
+  (t) => [index("chat_messages_chat_idx").on(t.chatId, t.at)],
+);
+export type ChatMessage = typeof chatMessages.$inferSelect;
 
 export const botDefinitions = pgTable(
   "bot_definitions",
@@ -211,8 +235,8 @@ export const connections = pgTable(
     id: text("id").primaryKey(),
     tenantId: text("tenant_id").notNull().references(() => tenants.id),
     name: text("name").notNull(),
-    kind: text("kind").notNull(), // ssh | http | mcp
-    target: text("target").notNull(), // ssh host, http base URL, mcp server URL
+    kind: text("kind").notNull(), // ssh | http | mcp | sql
+    target: text("target").notNull(), // ssh host, http base URL, mcp server URL, database host
     config: jsonb("config").$type<ConnectionConfig>().notNull(),
     mode: text("mode").notNull(), // read-only | change
     status: text("status").notNull(), // pending | awaiting-approval | active | blocked | revoked
@@ -274,12 +298,29 @@ export const routines = pgTable("routines", {
   runAt: timestamp("run_at", { withTimezone: true }),
   quiet: boolean("quiet").notNull().default(false),
   enabled: boolean("enabled").notNull().default(true),
+  /** A job the bot started from a chat: it runs at once in its own session, beside the chat rather than in its queue. */
+  background: boolean("background").notNull().default(false),
   grantPersonId: text("grant_person_id").references(() => people.id),
   createdByPersonId: text("created_by_person_id").notNull().references(() => people.id),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   createdAt: createdAt(),
 });
 
+/** Something a person taught a bot; it is in the bot's instructions from the next message on. */
+export const learnings = pgTable("learnings", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+  text: text("text").notNull(),
+  /** set on a Personal assistant's learnings: they apply to that person's chats only, since Personal is one bot shared by everyone */
+  ownerPersonId: text("owner_person_id").references(() => people.id),
+  taughtByPersonId: text("taught_by_person_id").notNull().references(() => people.id),
+  chatId: text("chat_id").references(() => chats.id), // null when an admin added it on the admin site
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type Learning = typeof learnings.$inferSelect;
 export type Tenant = typeof tenants.$inferSelect;
 export type Person = typeof people.$inferSelect;
 export type Department = typeof departments.$inferSelect;

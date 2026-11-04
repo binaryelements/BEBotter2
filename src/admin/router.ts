@@ -3,6 +3,8 @@ import type { NextFunction, Request, Response, Router } from "express";
 import { eq } from "drizzle-orm";
 import { tenants } from "../db/schema.js";
 import { ConnectionError } from "../connections/store.js";
+import type { SqlRunner } from "../connections/sql.js";
+import type { SshRunner } from "../connections/ssh.js";
 import { KnowledgeError } from "../knowledge/store.js";
 import { DirectoryError } from "../org/directory.js";
 import type { FetchUsers } from "../org/directory-sync.js";
@@ -22,7 +24,7 @@ import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 
-export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps };
+export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner };
 
 export function adminRouter(deps: AdminDeps): Router {
   const { db } = deps;
@@ -47,6 +49,15 @@ export function adminRouter(deps: AdminDeps): Router {
 
   router.use((req, res, next) => {
     res.set({ "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });
+    // a form that saved itself on change lands back with a "saved" mark; the body is parsed by the time a route redirects
+    if (req.method === "POST") {
+      const redirect = res.redirect.bind(res) as (status: number, url: string) => void;
+      res.redirect = ((status: number | string, url?: string) => {
+        const [code, to] = typeof status === "number" ? [status, url!] : [302, status];
+        const auto = (req.body as Record<string, unknown> | undefined)?.autosave === "1" && to.startsWith("/admin");
+        redirect(code, auto ? `${to}${to.includes("?") ? "&" : "?"}saved=1` : to);
+      }) as typeof res.redirect;
+    }
     withShell(req, res, next);
   });
   router.use(oidcRoutes(deps));
@@ -55,7 +66,7 @@ export function adminRouter(deps: AdminDeps): Router {
     res.type("html").send(
       layout({
         title: "Sign in · BE Teammate",
-        body: html`<h1>Sign in</h1><p>The admin site for BE Teammate, Binary Elements' bots in Microsoft Teams.</p><p><a class="be-btn primary" href="/admin/auth/login">sign in with Microsoft</a></p>`,
+        body: html`<div class="be-card signin"><h1>Sign in</h1><p>The admin site for BE Teammate, Binary Elements' bots in Microsoft Teams.</p><p><a class="be-btn primary" href="/admin/auth/login">sign in with Microsoft</a></p></div>`,
       }),
     );
   });
@@ -82,7 +93,7 @@ export function adminRouter(deps: AdminDeps): Router {
 
   router.use(overviewRoutes(db));
   router.use(peopleRoutes(db, deps.fetchUsers));
-  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail }));
+  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail, fetchFn: deps.fetchFn, ssh: deps.ssh, sql: deps.sql }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));
   router.use(knowledgeRoutes(db, deps.config.secretsKey));

@@ -12,6 +12,7 @@ export type RoutineInput = {
   schedule?: string;
   runAt?: Date;
   quiet?: boolean;
+  background?: boolean;
   grantPersonId?: string | null;
   createdByPersonId: string;
 };
@@ -47,7 +48,7 @@ export async function createRoutine(db: Db, tenantId: string, input: RoutineInpu
     .insert(routines)
     .values({
       id: crypto.randomUUID(), tenantId, definitionId: input.definitionId, chatId: input.chatId, prompt: input.prompt,
-      schedule: input.schedule ?? null, runAt: input.runAt ?? null, quiet: input.quiet ?? false,
+      schedule: input.schedule ?? null, runAt: input.runAt ?? null, quiet: input.quiet ?? false, background: input.background ?? false,
       grantPersonId: input.grantPersonId ?? null, createdByPersonId: input.createdByPersonId,
     })
     .returning();

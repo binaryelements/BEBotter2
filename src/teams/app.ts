@@ -1,5 +1,5 @@
 import { AgentApplication, CardFactory, CloudAdapter, MemoryStorage, MessageFactory, StreamingResponseResult } from "@microsoft/agents-hosting";
-import type { TurnContext, TurnState } from "@microsoft/agents-hosting";
+import type { ConnectorClient, TurnContext, TurnState } from "@microsoft/agents-hosting";
 import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
@@ -24,6 +24,22 @@ const FAILED_TO_SIGN_IN = -120510; // Errors.FailedToSignIn in agents-hosting 1.
 export const graphToken = async (app: AgentApplication<TurnState>, ctx: TurnContext): Promise<string | undefined> =>
   (await app.authorization.getToken(ctx, "graph")).token;
 
+/**
+ * Runs a send to Teams, once more after a second if the connection failed (about 1 in 20 to the connector resets).
+ * An HTTP error is an answer, not a dropped connection, and is not retried.
+ * shortcut: a reset after Teams took the message can post it twice; a rare duplicate beats a lost reply
+ */
+export async function retryNetwork<T>(send: () => Promise<T>, waitMs = 1000): Promise<T> {
+  try {
+    return await send();
+  } catch (e) {
+    if (!(e instanceof TypeError && e.message === "fetch failed")) throw e;
+    console.error("send to Teams failed, retrying:", (e.cause as { code?: string } | undefined)?.code ?? "unknown");
+    await new Promise((r) => setTimeout(r, waitMs));
+    return send();
+  }
+}
+
 /** The turn's Teams stream. end throws unless the final message reached the chat, so the caller can send it another way. */
 export function teamsStream(ctx: TurnContext): TeamsStream {
   return {
@@ -34,8 +50,15 @@ export function teamsStream(ctx: TurnContext): TeamsStream {
       let landed = false;
       const isFinal = (a: { type?: string; text?: string; attachments?: unknown[] }) =>
         a.type === "message" && (a.text ?? "") === finalText && !!a.attachments?.length === !!card;
-      const watch = async <T>(activities: { type?: string; text?: string; attachments?: unknown[] }[], next: () => Promise<T>) => {
-        const r = await next();
+      // what the stream sent after end, without text: why a final message did not land is otherwise invisible
+      const sent: string[] = [];
+      type Sent = { type?: string; text?: string; attachments?: unknown[]; entities?: { type?: string; streamType?: string }[] };
+      const watch = async <T>(activities: Sent[], next: () => Promise<T>) => {
+        for (const a of activities) sent.push(`${a.type}/${a.entities?.find((e) => e.type === "streaminfo")?.streamType ?? "-"}/${a.text === finalText ? "same" : `len${a.text?.length ?? 0}`}`);
+        const r = await next().catch((e: unknown) => {
+          sent.push(`refused: ${e instanceof Error ? e.message.slice(0, 200) : "unknown"}`);
+          throw e;
+        });
         if (activities.some(isFinal)) landed = true;
         return r;
       };
@@ -47,9 +70,30 @@ export function teamsStream(ctx: TurnContext): TeamsStream {
         ctx.streamingResponse.setAttachments([attachment]); // the final message takes its attachments from here
       } else ctx.streamingResponse.setFinalMessage(MessageFactory.text(finalText));
       const result = await ctx.streamingResponse.endStream();
-      if (result !== StreamingResponseResult.Success || !landed) throw new Error(`stream ended: ${landed ? result : "final message not sent"}`);
+      if (result !== StreamingResponseResult.Success || !landed) throw new Error(`stream ended: ${landed ? result : "final message not sent"} [${sent.join(", ") || "nothing sent"}]`);
     },
   };
+}
+
+const MEMBERS_TTL = 3_600_000;
+const membersCache = new Map<string, { name: string | undefined; at: number }>();
+/** The chat's people (not the bot) as "Ann, Bob", from Teams; fetched once an hour per chat, and never fatal to the message. */
+async function membersName(ctx: TurnContext): Promise<string | undefined> {
+  const id = ctx.activity.conversation?.id;
+  if (!id) return undefined;
+  const hit = membersCache.get(id);
+  if (hit && Date.now() - hit.at < MEMBERS_TTL) return hit.name;
+  let name: string | undefined;
+  try {
+    const client = ctx.turnState.get<ConnectorClient>(ctx.adapter.ConnectorClientKey);
+    const r = await client?.httpClient.get<{ members?: { id?: string; name?: string }[] }>(`v3/conversations/${encodeURIComponent(id)}/pagedmembers?pageSize=50`);
+    const people = (r?.data.members ?? []).filter((m) => m.name && m.id !== ctx.activity.recipient?.id).map((m) => m.name!);
+    name = people.length ? people.join(", ").slice(0, 80) : undefined;
+  } catch (e) {
+    console.error(`members of ${id}:`, (e as { status?: number } | undefined)?.status ?? (e instanceof Error ? e.name : "error"));
+  }
+  membersCache.set(id, { name, at: Date.now() });
+  return name;
 }
 
 export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> {
@@ -113,25 +157,29 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     }
     const conversationType = conversation.conversationType ?? "personal";
     console.log(`chat ${conversation.id} (${conversationType})`);
+    // an unnamed group chat is shown in Teams as its members, so it is named the same way here
+    const name = conversation.name || (conversationType !== "personal" ? await membersName(ctx) : undefined);
     await handleMessage(
       deps,
       {
         tenantId: conversation.tenantId,
         chatId: conversation.id,
         conversationType,
-        from: { aadObjectId: from.aadObjectId, name: from.name ?? "" },
+        ...(name ? { name } : {}),
+        ...(conversationType !== "personal" ? { mentioned: ctx.activity.getMentions(ctx.activity).some((m) => m.mentioned?.id === ctx.activity.recipient?.id) } : {}),
+        from: { aadObjectId: from.aadObjectId, name: from.name ?? "", ...(ctx.activity.localTimezone ? { timezone: ctx.activity.localTimezone } : {}) },
         text: (ctx.activity.text ?? "").trim(),
         receivedAt,
         conversationReference: ctx.activity.getConversationReference(),
       },
       {
-        send: async (text) => (await ctx.sendActivity(text))?.id,
-        update: async (id, text) => {
+        send: (text) => retryNetwork(async () => (await ctx.sendActivity(text))?.id),
+        update: (id, text) => retryNetwork(async () => {
           const activity = MessageFactory.text(text);
           activity.id = id; // the spread form loses the Activity class
           await ctx.updateActivity(activity);
-        },
-        sendCard: async (card) => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card)))),
+        }),
+        sendCard: (card) => retryNetwork(async () => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card))))),
         // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
         ...(conversationType === "personal" ? { stream: teamsStream(ctx) } : {}),
         ...(signedIn ? { graphToken: () => graphToken(app, ctx), signOut: () => app.authorization.signOut(ctx, state, "graph") } : {}),

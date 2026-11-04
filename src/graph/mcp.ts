@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { GraphCapability } from "../db/schema.js";
+import { OFFICE } from "../engine/office-pdf.js";
 import { GraphError, graphFetch } from "./client.js";
 import type { GraphDeps } from "./client.js";
 
@@ -20,7 +21,11 @@ const SIGN_IN_AGAIN = "Not done: the person must sign in again to Microsoft 365.
 /** A call refused before reaching Graph; its message is for the model. */
 class Refusal extends Error {}
 
-const ok = (v: unknown) => ({ content: [{ type: "text" as const, text: typeof v === "string" ? v : JSON.stringify(v) }] });
+/** A tool result that is already MCP content (an image), passed through as it is. */
+class Content {
+  constructor(readonly content: { type: "image"; data: string; mimeType: string }[]) {}
+}
+const ok = (v: unknown) => (v instanceof Content ? { content: v.content } : { content: [{ type: "text" as const, text: typeof v === "string" ? v : JSON.stringify(v) }] });
 const fail = (e: unknown) => {
   // a GraphError's message is status and code only; anything else may quote what it saw, so only its name is logged
   if (e instanceof GraphError) console.error("m365 tool failed:", e.message);
@@ -64,7 +69,7 @@ const who = (r?: Address) => {
 };
 const recipients = (list: string[] = []) => list.map((address) => ({ emailAddress: { address } }));
 
-type Message = { id: string; subject?: string; from?: Address; toRecipients?: Address[]; ccRecipients?: Address[]; receivedDateTime?: string; bodyPreview?: string; body?: { content?: string } };
+type Message = { id: string; hasAttachments?: boolean; subject?: string; from?: Address; toRecipients?: Address[]; ccRecipients?: Address[]; receivedDateTime?: string; bodyPreview?: string; body?: { content?: string } };
 const MAIL_FIELDS = "id,subject,from,toRecipients,receivedDateTime,bodyPreview";
 const mail = (m: Message) => ({ id: m.id, subject: m.subject, from: who(m.from), to: m.toRecipients?.map(who), date: m.receivedDateTime, preview: m.bodyPreview?.slice(0, PREVIEW) });
 
@@ -94,6 +99,14 @@ const FILE_FIELDS = "id,name,size,webUrl,lastModifiedDateTime,folder";
 const item = (f: DriveItem) => ({ id: f.id, name: f.name, size: f.size, modified: f.lastModifiedDateTime, webUrl: f.webUrl, ...(f.folder ? { folder: true } : {}) });
 const TEXT_TYPE = /^(text\/|application\/(json|xml|csv|x-yaml|yaml|javascript|x-sh)\b)/;
 const TEXT_NAME = /\.(txt|md|csv|tsv|json|xml|html?|log|ya?ml|ini|sql|js|ts|py|sh)$/i;
+const IMAGE_TYPE = /^image\/(png|jpeg|gif|webp)$/;
+const MAX_IMAGE = 3_750_000; // bytes: the model's limit for one image
+const MAX_ATTACHMENT = 10 * 1024 * 1024;
+// shortcut: one document stops here, to stay under the tool result limit (about 25,000 tokens); add paging if longer ones matter
+const MAX_DOCUMENT = 80_000;
+const documentText = (text: string) => (text.length > MAX_DOCUMENT ? { text: text.slice(0, MAX_DOCUMENT), note: `cut short: first ${MAX_DOCUMENT} of ${text.length} characters` } : { text });
+type Attachment = { "@odata.type"?: string; id: string; name?: string; contentType?: string; size?: number; isInline?: boolean; contentBytes?: string };
+const attachment = (a: Attachment) => ({ id: a.id, name: a.name, type: a.contentType, size: a.size, ...(a.isInline ? { inline: true } : {}) });
 
 // shortcut: strips tags and &nbsp; only, other entities stay encoded; decode them if the model trips over them
 const plain = (html?: string) => html?.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim().slice(0, PREVIEW);
@@ -104,7 +117,7 @@ const top = (max: number) => z.number().int().min(1).max(max).optional();
 const times = "ISO 8601 date and time with an offset, e.g. 2026-11-02T09:00:00Z";
 
 /** Microsoft 365 as the person talking, through Graph with their delegated token; only the tools of the given capabilities. */
-export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"] }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpSdkServerConfigWithInstance {
+export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"]; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpSdkServerConfigWithInstance {
   const g: GraphDeps = { fetchFn: deps.fetchFn, token: () => ctx.graphToken(), ...(deps.sleep ? { sleep: deps.sleep } : {}) };
   const get = async <T>(path: string, headers?: Record<string, string>) => (await graphFetch(g, path, headers ? { headers } : {})).json() as Promise<T>;
   const post = async (path: string, json: unknown) => (await graphFetch(g, path, { method: "POST", json })).body?.cancel();
@@ -123,9 +136,24 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       (await get<{ value: Message[] }>(`/me/messages?${qs({ $search: `"${query.replace(/"/g, "")}"`, $top: top ?? 10, $select: MAIL_FIELDS })}`)).value.map(mail)))],
     ["mail.read", tool("list_mail", "List the newest mail in the person's inbox or sent folder.", { folder: z.enum(["inbox", "sent"]).optional(), top: top(25) }, run(async ({ folder, top }) =>
       (await get<{ value: Message[] }>(`/me/mailFolders/${folder === "sent" ? "sentitems" : "inbox"}/messages?${qs({ $top: top ?? 10, $select: MAIL_FIELDS, $orderby: "receivedDateTime desc" })}`)).value.map(mail)))],
-    ["mail.read", tool("read_mail", "Read one email with its body as text.", { id: z.string().min(1) }, run(async ({ id }) => {
-      const m = await get<Message>(`/me/messages/${idPart(id)}?${qs({ $select: "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body" })}`, { Prefer: 'outlook.body-content-type="text"' });
-      return { ...mail(m), preview: undefined, cc: m.ccRecipients?.map(who), body: m.body?.content?.slice(0, BODY) };
+    ["mail.read", tool("read_mail", "Read one email with its body as text, and the list of its attachments.", { id: z.string().min(1) }, run(async ({ id }) => {
+      const m = await get<Message>(`/me/messages/${idPart(id)}?${qs({ $select: "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments" })}`, { Prefer: 'outlook.body-content-type="text"' });
+      const files = m.hasAttachments ? (await get<{ value: Attachment[] }>(`/me/messages/${idPart(id)}/attachments?${qs({ $select: "id,name,contentType,size,isInline" })}`)).value.map(attachment) : undefined;
+      return { ...mail(m), preview: undefined, cc: m.ccRecipients?.map(who), body: m.body?.content?.slice(0, BODY), attachments: files };
+    }))],
+    ["mail.read", tool("read_attachment", "Read one attachment of an email (ids from read_mail): text, PDF, Word, PowerPoint, Excel and images; other kinds give their details only. Call it again whenever asked to read an attachment; an earlier result may be out of date.", { id: z.string().min(1), attachmentId: z.string().min(1) }, run(async ({ id, attachmentId }) => {
+      const a = await get<Attachment>(`/me/messages/${idPart(id)}/attachments/${idPart(attachmentId)}`);
+      const details = attachment(a);
+      const bytes = a["@odata.type"] === "#microsoft.graph.fileAttachment" && a.contentBytes ? Buffer.from(a.contentBytes, "base64") : undefined;
+      if (!bytes) return { ...details, note: "an attached email or link, not a file" };
+      if (bytes.length > MAX_ATTACHMENT) return { ...details, note: "too large to read" };
+      const type = a.contentType ?? "";
+      if (TEXT_TYPE.test(type) || TEXT_NAME.test(a.name ?? "")) return { ...details, ...documentText(bytes.toString("utf8")) };
+      if (IMAGE_TYPE.test(type) && bytes.length <= MAX_IMAGE) return new Content([{ type: "image", data: a.contentBytes!, mimeType: type }]);
+      const name = a.name ?? "";
+      const pdf = type === "application/pdf" || /\.pdf$/i.test(name);
+      if ((pdf || OFFICE.test(name)) && deps.readDocument) return { ...details, ...documentText(await deps.readDocument(a.contentBytes!, pdf ? name || "file.pdf" : name)) };
+      return { ...details, note: "not readable as text" };
     }))],
     ["mail.send", tool("send_mail", "Send an email as the person; they confirm it in the chat first.", { to: z.array(z.string()).min(1), cc: z.array(z.string()).optional(), subject: z.string(), body: z.string() }, run(async (a) => {
       await post("/me/sendMail", {

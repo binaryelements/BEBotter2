@@ -11,6 +11,10 @@ describe("classify", () => {
     expect(classify("WebSearch", def)).toBe("read");
     expect(classify("WebFetch", def)).toBe("read");
   });
+  it("lets the browser look, click, type and run page scripts freely, but asks before it runs code on the server or uploads a file", () => {
+    for (const t of ["navigate", "snapshot", "click", "type", "fill_form", "evaluate", "drag", "drop", "emulate_media", "network_request"]) expect(classify(`mcp__browser__browser_${t}`, def)).toBe("read");
+    for (const t of ["run_code_unsafe", "file_upload", "cookie_set"]) expect(classify(`mcp__browser__browser_${t}`, def)).toBe("write");
+  });
   it("treats the computer's bash as read", () => {
     expect(classify("mcp__computer__bash", def)).toBe("read");
   });
@@ -23,6 +27,7 @@ describe("classify", () => {
       ["mcp__connections__approve", "approve"],
       ["mcp__routine__remind", "read"],
       ["mcp__routine__post", "read"],
+      ...["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read"] as [string, string]),
       ["mcp__computer__bash", "read"],
       ["mcp__mail__send_email", "write"],
       ["mcp__mail__reply_to_email", "write"],
@@ -57,14 +62,14 @@ describe("classify", () => {
     expect(classify("mcp__someone__new_tool", def)).toBe("write");
   });
 
-  it("Graph reads run freely and Graph writes always ask, whatever an admin rule says", () => {
+  it("Graph reads run freely; Graph writes ask unless an admin set them free", () => {
     const reads = ["search_mail", "list_mail", "read_mail", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"];
     const writes = ["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"];
     const person = { ...def, identity: "person" } as BotDefinition;
     for (const t of reads) expect(classify(`mcp__m365__${t}`, person)).toBe("read");
     for (const t of writes) {
-      expect(classify(`mcp__m365__${t}`, person)).toBe("approve");
-      expect(classify(`mcp__m365__${t}`, person, [], "free")).toBe("approve");
+      expect(classify(`mcp__m365__${t}`, person)).toBe("write");
+      expect(classify(`mcp__m365__${t}`, person, [], "free")).toBe("read");
     }
     expect(classify("mcp__m365__delete_everything", person)).toBe("write");
     // a service definition has no m365 server of ours, so a server of its own by that name gets no free reads

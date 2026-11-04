@@ -7,13 +7,15 @@ import type { Connection, ConnectionConfig } from "../db/schema.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { listMcpTools, sendHttp } from "./http.js";
 import type { HttpConfig, HttpRequest } from "./http.js";
+import { DEFAULT_PORT, querySql, realSql, SQL_ENGINES } from "./sql.js";
+import type { SqlConfig, SqlRunner } from "./sql.js";
 import { validTarget } from "./ssh.js";
 import type { SshRunner } from "./ssh.js";
 
 export class ConnectionError extends Error {}
 
-export type ConnectionDeps = { db: Db; ssh: SshRunner; secretsKey: Buffer; fetchFn: typeof fetch };
-export type ConnectionKind = "ssh" | "http" | "mcp";
+export type ConnectionDeps = { db: Db; ssh: SshRunner; secretsKey: Buffer; fetchFn: typeof fetch; sql?: SqlRunner };
+export type ConnectionKind = "ssh" | "http" | "mcp" | "sql";
 export type ConnectionMode = "read-only" | "change";
 export type ConnectionRequest = {
   kind: ConnectionKind;
@@ -77,12 +79,22 @@ function checkRequest(input: ConnectionRequest): ConnectionConfig {
     if (c.headerName !== undefined && (typeof c.headerName !== "string" || !HTTP_TOKEN.test(c.headerName))) fail("Invalid header name");
     return { ...(c.headerName !== undefined ? { headerName: c.headerName as string } : {}), readOnlyTools: tools as string[] };
   }
-  return fail("Kind must be ssh, http or mcp");
+  if (input.kind === "sql") {
+    const engine = c.engine as SqlConfig["engine"];
+    if (!SQL_ENGINES.includes(engine)) fail("engine must be postgres, mysql or mssql");
+    if (!/^[A-Za-z0-9.-]{1,253}$/.test(input.target)) fail("Target must be the database server's host name or IP address");
+    const port = (c.port as number | undefined) ?? DEFAULT_PORT[engine];
+    if (!Number.isInteger(port) || port < 1 || port > 65535) fail("Invalid port");
+    for (const k of ["database", "username"] as const)
+      if (typeof c[k] !== "string" || !(c[k] as string).trim() || (c[k] as string).length > 128 || /[\x00-\x1f\x7f]/.test(c[k] as string)) fail(`Give the ${k}`);
+    return { engine, port, database: c.database as string, username: c.username as string, ...(c.tls ? { tls: true } : {}) };
+  }
+  return fail("Kind must be ssh, http, mcp or sql");
 }
 
-/** Stored as its place: an http `auth` or an mcp `headerName` is where the secret goes, so having one means a secret is needed. */
+/** Stored as its place: an http `auth` or an mcp `headerName` is where the secret goes, so having one means a secret is needed; sql always needs its password. */
 export const needsSecret = (c: Pick<Connection, "kind" | "config">) =>
-  (c.kind === "http" && "auth" in c.config && !!c.config.auth) || (c.kind === "mcp" && "headerName" in c.config && !!c.config.headerName);
+  c.kind === "sql" || (c.kind === "http" && "auth" in c.config && !!c.config.auth) || (c.kind === "mcp" && "headerName" in c.config && !!c.config.headerName);
 
 const byName = (tenantId: string, name: string) => and(eq(connections.tenantId, tenantId), eq(connections.name, name));
 const byId = (tenantId: string, id: string) => and(eq(connections.tenantId, tenantId), eq(connections.id, id));
@@ -139,6 +151,14 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   if (existing && existing.status !== "revoked") {
     if (existing.kind !== input.kind || existing.target !== input.target)
       fail(`A connection named ${input.name} already exists for a different ${existing.kind !== input.kind ? "kind" : "target"}`);
+    // not yet approved: a corrected request (where the secret goes, read-only tools, mode) replaces the old one
+    if (existing.status === "pending" && (JSON.stringify(existing.config) !== JSON.stringify(config) || existing.mode !== input.mode)) {
+      // a secret given for the old settings may belong somewhere else now, so it is asked for again (an ssh key stays)
+      const [row] = await db.update(connections)
+        .set({ config, mode: input.mode, ...(existing.kind === "ssh" ? {} : { secretCipher: null }), updatedAt: new Date() })
+        .where(and(byId(tenantId, existing.id), eq(connections.status, "pending"))).returning();
+      if (row) return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
+    }
     return { connection: existing, ...(existing.publicKey ? { publicKey: existing.publicKey } : {}) };
   }
   const key = input.kind === "ssh" ? await deps.ssh.generateKey(`${definition!.name}@${input.name}`) : undefined;
@@ -156,6 +176,41 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   if (existing) await db.delete(definitionConnections).where(and(eq(definitionConnections.connectionId, row.id), ne(definitionConnections.definitionId, input.definitionId)));
   await setLinked(db, tenantId, input.definitionId, row.id, true);
   return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
+}
+
+export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; definitionIds: string[] };
+
+/** An admin sets a connection up with its secret typed in, so it is approved at once; ssh still needs its key installed and a verify. */
+export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, tenantId: string, input: AdminConnectionInput): Promise<Connection> {
+  const { db } = deps;
+  const config = checkRequest({ ...input, definitionId: "" });
+  if (needsSecret({ kind: input.kind, config }) && !input.secret?.trim()) fail(input.kind === "sql" ? "Give the password" : "Give the secret that goes in the header");
+  const existing = await getConnection(db, tenantId, input.name);
+  if (existing && existing.status !== "revoked") fail(`A connection named ${input.name} already exists`);
+  const key = input.kind === "ssh" ? await deps.ssh.generateKey(`admin@${input.name}`) : undefined;
+  const secret = key?.privateKey ?? (input.secret?.trim() || undefined);
+  const values = {
+    kind: input.kind, target: input.target, config, mode: input.mode, status: key ? "pending" : "active",
+    secretCipher: secret ? encrypt(deps.secretsKey, secret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
+    requestedByPersonId: input.personId, approvedByPersonId: input.personId, updatedAt: new Date(),
+  };
+  const [row] = existing
+    ? await db.update(connections).set(values).where(and(byId(tenantId, existing.id), eq(connections.status, "revoked"))).returning()
+    : await db.insert(connections).values({ id: crypto.randomUUID(), tenantId, name: input.name, ...values }).onConflictDoNothing().returning();
+  if (!row) fail(`A connection named ${input.name} already exists`);
+  if (existing) await db.delete(definitionConnections).where(eq(definitionConnections.connectionId, row!.id));
+  for (const definitionId of input.definitionIds) await setLinked(db, tenantId, definitionId, row!.id, true);
+  return row!;
+}
+
+/** An admin's test of any connection: ssh pins the host key and goes active (the admin approves by pressing the button). */
+export async function adminVerify(deps: ConnectionDeps, tenantId: string, id: string, personId: string): Promise<string> {
+  const [c] = await deps.db.select().from(connections).where(byId(tenantId, id));
+  if (!c) fail("Connection not found");
+  if (c!.kind === "http") return "http connections are tested by the bot with a probe path";
+  const r = await verifyRow(deps, c!);
+  if (r.status === "awaiting-approval") await approveConnection(deps.db, tenantId, c!.name, personId);
+  return r.output;
 }
 
 async function setStatus(db: Db, c: Connection, set: Partial<Pick<Connection, "status" | "hostKey">>): Promise<void> {
@@ -184,18 +239,23 @@ export async function verifyConnection(
   name: string,
   probe?: { path: string },
 ): Promise<{ status: Connection["status"]; output: string }> {
-  const c = await linkedConnection(deps.db, tenantId, definitionId, name);
+  return verifyRow(deps, await linkedConnection(deps.db, tenantId, definitionId, name), probe);
+}
+
+async function verifyRow(deps: ConnectionDeps, c: Connection, probe?: { path: string }): Promise<{ status: Connection["status"]; output: string }> {
+  const { name } = c;
   if (c.status === "revoked") fail("The connection was revoked");
   if (c.status === "blocked") fail(BLOCKED);
   if (needsSecret(c) && !c.secretCipher) return { status: c.status, output: "Waiting for the secret" };
   if (c.kind !== "ssh") {
-    // http and mcp make no network call until a person has seen the target on the approval card
+    // http, mcp and sql make no network call until a person has seen the target on the approval card
     if (c.status !== "active") fail(`${name} is not approved yet, so nothing was contacted. Ask an admin or department head to approve it.`);
     if (c.kind === "http") {
       if (!probe?.path) fail("Give a probe path: a read-only GET under the connection's URL");
       const r = await sendHttp(deps.fetchFn, httpConn(deps, c), { method: "GET", path: probe!.path });
       return { status: c.status, output: `HTTP ${r.status}` };
     }
+    if (c.kind === "sql") return { status: c.status, output: `Connected\n${await querySql(deps.sql ?? realSql, sqlTarget(deps, c), "SELECT 1", true)}` };
     return { status: c.status, output: `Connected; ${(await listMcpTools(deps.fetchFn, mcpConn(deps, c))).length} tools` };
   }
   const r = await exec(deps, c, "exit 0");
@@ -250,6 +310,18 @@ export async function runHttp(deps: ConnectionDeps, tenantId: string, definition
   if (mode === "change" && c.mode !== "change") fail(`${name} is a read-only connection; use http_read`);
   if (needsSecret(c) && !c.secretCipher) fail(`${name} has no secret`);
   return (await sendHttp(deps.fetchFn, httpConn(deps, c), req)).text;
+}
+
+const sqlTarget = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => ({ ...(c.config as SqlConfig), host: c.target, password: secretOf(deps, c) ?? "" });
+
+/** sql_read (any active sql connection, in a read-only transaction that is rolled back) and sql_change (a change connection, confirmed per call). */
+export async function runSql(deps: ConnectionDeps, tenantId: string, definitionId: string, name: string, query: string, mode: ConnectionMode): Promise<string> {
+  const c = await linkedConnection(deps.db, tenantId, definitionId, name);
+  if (c.kind !== "sql") fail(`${name} is not an sql connection`);
+  if (c.status !== "active") fail(`${name} is not active (${c.status})`);
+  if (mode === "change" && c.mode !== "change") fail(`${name} is a read-only connection; use sql_read`);
+  if (!c.secretCipher) fail(`${name} has no password`);
+  return querySql(deps.sql ?? realSql, sqlTarget(deps, c), query, mode === "read-only");
 }
 
 /** The approved mcp connections among a bot's linked ones, and their read-only tools by `conn-*` server name. */

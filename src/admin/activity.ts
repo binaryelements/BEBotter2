@@ -5,7 +5,11 @@ import { listActions } from "../audit/audit.js";
 import type { Db } from "../db/client.js";
 import { botDefinitions, definitionDepartments, departmentMembers, people } from "../db/schema.js";
 import type { AuditEvent } from "../db/schema.js";
+import { toolLabel } from "../teams/cards.js";
 import { isAdmin } from "./access.js";
+import { chatNames } from "./chat-names.js";
+import { inputWords, whenFor } from "./words.js";
+import type { When } from "./words.js";
 import { chip, html, layout, pageHead, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
@@ -20,23 +24,38 @@ const q = (req: Request, name: string) => {
   return typeof v === "string" && v ? v : undefined;
 };
 
-async function names(db: Db, tenantId: string) {
-  const [ppl, defs] = await Promise.all([
-    db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, tenantId)),
-    db.select({ id: botDefinitions.id, label: botDefinitions.label }).from(botDefinitions).where(eq(botDefinitions.tenantId, tenantId)),
+type Scope = { personIds?: string[]; definitionIds?: string[] };
+/** Names for the rows and the filter dropdowns; a head's dropdowns name only their own people, bots and the chats in their rows. */
+async function names(db: Db, tenantId: string, scope: Scope, rows: AuditEvent[]) {
+  const [ppl, defs, chat] = await Promise.all([
+    db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, tenantId)).orderBy(people.name),
+    db.select({ id: botDefinitions.id, label: botDefinitions.label, displayName: botDefinitions.displayName }).from(botDefinitions).where(eq(botDefinitions.tenantId, tenantId)).orderBy(botDefinitions.label),
+    chatNames(db, tenantId),
   ]);
-  return { person: new Map(ppl.map((p) => [p.id, p.name])), bot: new Map(defs.map((d) => [d.id, d.label])) };
+  const within = <T extends { id: string }>(list: T[], ids?: string[]) => (ids ? list.filter((x) => ids.includes(x.id)) : list);
+  const limited = scope.personIds || scope.definitionIds;
+  if (limited) for (const id of chat.keys()) if (!rows.some((e) => e.chatId === id)) chat.delete(id);
+  return {
+    person: new Map(within(ppl, scope.personIds).map((p) => [p.id, p.name])),
+    bot: new Map(within(defs, scope.definitionIds).map((d) => [d.id, d.displayName ? `${d.displayName} · ${d.label}` : d.label])),
+    chat,
+  };
 }
 
-const cells = (e: AuditEvent, n: Awaited<ReturnType<typeof names>>) => [
-  e.startedAt.toISOString().slice(0, 16),
+const cells = (e: AuditEvent, n: Awaited<ReturnType<typeof names>>, when?: When) => [
+  when ? when(e.startedAt) : e.startedAt.toISOString().slice(0, 16),
   (e.personId && n.person.get(e.personId)) || "",
   n.bot.get(e.definitionId) ?? "",
-  e.toolName ?? "message",
+  (e.chatId && n.chat.get(e.chatId)) || "",
+  e.toolName ? toolLabel(e.toolName, e.toolInput) : "message",
   e.status,
-  e.summary,
+  when ? inputWords(e.summary) : e.summary,
   e.authority ? (n.person.get(e.authority.personId) ?? "") : "",
 ];
+
+/** A filter as a dropdown of names; the value stays the id, so links and the csv keep working. */
+const pick = (name: string, label: string, options: Map<string, string>, chosen: string | undefined) =>
+  html`<select class="be-select" name="${name}" aria-label="${label}"><option value="">any ${label}</option>${[...options].map(([id, text]) => html`<option value="${id}" ${id === chosen ? "selected" : ""}>${text}</option>`)}</select>`;
 
 const seconds = (from: string, to: string) => Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000);
 /**
@@ -58,7 +77,8 @@ function timingBar(e: AuditEvent): SafeHtml {
   if (!m) return html``;
   const fmt = (n: number) => `${n.toFixed(1)} s`;
   const label = `total ${fmt(m.total)}: ${m.parts.map((p) => `${p.name} ${fmt(p.secs)}`).join(", ")}`;
-  return html`<div class="be-timing" role="img" aria-label="${label}">${m.parts.map((p, i) => html`<span class="t${i + 1}" style="width:${m.total ? ((p.secs / m.total) * 100).toFixed(1) : 0}%"></span>`)}</div><ul class="be-timing-key">${m.parts.map((p, i) => html`<li class="t${i + 1}">${p.name} ${fmt(p.secs)}</li>`)}</ul><span class="be-muted">${fmt(m.total)} total</span>`;
+  // the breakdown is on hover; the row shows the bar and the total
+  return html`<div class="be-timing" role="img" aria-label="${label}" title="${label}">${m.parts.map((p, i) => html`<span class="t${i + 1}" style="width:${m.total ? ((p.secs / m.total) * 100).toFixed(1) : 0}%"></span>`)}</div><span class="be-muted" title="${label}">${fmt(m.total)}</span>`;
 }
 
 // A leading = + - @ tab or CR would run as a formula in a spreadsheet.
@@ -97,29 +117,33 @@ export function activityRoutes(db: Db): Router {
       before: q(req, "before"),
       limit,
     });
-    return rows;
+    // a head's person filter narrowed the query, but the dropdowns still list only their people
+    const scope: Scope = isAdmin(actor) ? {} : { personIds: personIds ?? [personId!], definitionIds };
+    return { rows, n: await names(db, actor.tenantId, scope, rows) };
   }
 
   router.get(
     "/activity",
     wrap(async (req, res) => {
       const { actor, csrf } = adminOf(res);
-      const rows = await fetchRows(req, res, PAGE);
-      if (!rows) return;
-      const n = await names(db, actor.tenantId);
-      const keep = new URLSearchParams(FILTERS.flatMap((f) => (q(req, f) ? [[f, q(req, f)!]] : [])));
+      const got = await fetchRows(req, res, PAGE);
+      if (!got) return;
+      const { rows, n } = got;
+      const when = await whenFor(db, actor.tenantId);
+      const keep =new URLSearchParams(FILTERS.flatMap((f) => (q(req, f) ? [[f, q(req, f)!]] : [])));
       const older = rows.length === PAGE ? new URLSearchParams([...keep, ["before", rows[rows.length - 1].id]]).toString() : "";
       const csv = keep.toString();
       const tr = rows.map((e) => {
-        const c = cells(e, n);
-        return html`<tr>${c.slice(0, 4).map((v) => html`<td>${v}</td>`)}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[5]}</td><td>${timingBar(e)}</td><td>${c[6] ? `confirmed by ${c[6]}` : ""}</td></tr>`;
+        const c = cells(e, n, when);
+        return html`<tr>${c.slice(0, 5).map((v) => html`<td>${v}</td>`)}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
       });
+      const sel = { bot: q(req, "bot"), person: q(req, "person"), chat: q(req, "chat") };
       res.type("html").send(
         layout({
           title: "Activity",
           body: html`${pageHead("Activity", html`<a class="be-btn" href="/admin/activity.csv${csv ? `?${csv}` : ""}">export csv</a>`)}
-<form class="row" method="get" action="/admin/activity"><input class="be-input" name="bot" value="${q(req, "bot") ?? ""}" placeholder="bot id" aria-label="Bot"> <input class="be-input" name="person" value="${q(req, "person") ?? ""}" placeholder="person id" aria-label="Person"> <input class="be-input" name="chat" value="${q(req, "chat") ?? ""}" placeholder="chat id" aria-label="Chat"> <select class="be-select" name="status" aria-label="Status"><option value="">any</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
-${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
+<form class="row" method="get" action="/admin/activity">${pick("bot", "bot", n.bot, sel.bot)} ${pick("person", "person", n.person, sel.person)} ${pick("chat", "chat", n.chat, sel.chat)} <select class="be-select" name="status" aria-label="Status"><option value="">any status</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
+${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Chat</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
 ${older ? html`<p><a href="/admin/activity?${older}">older</a></p>` : ""}`,
           actor,
           csrf,
@@ -131,10 +155,10 @@ ${older ? html`<p><a href="/admin/activity?${older}">older</a></p>` : ""}`,
   router.get(
     "/activity.csv",
     wrap(async (req, res) => {
-      const rows = await fetchRows(req, res, CSV_MAX);
-      if (!rows) return;
-      const n = await names(db, adminOf(res).actor.tenantId);
-      const lines = ["time,person,bot,tool,status,summary,confirmed_by", ...rows.map((e) => cells(e, n).map(csvCell).join(","))];
+      const got = await fetchRows(req, res, CSV_MAX);
+      if (!got) return;
+      const { rows, n } = got;
+      const lines = ["time,person,bot,chat,tool,status,summary,confirmed_by", ...rows.map((e) => cells(e, n).map(csvCell).join(","))];
       res
         .set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="activity.csv"', "Cache-Control": "no-store" })
         .send(lines.join("\r\n") + "\r\n");

@@ -6,9 +6,11 @@ import { ensurePersonalDefinition, getDefinition, listDefinitions, setAllowedDep
 import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
-import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
 import { listConnectionsFor } from "../connections/store.js";
-import { listRoutines } from "../routines/store.js";
+import { fakeSsh } from "../connections/ssh.js";
+import { createRoutine, listRoutines } from "../routines/store.js";
+import { addLearning, listLearnings } from "../learnings/store.js";
 import { eq } from "drizzle-orm";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { MailError } from "../mail/agentmail.js";
@@ -36,7 +38,10 @@ describe("bots screen", () => {
     await setMembership(db, T, sales, id.Hal, "head");
     await setMembership(db, T, eng, id.Eve, "head");
     const app = express();
-    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m-default", fetchUsers: async () => [] }));
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m-default", fetchUsers: async () => [],
+      // no MCP server answers here, so listing a server's tools always fails
+      fetchFn: (async () => { throw Object.assign(new Error("down"), { cause: { code: "ECONNREFUSED" } }); }) as typeof fetch,
+      ssh: fakeSsh(), sql: async () => ({ columns: ["?"], rows: [[1]] }) }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());
@@ -51,6 +56,17 @@ describe("bots screen", () => {
     });
   const def = async (name: string) => (await listDefinitions(db, T)).find((d) => d.name === name)!;
 
+  it("a persona template fills the add-bot form; an unknown one leaves it empty", async () => {
+    const page = await (await get("/admin/bots?template=it-support", "Ann")).text();
+    expect(page).toContain('id="add" open');
+    expect(page).toContain('href="/admin/bots?template=finance#add"');
+    expect(page).toMatch(/name="displayName" maxlength="60" value="Iris"[\s\S]*name="name" required value="it-support"[\s\S]*name="label" required value="IT Support"/);
+    expect(page).toMatch(/<textarea name="persona" rows="10">You are Iris, IT support/);
+    const blank = await (await get("/admin/bots?template=nope", "Ann")).text();
+    expect(blank).not.toContain('id="add" open');
+    expect(blank).toContain('<textarea name="persona" rows="10"></textarea>');
+  });
+
   it("an admin creates a bot, adds a server with a header, and never sees the header value", async () => {
     const res = await post("/admin/bots", "Ann", [["name", "helper"], ["label", "Helper"], ["persona", "Be useful."], ["model", "m1"]]);
     expect(res.status).toBe(303);
@@ -59,7 +75,11 @@ describe("bots screen", () => {
     const add = await post(`/admin/bots/${d.id}/servers`, "Ann", [
       ["name", "tickets"], ["transport", "http"], ["url", "https://mcp.example.test/"], ["headerName", "Authorization"], ["headerValue", "Bearer s3cret"], ["readOnlyTools", "list_a, list_b"],
     ]);
-    expect(add.status).toBe(303);
+    // saved even though its tools could not be listed, and the page says so without the header
+    expect(add.status).toBe(400);
+    const why = await add.text();
+    expect(why).toContain("tickets was saved, but its tools could not be listed: Request failed: ECONNREFUSED");
+    expect(why).not.toContain("s3cret");
     const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
     expect(page).toContain("tickets");
     expect(page).toContain("headers set");
@@ -67,6 +87,23 @@ describe("bots screen", () => {
     expect(page).not.toContain("s3cret");
     expect(JSON.stringify((await getDefinition(db, T, d.id))!.mcpServers)).not.toContain("s3cret");
     expect(await (await get("/admin/bots", "Ann")).text()).not.toContain("s3cret");
+  });
+
+  it("an admin adds an sql connection with its password and gives it to a bot; the page never shows the password", async () => {
+    const d = await def("helper");
+    const res = await post("/admin/connections", "Ann", [
+      ["name", "sap"], ["kind", "sql"], ["target", "sql1.example.test"], ["mode", "read-only"], ["engine", "mssql"], ["database", "SBO"], ["username", "reader"], ["secret", "pw-top"], ["definitionId", d.id],
+    ]);
+    expect(res.status).toBe(200); // the test page, straight after saving
+    const tested = await res.text();
+    expect(tested).toContain("Connected\n?\n1");
+    expect(tested).not.toContain("pw-top");
+    const page = await (await get("/admin/connections", "Ann")).text();
+    expect(page).toMatch(/<td>sap<\/td><td>sql<\/td><td>sql1\.example\.test<\/td><td>read-only<\/td><td>active<\/td>/);
+    expect(page).toContain(`/admin/bots/${d.id}?tab=connections`);
+    expect(page).not.toContain("pw-top");
+    expect((await post("/admin/connections", "Ann", [["name", "sap"], ["kind", "sql"], ["target", "x"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"]])).status).toBe(400);
+    expect((await post("/admin/connections", "Hal", [["name", "x"], ["kind", "http"], ["target", "https://x.test/"], ["mode", "read-only"]])).status).toBe(403);
   });
 
   it("saving the main form keeps the stored headers byte-identical", async () => {
@@ -101,7 +138,7 @@ describe("bots screen", () => {
 
     it("has a Microsoft 365 tab and no Email or Connections tab", async () => {
       const page = await (await get(`/admin/bots/${pid}`, "Ann")).text();
-      expect(page).toContain("acts as each person who uses it");
+      expect(page).toContain("Acts as each person who uses it");
       expect(page).toContain(`href="/admin/bots/${pid}?tab=m365"`);
       expect(page).toContain(">Microsoft 365<");
       expect(page).not.toContain("?tab=email");
@@ -141,7 +178,7 @@ describe("bots screen", () => {
 
     it("the overview has no departments or computer, and the save refuses departments and keeps computer off", async () => {
       const page = await (await get(`/admin/bots/${pid}`, "Ann")).text();
-      expect(page).not.toContain("<legend>departments</legend>");
+      expect(page).not.toContain('name="departments"');
       expect(page).not.toContain('name="computer"');
       const fields: [string, string][] = [["label", "My assistant"], ["model", "m"], ["persona", "p"], ["computer", "on"]];
       const refused = await post(`/admin/bots/${pid}`, "Ann", [...fields, ["departments", sales]]);
@@ -162,7 +199,7 @@ describe("bots screen", () => {
     });
 
     it("the list and the overview show it once, with how many people have it on", async () => {
-      for (const path of ["/admin/bots", "/admin"]) {
+      for (const path of ["/admin/bots"]) { // the dashboard groups personal assistants as one line
         const body = await (await get(path, "Ann")).text();
         expect(body.match(/My assistant/g)).toHaveLength(1);
         expect(body).toContain("1 on");
@@ -232,7 +269,7 @@ describe("bots screen", () => {
       expect(all).toMatch(/lnk<\/td>[\s\S]*?Helper/); // the Connections screen names the bot that uses it
       expect((await get(`/admin/connections`, "Hal")).status).toBe(403);
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
-      expect(await listConnectionsFor(db, T, d.id)).toHaveLength(0);
+      expect((await listConnectionsFor(db, T, d.id)).map((x) => x.id)).not.toContain(c);
     });
     it("revoke shows the public key and the connection can no longer run", async () => {
       const c = await conn("rev");
@@ -271,6 +308,40 @@ describe("bots screen", () => {
       expect(await listRoutines(db, T, d.id)).toHaveLength(1); // the first press changes nothing
       await post(`/admin/bots/${d.id}/routines/${r.id}/delete`, "Ann", [["confirm", "yes"]]);
       expect(await listRoutines(db, T, d.id)).toHaveLength(0);
+    });
+    it("the learnings tab lists who taught what and where, and an admin adds, rewords and deletes", async () => {
+      const d = await def("helper");
+      const chatId = "chat-l1";
+      await db.insert(chats).values({ id: chatId, tenantId: T, conversationType: "personal", label: "Sales room" } as typeof chats.$inferInsert);
+      await db.insert(chatAssignments).values({ chatId, definitionId: d.id } as typeof chatAssignments.$inferInsert);
+      const l = await addLearning(db, T, { definitionId: d.id, text: "Call scheduled runs reminders", taughtByPersonId: id.Hal, chatId });
+      const page = await (await get(`/admin/bots/${d.id}?tab=learnings`, "Ann")).text();
+      expect(page).toMatch(/Call scheduled runs reminders<\/textarea>[\s\S]*?Hal<\/td><td>Sales room<\/td><td>everyone/);
+      expect((await post(`/admin/bots/${d.id}/learnings`, "Hal", [["text", "x"]])).status).toBe(403);
+      await post(`/admin/bots/${d.id}/learnings`, "Ann", [["text", "Sign off with Cheers"]]);
+      await post(`/admin/bots/${d.id}/learnings/${l.id}`, "Ann", [["text", "Say reminders"]]);
+      expect((await listLearnings(db, T, d.id)).map((x) => x.text)).toEqual(["Say reminders", "Sign off with Cheers"]);
+      const other = await def("other");
+      expect((await post(`/admin/bots/${other.id}/learnings/${l.id}`, "Ann", [["text", "hijack"]])).status).toBe(400); // another bot's id
+      expect(await (await post(`/admin/bots/${d.id}/learnings/${l.id}/delete`, "Ann", [])).text()).toContain("confirm delete?");
+      expect(await listLearnings(db, T, d.id)).toHaveLength(2);
+      await post(`/admin/bots/${d.id}/learnings/${l.id}/delete`, "Ann", [["confirm", "yes"]]);
+      expect((await listLearnings(db, T, d.id)).map((x) => x.text)).toEqual(["Sign off with Cheers"]);
+    });
+    it("lists what is waiting or repeating, and folds one-offs that already ran away", async () => {
+      const d = await def("helper");
+      const chatId = "chat-r2";
+      await db.insert(chats).values({ id: chatId, tenantId: T, conversationType: "personal", label: "Mine" } as typeof chats.$inferInsert);
+      await db.insert(chatAssignments).values({ chatId, definitionId: d.id } as typeof chatAssignments.$inferInsert);
+      const soon = new Date(Date.now() + 3600_000);
+      await createRoutine(db, T, { definitionId: d.id, chatId, prompt: "Waiting reminder", runAt: soon, createdByPersonId: id.Ann });
+      const done = await createRoutine(db, T, { definitionId: d.id, chatId, prompt: "Finished flight search", runAt: soon, createdByPersonId: id.Ann, background: true });
+      await db.update(routines).set({ lastRunAt: new Date(), enabled: false }).where(eq(routines.id, done.id));
+      const page = await (await get(`/admin/bots/${d.id}?tab=routines`, "Ann")).text();
+      const [live, folded] = page.split("already ran (1)");
+      expect(live).toContain("Waiting reminder");
+      expect(live).not.toContain("Finished flight search");
+      expect(folded).toMatch(/Finished flight search<\/td><td>background job/);
     });
     it("a foreign-tenant or unknown connection id gives 400 and changes nothing", async () => {
       await upsertTenant(db, { id: "other" });
@@ -585,7 +656,7 @@ describe("bot page tabs and arming", () => {
   const get = (path: string) => fetch(url + path, { redirect: "manual", headers: { cookie: cookie() } }).then((r) => r.text());
 
   it("each tab shows its own section and not the others", async () => {
-    const section: Record<string, string> = { persona: "Persona text.", email: "remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines</h2>" };
+    const section: Record<string, string> = { persona: "Persona text.", email: "remove email address", actions: "<h2>Actions</h2>", connections: "<h2>MCP servers</h2>", routines: "<h2>Routines and reminders</h2>", learnings: "<h2>Learnings</h2>" };
     for (const [tab, mark] of Object.entries(section)) {
       const page = await get(`/admin/bots/${botId}?tab=${tab}`);
       expect(page).toContain(mark);
@@ -625,5 +696,55 @@ describe("bot page tabs and arming", () => {
     expect(second.status).toBe(303);
     expect(second.headers.get("location")).toBe(`/admin/bots/${botId}?tab=email`);
     expect((await db.select().from(mailboxes).where(eq(mailboxes.definitionId, botId)))[0].status).toBe("removed");
+  });
+});
+
+describe("adding an MCP server", () => {
+  it("a pasted claude mcp add command adds the server, lists its tools, frees the read-only ones, and one switch sets a whole group", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: T });
+    const ann = (await upsertPerson(db, { tenantId: T, aadObjectId: "aad-Ann", name: "Ann" })).id;
+    await setRole(db, T, ann, "admin");
+    const botId = (await upsertDefinition(db, secretsKey, T, { name: "finance", label: "Finance", persona: "p" })).id;
+    const seen: Headers[] = [];
+    let up = true;
+    const fetchFn = (async (_u: string | URL | Request, init?: RequestInit) => {
+      if (!up) throw Object.assign(new Error("down"), { cause: { code: "ECONNREFUSED" } });
+      seen.push(new Headers(init?.headers));
+      const msg = JSON.parse(String(init?.body)) as { id?: number; method: string };
+      if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = msg.method === "initialize" ? { protocolVersion: "2025-06-18" }
+        : { tools: [{ name: "list-invoices", annotations: { readOnlyHint: true } }, { name: "create-invoice" }, { name: "list-contacts" }] };
+      return Response.json({ jsonrpc: "2.0", id: msg.id, result });
+    }) as typeof fetch;
+    const app = express();
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [], fetchFn }));
+    const { url, close } = await serve(app);
+    const post = (path: string, body: [string, string][]) => fetch(url + path, {
+      method: "POST", redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, ann) },
+      body: new URLSearchParams([["csrf", "csrf-1"], ...body]).toString(),
+    });
+    try {
+      const res = await post(`/admin/bots/${botId}/servers`, [["commandLine", `claude mcp add --transport http xero https://xero.example.test/abc --header "Authorization: Bearer tok-1"`]]);
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe(`/admin/bots/${botId}?tab=actions`);
+      const def = (await getDefinition(db, T, botId))!;
+      expect(def.mcpServers).toEqual([expect.objectContaining({ name: "xero", transport: "http", url: "https://xero.example.test/abc", headersCipher: expect.any(String) })]);
+      expect(JSON.stringify(def.mcpServers)).not.toContain("tok-1");
+      expect(seen[0]!.get("authorization")).toBe("Bearer tok-1");
+      expect(Object.fromEntries(await toolRulesFor(db, botId))).toEqual({ "mcp__xero__list-invoices": "free" });
+      const page = await (await fetch(`${url}/admin/bots/${botId}?tab=actions`, { headers: { cookie: sessionCookie(secretsKey, T, ann) } })).text();
+      expect(page).toContain("create-invoice");
+      expect(page).toContain('name="all:xero"');
+      expect((await post(`/admin/bots/${botId}/actions`, [["all:xero", "free"], ["rule:mcp__xero__create-invoice", "confirm"]])).status).toBe(303);
+      expect(Object.fromEntries(await toolRulesFor(db, botId))).toEqual({ "mcp__xero__list-invoices": "free", "mcp__xero__create-invoice": "free", "mcp__xero__list-contacts": "free" });
+      up = false;
+      const failed = await (await post(`/admin/bots/${botId}/servers/xero/tools`, [])).text();
+      expect(failed).toContain("xero&#39;s tools could not be listed");
+      expect(failed).not.toContain("tok-1");
+    } finally {
+      await close();
+    }
   });
 });

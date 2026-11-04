@@ -16,6 +16,19 @@ export const toolWords = (toolName: string): string => {
   return m ? m[1]!.replace(/_/g, " ") : toolName;
 };
 
+const HOUSE_SERVERS = new Set(["m365", "mail", "knowledge", "routine", "learnings", "computer", "browser", "connections"]);
+/** For an admin: the tool with where it ran: "ssh read pve1" on a connection, "Xero list invoices", "sap: list" for a connection's MCP tool. */
+export const toolLabel = (toolName: string, input?: unknown): string => {
+  const m = /^mcp__(.+?)__(.+)$/.exec(toolName);
+  if (!m) return toolName;
+  const server = m[1]!;
+  const words = m[2]!.replace(/[_-]+/g, " ");
+  const name = (input as { name?: unknown } | undefined)?.name;
+  if (server === "connections" && /^(ssh|sql|http)_(read|change)$/.test(m[2]!) && typeof name === "string") return `${words} ${name}`;
+  if (server.startsWith("conn-")) return `${server.slice(5)}: ${words}`;
+  return HOUSE_SERVERS.has(server) ? words : `${server} ${words}`;
+};
+
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const keyWords = (key: string) => capital(key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase());
 

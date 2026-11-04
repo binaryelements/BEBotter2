@@ -64,7 +64,9 @@ describe("activity screen", () => {
     const t = await (await get("/admin/activity", "Ann")).text();
     expect(t).toContain("Eve");
     expect(t).toContain("Alpha");
-    expect(t).toContain("mcp__x__y");
+    expect(t).toContain("<td>x y</td>"); // the tool as words, with its server
+    expect(t).toContain('<option value="">any bot</option>');
+    expect(t).toContain('<option value="chat-2" >chat-2</option>');
     expect(t).toContain("message");
     expect(t).toContain("confirmed by Hal");
     expect(t).not.toContain(">older<");
@@ -77,14 +79,14 @@ describe("activity screen", () => {
     await completeAction(db, a, { status: "done", timings: { receivedAt: iso(0), engineReadyAt: iso(3), firstOutputAt: iso(16), firstToolAt: iso(17), resultAt: iso(22), sentAt: iso(23), tools: 2 } });
     const t = await (await get("/admin/activity", "Ann")).text();
     expect(t).toContain('aria-label="total 23.0 s: engine ready 3.0 s, model and tools 19.0 s, delivery 1.0 s"');
-    expect(t).toContain("<li class=\"t2\">model and tools 19.0 s</li>");
+    expect(t).toContain('<span class="be-muted" title="total 23.0 s: engine ready 3.0 s, model and tools 19.0 s, delivery 1.0 s">23.0 s</span>'); // the breakdown on hover, the total in the row
     for (const w of ["13.0", "82.6", "4.3"]) expect(t).toContain(`style="width:${w}%"`); // 3 + 19 + 1 of 23 s
   });
 
   it("filters combine", async () => {
     const t = await (await get(`/admin/activity?person=${id.Eve}&status=failed&chat=chat-2&bot=${bot}`, "Ann")).text();
-    expect(t).toContain("Eve");
-    expect(t).not.toContain("Sam");
+    expect(t).toContain("<td>Eve</td>");
+    expect(t).not.toContain("<td>Sam</td>"); // Sam stays in the person dropdown, not the rows
     const none = await (await get(`/admin/activity?person=${id.Eve}&status=done`, "Ann")).text();
     expect(none).not.toContain("Eve</td>");
     const arr = await get(`/admin/activity?status=done&status=failed`, "Ann");
@@ -94,7 +96,7 @@ describe("activity screen", () => {
   it("a head sees only their departments, in the page and the csv, and gets 403 for outsiders", async () => {
     const t = await (await get("/admin/activity", "Hal")).text();
     expect(t).toContain("Sam");
-    expect(t).not.toContain("Eve");
+    expect(t).not.toContain("<td>Eve</td>");
     const csv = await (await get("/admin/activity.csv", "Hal")).text();
     expect(csv).toContain("Sam");
     expect(csv).not.toContain("Eve");
@@ -125,7 +127,7 @@ describe("activity screen", () => {
     expect(r.headers.get("content-disposition")).toBe('attachment; filename="activity.csv"');
     expect(r.headers.get("cache-control")).toBe("no-store");
     const csv = await r.text();
-    expect(csv.startsWith("time,person,bot,tool,status,summary,confirmed_by\r\n")).toBe(true);
+    expect(csv.startsWith("time,person,bot,chat,tool,status,summary,confirmed_by\r\n")).toBe(true);
     expect(csv).toContain('"\'=SUM(1,2)","Hal"');
     expect(csv).toContain('"said ""hi"", there\nline two"');
     for (const s of ["-1", "+1", "@x", "\tx"]) expect(csv).toContain(`"'${s}"`);

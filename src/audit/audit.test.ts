@@ -60,6 +60,9 @@ describe("audit", () => {
 
   it("summarises bash commands, other MCP tools and plain tools", () => {
     expect(summarise("mcp__computer__bash", { command: "ls -la" })).toBe("ls -la");
+    expect(summarise("mcp__connections__ssh_read", { name: "pve1", command: "uptime" })).toBe("pve1: uptime");
+    expect(summarise("mcp__connections__sql_read", { name: "sap", query: "select 1" })).toBe("sap: select 1");
+    expect(summarise("mcp__connections__http_change", { name: "api", method: "POST", path: "/orders", body: "{}" })).toBe("api: POST /orders");
     expect(summarise("mcp__computer__bash", { command: "x".repeat(300) })).toHaveLength(200);
     expect(summarise("mcp__tickets__close_ticket", { id: 7 })).toBe('close_ticket {"id":7}');
     expect(summarise("mcp__computer__bash", "not an object")).toBe("mcp__computer__bash");
@@ -100,7 +103,7 @@ describe("startAuditPruning", () => {
   it("prunes every tenant by its retention at once and on each tick, and logs", async () => {
     const db = await testDb();
     const ids = await setup(db);
-    await setTenantSettings(db, "t1", { botName: null, retentionDays: 1, defaultModel: null, timezone: "UTC" });
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 1, defaultModel: null, timezone: "UTC", location: null, country: null });
     const old = async () => {
       const id = await beginAction(db, { tenantId: "t1", ...ids, kind: "message", summary: "x" });
       await completeAction(db, id, { status: "done" });
@@ -109,9 +112,9 @@ describe("startAuditPruning", () => {
     await old();
     const log = vi.fn();
     const stop = startAuditPruning(db, 200, log);
-    await vi.waitFor(() => expect(log).toHaveBeenCalledWith("audit prune: t1=1"));
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith("audit prune: t1=1+0"));
     await old();
-    await vi.waitFor(() => expect(log.mock.calls.filter(([l]) => l === "audit prune: t1=1")).toHaveLength(2), { timeout: 5000 });
+    await vi.waitFor(() => expect(log.mock.calls.filter(([l]) => l === "audit prune: t1=1+0")).toHaveLength(2), { timeout: 5000 });
     stop();
     expect(await listActions(db, { tenantId: "t1" })).toEqual([]);
   });

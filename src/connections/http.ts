@@ -126,12 +126,21 @@ export const callHttp = async (...args: Parameters<typeof sendHttp>): Promise<st
 
 type JsonRpc = { id?: number; result?: Record<string, unknown>; error?: { message?: string } };
 
+/** headers: every header a server added on the admin site sends; its first value is the one masked in errors. */
+type McpConn = { target: string; headerName?: string; secret?: string; headers?: Record<string, string> };
+
 /** Connects to an MCP server over Streamable HTTP and returns its tool names. */
-export async function listMcpTools(fetchFn: typeof fetch, conn: { target: string; headerName?: string; secret?: string }, timeoutMs = 30_000): Promise<string[]> {
-  const scrub = masker(conn.secret);
+export const listMcpTools = async (fetchFn: typeof fetch, conn: McpConn, timeoutMs?: number): Promise<string[]> =>
+  (await listMcpToolInfo(fetchFn, conn, timeoutMs)).map((t) => t.name);
+
+/** Its tools, each with whether the server marks it read-only (the MCP `readOnlyHint` annotation). */
+export async function listMcpToolInfo(fetchFn: typeof fetch, conn: McpConn, timeoutMs = 30_000): Promise<{ name: string; readOnly: boolean }[]> {
+  // shortcut: only one secret is masked; a server with several secret headers could echo the others in an error
+  const scrub = masker(conn.secret ?? Object.values(conn.headers ?? {})[0]);
   const url = new URL(conn.target);
   const headers = new Headers({ Accept: "application/json, text/event-stream", "Content-Type": "application/json" });
   if (conn.headerName && conn.secret) headers.set(conn.headerName, conn.secret);
+  for (const [k, v] of Object.entries(conn.headers ?? {})) headers.set(k, v);
   let nextId = 1;
   const post = async (method: string, params?: unknown, notify = false): Promise<Record<string, unknown>> => {
     const id = nextId++;
@@ -159,13 +168,14 @@ export async function listMcpTools(fetchFn: typeof fetch, conn: { target: string
   const init = await post("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "be-botter", version: "2" } });
   if (typeof init.protocolVersion === "string") headers.set("MCP-Protocol-Version", init.protocolVersion);
   await post("notifications/initialized", undefined, true);
-  const names: string[] = [];
+  const tools: { name: string; readOnly: boolean }[] = [];
   let cursor: unknown;
   for (let page = 0; page < 20; page++) {
     const r = await post("tools/list", cursor ? { cursor } : undefined);
-    for (const t of Array.isArray(r.tools) ? (r.tools as { name?: unknown }[]) : []) if (typeof t?.name === "string") names.push(scrub(t.name));
+    for (const t of Array.isArray(r.tools) ? (r.tools as { name?: unknown; annotations?: { readOnlyHint?: unknown } }[]) : [])
+      if (typeof t?.name === "string") tools.push({ name: scrub(t.name), readOnly: t.annotations?.readOnlyHint === true });
     cursor = r.nextCursor;
     if (typeof cursor !== "string") break;
   }
-  return names;
+  return tools;
 }

@@ -58,4 +58,37 @@ main form.inline-edit { display: flex; gap: var(--space-6); align-items: center;
 .fields label { display: flex; flex-direction: column; gap: var(--space-4); font: 500 12px var(--font-sans); color: var(--lbl); }
 .fields .hint { font: 11px var(--font-mono); color: var(--muted); }
 details.add { margin: var(--space-12) 0; }
+/* Forms sit in a readable column; a danger button is quiet until pointed at; a form that saves itself hides its button. */
+main form.be-form { max-width: 720px; }
+main form.be-form .be-label { margin: var(--space-12) 0 var(--space-4); }
+main .be-btn.danger, main button.danger { border-color: transparent; background: transparent; color: var(--muted); box-shadow: none; }
+main .be-btn.danger:hover, main .be-btn.danger:focus-visible, main button.danger:hover { color: var(--bad); border-color: var(--bad-edge); background: var(--bad-bg); }
+.js form[data-autosave] .auto { display: none; }
+.be-saved { position: fixed; right: var(--space-16); bottom: var(--space-16); padding: 6px 12px; border: 1px solid var(--sel-edge); border-radius: var(--radius-md); background: var(--sel-bg); color: var(--cyan); font: 500 12px var(--font-mono); box-shadow: var(--shadow-pop); animation: be-fade 4s forwards; }
+@keyframes be-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; visibility: hidden; } }
+/* Phones: each table row becomes a card, every cell led by its column name (set by the shell script). */
+@media (max-width: 720px) {
+  .js table.be-table thead { display: none; }
+  .js table.be-table, .js table.be-table tbody { display: block; }
+  .js table.be-table tbody tr { display: block; border: 1px solid var(--line2); border-radius: var(--radius-md); background: var(--panel); padding: var(--space-8) var(--space-12); margin-bottom: var(--space-8); }
+  .js table.be-table tbody td { display: flex; gap: var(--space-8); align-items: baseline; border: 0; padding: 3px 0; }
+  .js table.be-table tbody td:empty { display: none; }
+  .js table.be-table tbody td[data-l]::before { content: attr(data-l); flex: 0 0 88px; font: 600 11px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .js table.be-table tr:hover td { background: transparent; }
+}
+/* Dashboard: two columns that stack on a phone; a bar chart from divs; the period switch as links. */
+.dash-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 var(--space-28); }
+.be-bars { display: flex; align-items: flex-end; gap: var(--space-6); height: 120px; border-bottom: 1px solid var(--line2); }
+.be-bars .bar { flex: 1; min-height: 2px; background: var(--sel-edge); border-radius: var(--radius-xs) var(--radius-xs) 0 0; }
+.be-bars .bar.today { background: var(--cyan); }
+.be-bars-key { display: flex; justify-content: space-between; font: 11px var(--font-mono); color: var(--muted); margin-top: var(--space-4); }
+.be-bars-key span { flex: 1; text-align: center; }
+.be-table.lean td { border-bottom: 1px solid var(--hover); white-space: nowrap; }
+.be-table.lean td.w { width: 100%; }
+.be-table.lean td.n { font: 12px var(--font-mono); color: var(--lbl); }
+.be-seg a { padding: 5px 11px; font: 500 12px var(--font-mono); color: var(--muted); text-decoration: none; }
+.be-seg a.on { color: var(--cyan); background: var(--sel-bg); }
+/* Sign-in: one card in the middle of the page. */
+.be-card.signin { max-width: 420px; margin: 10vh auto 0; }
+.be-card.signin h1 { margin-top: 0; }
 details.add > summary { cursor: pointer; font: 500 12.5px var(--font-mono); color: var(--cyan); }

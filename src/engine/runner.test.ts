@@ -15,16 +15,17 @@ import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, connections, mailboxes, sessions } from "../db/schema.js";
+import { botDefinitions, chats, connections, mailboxes, sessions } from "../db/schema.js";
+import { addLearning } from "../learnings/store.js";
 import { requestConnection, revokeConnection } from "../connections/store.js";
 import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
 import { testDb } from "../db/test-db.js";
-import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { Confirmations } from "./confirm.js";
 import { LiveSessions } from "./live.js";
 import { listRoutines } from "../routines/store.js";
-import { prewarm, prewarmRecent, runTurn } from "./runner.js";
+import { prewarm, prewarmRecent, runTurn, withDefaults } from "./runner.js";
 import { knownTools, setToolRule } from "./tool-rules.js";
 import type { ConfirmationRequest } from "./runner.js";
 
@@ -39,8 +40,10 @@ function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown>; 
   const seen: Options[] = [];
   const decisions: (string | undefined)[] = [];
   const messages: (string | undefined)[] = [];
+  const prompts: string[] = [];
   const fn = (({ prompt, options }: { prompt: string | AsyncIterable<unknown>; options: Options }) => {
     seen.push(options);
+    if (typeof prompt === "string") prompts.push(prompt);
     const gen = (async function* () {
       for await (const _ of typeof prompt === "string" ? [prompt] : prompt) {
         const signal = new AbortController().signal;
@@ -64,7 +67,7 @@ function fakeQuery(opts: { failTool?: string; result?: Record<string, unknown>; 
     })();
     return Object.assign(gen, { close: () => {} });
   }) as unknown as typeof query;
-  return { fn, seen, decisions, messages };
+  return { fn, seen, decisions, messages, prompts };
 }
 
 async function setup(db: Db, def: Partial<BotDefinitionInput> = {}) {
@@ -179,6 +182,17 @@ describe("runTurn", () => {
     expect(seen[0]!.includePartialMessages).toBe(true);
   });
 
+  it("a computer that cannot start leaves the bot without one and says so, and the reply still runs", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db, { computer: true });
+    const q = fakeQuery({ calls: [] });
+    const noDocker = new Proxy({}, { get: () => async () => { throw Object.assign(new Error("connect ENOENT /var/run/docker.sock"), { code: "ENOENT" }); } });
+    const result = await runTurn({ ...deps(db, q.fn), docker: noDocker as never }, { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+    expect(result.text).toBe("Done.");
+    expect(Object.keys(q.seen[0]!.mcpServers!)).not.toContain("computer");
+    expect(q.seen[0]!.systemPrompt).toContain("Your computer is switched on but could not start right now");
+  });
+
   it("allows the read tool, confirms the write tool with the asker and audits both", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db, { computer: true });
@@ -196,7 +210,7 @@ describe("runTurn", () => {
     expect(result).toMatchObject({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toEqual({ actionId: expect.any(String), label: "Ops", toolName: "mcp__tickets__close_ticket", input: { id: 7 } });
-    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "routine", "tickets"]);
+    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "learnings", "routine", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
     expect(q.seen[0]!.cwd).toBe(filesDir);
 
@@ -249,6 +263,52 @@ describe("runTurn", () => {
     });
     expect(q.seen[0]!.resume).toBeUndefined();
     expect((await db.select().from(sessions))[0]!.sdkSessionId).toBe("chat-session");
+  });
+
+  it("a background job uses its own session with more steps; a chat turn keeps the chat's", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await db.insert(sessions).values({ chatId: "c1", definitionId: definition.id, sdkSessionId: "chat-session", updatedAt: new Date() });
+    const q = fakeQuery({ calls: [], result: { session_id: "job-session" } });
+    await runTurn(deps(db, q.fn), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "compare fares", askConfirmation: async () => {},
+      routine: { id: "r1", grantPersonId: null, post: async () => {}, background: true },
+    });
+    expect(q.seen[0]).toMatchObject({ maxTurns: 100 });
+    expect(q.seen[0]!.resume).toBeUndefined();
+    expect((await db.select().from(sessions))[0]!.sdkSessionId).toBe("chat-session");
+  });
+
+  it("web search brings the browser, as desktop Chrome on Linux; without it there is none", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, webSearch: true }, person, text: "x", askConfirmation: async () => {} });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, webSearch: false }, person, text: "x", askConfirmation: async () => {} });
+    expect(q.seen[0]!.mcpServers!.browser).toMatchObject({ type: "stdio", args: expect.arrayContaining(["--headless", "--isolated", expect.stringMatching(/X11; Linux x86_64.*Chrome\/\d+/)]) });
+    expect(q.seen[0]!.tools).toEqual(["WebSearch", "WebFetch"]);
+    expect(q.seen.at(-1)!.mcpServers).not.toHaveProperty("browser");
+    expect(q.seen[0]!.disallowedTools).toContain("mcp__browser__browser_run_code_unsafe"); // runs on the server, not in the page
+  });
+
+  it("what the bot was taught is in its instructions from the next turn; on Personal only the chat owner's own and the shared ones", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const bob = await upsertPerson(db, { tenantId: "t1", aadObjectId: "b1", name: "Bob" });
+    const q = fakeQuery({ calls: [] });
+    const turn = (def = definition) => runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: def, person, text: "x", askConfirmation: async () => {} });
+    await turn();
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain("taught you");
+    await addLearning(db, "t1", { definitionId: definition.id, text: "Call scheduled runs reminders", taughtByPersonId: person.id, chatId: "c1" });
+    await addLearning(db, "t1", { definitionId: definition.id, text: "Bob's wife is Jo", taughtByPersonId: bob.id, ownerPersonId: bob.id });
+    await turn();
+    expect(String(q.seen.at(-1)!.systemPrompt)).toContain("- Call scheduled runs reminders");
+    expect(String(q.seen.at(-1)!.systemPrompt)).not.toContain("Jo");
+    expect(q.seen.at(-1)!.mcpServers).toHaveProperty("learnings");
+    const personal = { ...definition, identity: "person" as const, mcpServers: [] };
+    await db.update(chats).set({ ownerPersonId: bob.id }).where(eq(chats.id, "c1"));
+    await turn(personal);
+    expect(String(q.seen.at(-1)!.systemPrompt)).toMatch(/- Call scheduled runs reminders\n- Bob's wife is Jo/);
   });
 
   it("a saved server named like a built-in neither loads nor shadows it", async () => {
@@ -712,6 +772,26 @@ describe("runTurn", () => {
     expect(String(q.seen[1]!.systemPrompt)).toContain("an admin can add one on the admin page");
   });
 
+  it("every message starts with the time now in the company's time zone and its default place, and the prompt says what that line is", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 90, defaultModel: null, timezone: "Australia/Melbourne", location: "Melbourne", country: "Australia" });
+    const q = fakeQuery({ calls: [] });
+    await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "when is lunch?", askConfirmation: async () => {}, receivedAt: new Date("2026-11-02T13:30:00Z") });
+    expect(q.prompts[0]).toBe("[defaults: now Tuesday, 3 November 2026 at 12:30 am (Australia/Melbourne); location Melbourne, Australia]\n\nwhen is lunch?");
+    expect(String(q.seen[0]!.systemPrompt)).toContain("Use them unless the person says otherwise in this chat");
+  });
+
+  it("the defaults line leaves out a place that is not set", () => {
+    expect(withDefaults("hi", { timezone: "UTC", location: null, country: "Australia" }, new Date("2026-11-02T13:30:00Z"))).toBe("[defaults: now Monday, 2 November 2026 at 1:30 pm (UTC); location Australia]\n\nhi");
+    expect(withDefaults("hi", { timezone: "UTC", location: null, country: null }, new Date("2026-11-02T13:30:00Z"))).toBe("[defaults: now Monday, 2 November 2026 at 1:30 pm (UTC)]\n\nhi");
+    // the person's own zone and place win over the company's
+    expect(withDefaults("hi", { timezone: "UTC", location: "Sydney", country: "Australia" }, new Date("2026-11-02T13:30:00Z"), { timezone: "Australia/Melbourne", location: "Melbourne, Australia" }))
+      .toBe("[defaults: now Tuesday, 3 November 2026 at 12:30 am (Australia/Melbourne); location Melbourne, Australia]\n\nhi");
+    expect(withDefaults("hi", { timezone: "UTC", location: "Sydney", country: "Australia" }, new Date("2026-11-02T13:30:00Z"), { timezone: null, location: null }))
+      .toBe("[defaults: now Monday, 2 November 2026 at 1:30 pm (UTC); location Sydney, Australia]\n\nhi");
+  });
+
   it("the prompt names the actions an admin set to run freely or to need a card", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
@@ -793,7 +873,7 @@ describe("runTurn", () => {
     await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition: { ...definition, identity: "person", graph: [] }, person, text: "x", askConfirmation: async () => {} });
     expect(q.seen[0]!.mcpServers).not.toHaveProperty("m365");
     const tools = (q.seen[1]!.mcpServers!.m365 as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools;
-    expect(Object.keys(tools).sort()).toEqual(["list_chats", "list_mail", "read_chat", "read_mail", "search_mail"]);
+    expect(Object.keys(tools).sort()).toEqual(["list_chats", "list_mail", "read_attachment", "read_chat", "read_mail", "search_mail"]);
     expect(q.seen[2]!.mcpServers).not.toHaveProperty("m365");
   });
 
@@ -806,18 +886,18 @@ describe("runTurn", () => {
     expect(Object.keys((q.seen[0]!.mcpServers!.knowledge as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance._registeredTools).sort()).toEqual(["list", "read", "search"]);
   });
 
-  it("a Graph write always asks, even when an admin set it free, and its audit row keeps recipients and subject but never the body", async () => {
+  it("a Graph write asks by default, runs freely when an admin set it free, and its audit row keeps recipients and subject but never the body", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
     const personal = { ...definition, identity: "person" as const, graph: ["mail.send" as const] };
-    await setToolRule(db, definition.id, "mcp__m365__send_mail", "free"); // stored by hand: the page locks it
+    await setToolRule(db, definition.id, "mcp__m365__send_mail", "free");
     const input = { to: ["bea@example.test"], subject: "Quarterly figures", body: "the secret body text" };
     const q = fakeQuery({ calls: [["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]] });
     const asked: ConfirmationRequest[] = [];
     // every card expires at once, so the test never waits for a click
     await runTurn(deps(db, q.fn, new Confirmations((fn) => (fn(), 0))), { tenantId: "t1", chatId: "c1", definition: personal, person, text: "x", askConfirmation: async (r) => void asked.push(r) });
-    expect(asked.map((r) => [r.toolName, r.input])).toEqual([["mcp__m365__send_mail", input], ["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]]);
-    expect(q.decisions).toEqual(["deny", "deny"]);
+    expect(asked.map((r) => [r.toolName, r.input])).toEqual([["mcp__m365__reply_mail", { id: "m1", body: "another secret body" }]]);
+    expect(q.decisions).toEqual(["allow", "deny"]);
     const rows = (await listActions(db, { tenantId: "t1" })).filter((r) => r.kind === "tool");
     expect(rows).toHaveLength(2);
     expect(JSON.stringify(rows)).not.toContain("secret body");
@@ -950,7 +1030,7 @@ describe("runTurn", () => {
         Object.assign(
           (async function* () {
             for await (const m of prompt) {
-              yield { type: "assistant", message: { content: [{ type: "text", text: `working on ${m.message.content}` }] } };
+              yield { type: "assistant", message: { content: [{ type: "text", text: `working on ${String(m.message.content).replace(/^\[defaults:[^\]]*\]\n\n/, "")}` }] } };
               yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, is_error: false };
             }
           })(),

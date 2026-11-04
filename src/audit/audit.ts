@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
+import { pruneOverheard } from "../teams/overheard.js";
 import { auditEvents, tenants } from "../db/schema.js";
 import type { Authority, AuditEvent, TurnTimings } from "../db/schema.js";
 
@@ -92,7 +93,7 @@ export function startAuditPruning(db: Db, intervalMs: number, log: (line: string
   const run = async () => {
     try {
       const counts = [];
-      for (const t of await db.select({ id: tenants.id, days: tenants.retentionDays }).from(tenants)) counts.push(`${t.id}=${await pruneAudit(db, t.id, t.days)}`);
+      for (const t of await db.select({ id: tenants.id, days: tenants.retentionDays }).from(tenants)) counts.push(`${t.id}=${await pruneAudit(db, t.id, t.days)}+${await pruneOverheard(db, t.id, t.days)}`);
       log(`audit prune: ${counts.join(" ")}`);
     } catch (err) {
       console.error("audit prune failed", err);
@@ -118,6 +119,12 @@ export function summarise(toolName: string, rawInput: unknown): string {
   const input = toolInput as Record<string, unknown> | null;
   if (toolName === "mcp__computer__bash") {
     return typeof input?.command === "string" ? input.command.slice(0, 200) : toolName;
+  }
+  // a connection call reads as "<connection>: <what was run>"
+  const conn = /^mcp__connections__(ssh|sql|http)_(read|change)$/.exec(toolName);
+  if (conn && typeof input?.name === "string") {
+    const what = conn[1] === "http" ? `${String(input.method ?? "GET")} ${String(input.path ?? "")}` : String(input.command ?? input.query ?? "");
+    return `${input.name}: ${what}`.slice(0, 200);
   }
   if (toolName.startsWith("mcp__")) {
     const tool = toolName.slice(toolName.lastIndexOf("__") + 2);

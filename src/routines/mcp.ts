@@ -3,7 +3,7 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
-import { createRoutine, listRoutines } from "./store.js";
+import { createRoutine, deleteRoutine, listRoutines } from "./store.js";
 
 type Ctx = { tenantId: string; definitionId: string; chatId: string; personId: string; post?: (text: string) => Promise<void> };
 
@@ -14,9 +14,12 @@ const fail = (e: unknown) => {
 };
 const OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 const MAX_PENDING = 50;
+const MAX_BACKGROUND = 3;
 const MAX_AHEAD_MS = 366 * 24 * 3600_000;
 
 export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfigWithInstance {
+  const pendingHere = async () =>
+    (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled && r.schedule === null);
   const tools = [
     tool(
       "remind",
@@ -36,6 +39,46 @@ export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfig
         }
       },
     ),
+    tool("reminders", "List the reminders and background jobs still waiting in this chat, with their ids.", {}, async () => {
+      try {
+        const waiting = await pendingHere();
+        if (!waiting.length) return ok("Nothing is waiting in this chat");
+        return ok(waiting.map((r) => `${r.id} | ${r.runAt?.toISOString() ?? ""} | ${r.background ? "background job" : "reminder"} | ${r.prompt.slice(0, 200)}`).join("\n"));
+      } catch (e) {
+        return fail(e);
+      }
+    }),
+    tool("cancel_reminder", "Cancel a reminder or background job in this chat, by the id `reminders` lists. Recurring routines are an admin's to change on the admin site.", { id: z.string() }, async ({ id }) => {
+      try {
+        // only a one-off waiting in this chat: another chat's reminders, and an admin's recurring routines, are not this chat's to cancel
+        if (!(await pendingHere()).some((r) => r.id === id)) throw new DirectoryError("No such reminder waiting in this chat");
+        await deleteRoutine(deps.db, ctx.tenantId, id);
+        return ok("Cancelled");
+      } catch (e) {
+        return fail(e);
+      }
+    }),
+    // offered in a chat only: a job starting jobs could fan out without anyone watching
+    ...(ctx.post
+      ? []
+      : [
+          tool(
+            "background",
+            "Start a job now that runs on its own while this chat carries on, and posts its results here when it is done. Decide before you start working: anything likely to take more than a minute (comparing several websites, finding the cheapest, research across many pages) goes here straight away instead of into your reply. The job does not see this chat, so `task` must say everything it needs: dates, places, what to compare, how to report, and every preference the person has given in this chat. Then tell the person it will take a few minutes, that you have started it, and that the results will be posted here.",
+            { task: z.string() },
+            async ({ task }) => {
+              try {
+                const waiting = (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled && r.background);
+                if (waiting.length >= MAX_BACKGROUND) throw new DirectoryError(`This chat already has ${MAX_BACKGROUND} background jobs waiting`);
+                // a second ahead: a run time must be in the future; the scheduler picks it up on its next tick
+                await createRoutine(deps.db, ctx.tenantId, { definitionId: ctx.definitionId, chatId: ctx.chatId, prompt: task, runAt: new Date(Date.now() + 1000), background: true, createdByPersonId: ctx.personId });
+                return ok("Started; its results will be posted in this chat");
+              } catch (e) {
+                return fail(e);
+              }
+            },
+          ),
+        ]),
     ...(ctx.post
       ? [
           tool("post", "Post a message to the chat for this routine run.", { text: z.string() }, async ({ text }) => {

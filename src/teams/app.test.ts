@@ -7,7 +7,7 @@ import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { setPersonalBot } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { createTeamsApp, teamsStream } from "./app.js";
+import { createTeamsApp, retryNetwork, teamsStream } from "./app.js";
 
 /** A Teams turn whose adapter records what it sends; failFinal makes the stream's final message fail to send. */
 function teamsTurn(failFinal: boolean) {
@@ -57,6 +57,20 @@ describe("teamsStream", () => {
     const stream = teamsStream(ctx);
     stream.chunk("Let me check.");
     await expect(stream.end("The answer.")).rejects.toThrow("final message not sent");
+    vi.mocked(console.error).mockRestore();
+  });
+});
+
+describe("retryNetwork", () => {
+  it("sends again once after a dropped connection, but not after an HTTP error", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const reset = Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+    const flaky = vi.fn().mockRejectedValueOnce(reset).mockResolvedValueOnce("id1");
+    await expect(retryNetwork(flaky, 0)).resolves.toBe("id1");
+    expect(flaky).toHaveBeenCalledTimes(2);
+    const refused = vi.fn().mockRejectedValue(new Error("403"));
+    await expect(retryNetwork(refused, 0)).rejects.toThrow("403");
+    expect(refused).toHaveBeenCalledTimes(1);
     vi.mocked(console.error).mockRestore();
   });
 });
