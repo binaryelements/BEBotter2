@@ -5,6 +5,7 @@ import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKMessage, SD
 import { confirmerPolicy } from "../admin/access.js";
 import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { definitionsForChat, mcpServerConfigs } from "../bots/definitions.js";
+import { tellMcpServer } from "../bots/tell.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
@@ -51,6 +52,8 @@ export type RunnerDeps = {
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
   /** Warm engine processes per chat and bot; without it every turn starts its own. */
   live?: LiveSessions;
+  /** The owner's Graph token for a one-to-one chat, outside their own turn: a bot telling their assistant needs it. */
+  personToken?: (chatId: string) => Promise<string | undefined>;
 };
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
 export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
@@ -70,7 +73,18 @@ const NOT_DONE = {
 };
 
 /** What a turn's SDK options act for. A live process outlives its turns, so its options read the turn running now through this. */
-type TurnScope = { personId: string; canUseTool: CanUseTool; afterTool: HookCallback; confirmedBy: () => string | undefined; post?: (text: string) => Promise<void>; graphToken?: () => Promise<string | undefined>; signInLost: () => void };
+type TurnScope = {
+  personId: string;
+  person: Person;
+  canUseTool: CanUseTool;
+  afterTool: HookCallback;
+  confirmedBy: () => string | undefined;
+  post?: (text: string) => Promise<void>;
+  graphToken?: () => Promise<string | undefined>;
+  signInLost: () => void;
+  askConfirmation: RunTurnInput["askConfirmation"];
+  relay: number;
+};
 // live pool → key → the turn running on that key
 const liveTurns = new WeakMap<LiveSessions, Map<string, TurnScope>>();
 const turnsOn = (pool: LiveSessions) => liveTurns.get(pool) ?? liveTurns.set(pool, new Map()).get(pool)!;
@@ -133,6 +147,9 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
       graphToken: async () => current()?.graphToken?.(),
       signInLost: () => current()?.signInLost(),
+      get person() { return current()?.person; },
+      get relay() { return current()?.relay ?? 0; },
+      get askConfirmation() { return current()?.askConfirmation; },
     };
     const afterTool: HookCallback = async (...a) => current()?.afterTool(...a) ?? {};
     const canUseTool: CanUseTool = async (toolName, input, o) => {
@@ -170,6 +187,8 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
         routine: routineMcpServer(deps, ctx),
         learnings: learningsMcpServer(deps, ctx, personal),
+        // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
+        bots: tellMcpServer({ db, run: (t) => runTurn(deps, t as RunTurnInput), ...(deps.personToken ? { personToken: deps.personToken } : {}) }, ctx),
         ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
         ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
         ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
@@ -204,6 +223,8 @@ export type RunTurnInput = {
   routine?: { id: string; grantPersonId: string | null; post: (text: string) => Promise<void>; background?: boolean };
   /** The person's Microsoft Graph token, asked for per call; only for person definitions. Never stored, logged or shown to the model. */
   graphToken?: () => Promise<string | undefined>;
+  /** How many bots passed this on: a told bot (1) cannot tell further. */
+  relay?: number;
 };
 
 /**
@@ -397,7 +418,10 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   };
 
   let signInLost = false;
-  const scope: TurnScope = { personId: person.id, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true) };
+  const scope: TurnScope = {
+    personId: person.id, person, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true),
+    askConfirmation: turn.askConfirmation, relay: turn.relay ?? 0,
+  };
   let options: Options | undefined; // a cold run's, built only when one runs
   const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received);
 

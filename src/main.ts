@@ -48,6 +48,8 @@ const runnerDeps: RunnerDeps = {
   fetchFn: fetch,
   readDocument: documentReader(query, config.defaultModel, config.filesDir),
   live,
+  // called only during turns, long after `proactive` and `app` below exist
+  personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)),
 };
 const mail = config.agentmail
   ? { db, secretsKey: config.secretsKey, admin: agentMailAdmin(config.agentmail, fetch), publicUrl: config.publicUrl }

@@ -20,6 +20,7 @@ const BUILT_IN: Record<string, ToolClass> = {
   // Martin's call: anyone's teaching applies at once; admins review and undo on the bot's Learnings tab
   ...Object.fromEntries(["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
   mcp__routine__post: "read",
+  mcp__bots__tell_bot: "read", // the told bot's own tools ask their own confirmations
   mcp__computer__bash: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
   ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "read_attachment", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
