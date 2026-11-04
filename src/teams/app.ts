@@ -1,5 +1,5 @@
 import { AgentApplication, CardFactory, CloudAdapter, MemoryStorage, MessageFactory, StreamingResponseResult } from "@microsoft/agents-hosting";
-import type { TurnContext, TurnState } from "@microsoft/agents-hosting";
+import type { ConnectorClient, TurnContext, TurnState } from "@microsoft/agents-hosting";
 import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
@@ -75,6 +75,27 @@ export function teamsStream(ctx: TurnContext): TeamsStream {
   };
 }
 
+const MEMBERS_TTL = 3_600_000;
+const membersCache = new Map<string, { name: string | undefined; at: number }>();
+/** The chat's people (not the bot) as "Ann, Bob", from Teams; fetched once an hour per chat, and never fatal to the message. */
+async function membersName(ctx: TurnContext): Promise<string | undefined> {
+  const id = ctx.activity.conversation?.id;
+  if (!id) return undefined;
+  const hit = membersCache.get(id);
+  if (hit && Date.now() - hit.at < MEMBERS_TTL) return hit.name;
+  let name: string | undefined;
+  try {
+    const client = ctx.turnState.get<ConnectorClient>(ctx.adapter.ConnectorClientKey);
+    const r = await client?.httpClient.get<{ members?: { id?: string; name?: string }[] }>(`v3/conversations/${encodeURIComponent(id)}/pagedmembers?pageSize=50`);
+    const people = (r?.data.members ?? []).filter((m) => m.name && m.id !== ctx.activity.recipient?.id).map((m) => m.name!);
+    name = people.length ? people.join(", ").slice(0, 80) : undefined;
+  } catch (e) {
+    console.error(`members of ${id}:`, (e as { status?: number } | undefined)?.status ?? (e instanceof Error ? e.name : "error"));
+  }
+  membersCache.set(id, { name, at: Date.now() });
+  return name;
+}
+
 export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> {
   // longRunningMessages answers the HTTP request at once; a turn can wait minutes on a confirmation card
   // startServer reuses app.adapter, so proactive sends go through the same adapter as replies
@@ -136,13 +157,15 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     }
     const conversationType = conversation.conversationType ?? "personal";
     console.log(`chat ${conversation.id} (${conversationType})`);
+    // an unnamed group chat is shown in Teams as its members, so it is named the same way here
+    const name = conversation.name || (conversationType !== "personal" ? await membersName(ctx) : undefined);
     await handleMessage(
       deps,
       {
         tenantId: conversation.tenantId,
         chatId: conversation.id,
         conversationType,
-        ...(conversation.name ? { name: conversation.name } : {}),
+        ...(name ? { name } : {}),
         ...(conversationType !== "personal" ? { mentioned: ctx.activity.getMentions(ctx.activity).some((m) => m.mentioned?.id === ctx.activity.recipient?.id) } : {}),
         from: { aadObjectId: from.aadObjectId, name: from.name ?? "" },
         text: (ctx.activity.text ?? "").trim(),
