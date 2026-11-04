@@ -95,7 +95,7 @@ export function adminRouter(deps: AdminDeps): Router {
 
   router.use(overviewRoutes(db));
   router.use(peopleRoutes(db, deps.fetchUsers));
-  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail, fetchFn: deps.fetchFn, ssh: deps.ssh, sql: deps.sql }));
+  router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, publicUrl: deps.config.publicUrl, defaultModel: deps.defaultModel, onSaved: deps.onBotSaved, mail: deps.mail, fetchFn: deps.fetchFn, ssh: deps.ssh, sql: deps.sql }));
   router.use(tryRoutes({ db, runTurn: deps.runTurn, confirmations: deps.confirmations }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));
