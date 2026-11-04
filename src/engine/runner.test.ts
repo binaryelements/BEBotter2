@@ -210,7 +210,7 @@ describe("runTurn", () => {
     expect(result).toMatchObject({ text: "Done.", costUsd: 0.001, sessionId: "s-1", changed: false });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toEqual({ actionId: expect.any(String), label: "Ops", toolName: "mcp__tickets__close_ticket", input: { id: 7 } });
-    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["computer", "connections", "knowledge", "learnings", "routine", "tickets"]);
+    expect(Object.keys(q.seen[0]!.mcpServers!).sort()).toEqual(["bots", "computer", "connections", "knowledge", "learnings", "routine", "tickets"]);
     expect(q.seen[0]!.allowedTools).toEqual([]);
     expect(q.seen[0]!.cwd).toBe(filesDir);
 

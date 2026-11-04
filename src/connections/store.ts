@@ -6,6 +6,8 @@ import { connections, definitionConnections, secretLinks } from "../db/schema.js
 import type { Connection, ConnectionConfig } from "../db/schema.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { listMcpTools, sendHttp } from "./http.js";
+import { accessToken, clientSecretCipher, oauthOf } from "./oauth.js";
+import type { OAuthConfig } from "./oauth.js";
 import type { HttpConfig, HttpRequest } from "./http.js";
 import { DEFAULT_PORT, querySql, realSql, SQL_ENGINES } from "./sql.js";
 import type { SqlConfig, SqlRunner } from "./sql.js";
@@ -77,7 +79,14 @@ function checkRequest(input: ConnectionRequest): ConnectionConfig {
     const tools = c.readOnlyTools ?? [];
     if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && TOOL.test(t))) fail("Invalid read-only tool name");
     if (c.headerName !== undefined && (typeof c.headerName !== "string" || !HTTP_TOKEN.test(c.headerName))) fail("Invalid header name");
-    return { ...(c.headerName !== undefined ? { headerName: c.headerName as string } : {}), readOnlyTools: tools as string[] };
+    const oauth = c.oauth as OAuthConfig | undefined;
+    if (oauth) {
+      if (c.headerName) fail("A server signs in or takes a header, not both");
+      if (typeof oauth.clientId !== "string" || !oauth.clientId) fail("Invalid OAuth client id");
+      for (const u of [oauth.authorizationEndpoint, oauth.tokenEndpoint]) checkUrl(typeof u === "string" ? u : "");
+      if (oauth.scope !== undefined && typeof oauth.scope !== "string") fail("Invalid OAuth scope");
+    }
+    return { ...(c.headerName !== undefined ? { headerName: c.headerName as string } : {}), ...(oauth ? { oauth } : {}), readOnlyTools: tools as string[] };
   }
   if (input.kind === "sql") {
     const engine = c.engine as SqlConfig["engine"];
@@ -94,7 +103,7 @@ function checkRequest(input: ConnectionRequest): ConnectionConfig {
 
 /** Stored as its place: an http `auth` or an mcp `headerName` is where the secret goes, so having one means a secret is needed; sql always needs its password. */
 export const needsSecret = (c: Pick<Connection, "kind" | "config">) =>
-  c.kind === "sql" || (c.kind === "http" && "auth" in c.config && !!c.config.auth) || (c.kind === "mcp" && "headerName" in c.config && !!c.config.headerName);
+  c.kind === "sql" || (c.kind === "http" && "auth" in c.config && !!c.config.auth) || (c.kind === "mcp" && "headerName" in c.config && !!c.config.headerName) || !!oauthOf(c);
 
 const byName = (tenantId: string, name: string) => and(eq(connections.tenantId, tenantId), eq(connections.name, name));
 const byId = (tenantId: string, id: string) => and(eq(connections.tenantId, tenantId), eq(connections.id, id));
@@ -178,20 +187,21 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
 }
 
-export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; definitionIds: string[] };
+export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; /** mcp OAuth: a secret the server's registration handed out, kept for token requests */ clientSecret?: string; definitionIds: string[] };
 
-/** An admin sets a connection up with its secret typed in, so it is approved at once; ssh still needs its key installed and a verify. */
+/** An admin sets a connection up with its secret typed in, so it is approved at once; ssh still needs its key installed and a verify, and an OAuth mcp server a sign-in. */
 export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, tenantId: string, input: AdminConnectionInput): Promise<Connection> {
   const { db } = deps;
   const config = checkRequest({ ...input, definitionId: "" });
-  if (needsSecret({ kind: input.kind, config }) && !input.secret?.trim()) fail(input.kind === "sql" ? "Give the password" : "Give the secret that goes in the header");
+  const signIn = !!oauthOf({ kind: input.kind, config });
+  if (!signIn && needsSecret({ kind: input.kind, config }) && !input.secret?.trim()) fail(input.kind === "sql" ? "Give the password" : "Give the secret that goes in the header");
   const existing = await getConnection(db, tenantId, input.name);
   if (existing && existing.status !== "revoked") fail(`A connection named ${input.name} already exists`);
   const key = input.kind === "ssh" ? await deps.ssh.generateKey(`admin@${input.name}`) : undefined;
   const secret = key?.privateKey ?? (input.secret?.trim() || undefined);
   const values = {
-    kind: input.kind, target: input.target, config, mode: input.mode, status: key ? "pending" : "active",
-    secretCipher: secret ? encrypt(deps.secretsKey, secret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
+    kind: input.kind, target: input.target, config, mode: input.mode, status: key || signIn ? "pending" : "active",
+    secretCipher: signIn ? (input.clientSecret ? clientSecretCipher(deps.secretsKey, input.clientSecret) : null) : secret ? encrypt(deps.secretsKey, secret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
     requestedByPersonId: input.personId, approvedByPersonId: input.personId, updatedAt: new Date(),
   };
   const [row] = existing
@@ -246,7 +256,7 @@ async function verifyRow(deps: ConnectionDeps, c: Connection, probe?: { path: st
   const { name } = c;
   if (c.status === "revoked") fail("The connection was revoked");
   if (c.status === "blocked") fail(BLOCKED);
-  if (needsSecret(c) && !c.secretCipher) return { status: c.status, output: "Waiting for the secret" };
+  if (needsSecret(c) && !c.secretCipher) return { status: c.status, output: oauthOf(c) ? "Waiting for the sign-in" : "Waiting for the secret" };
   if (c.kind !== "ssh") {
     // http, mcp and sql make no network call until a person has seen the target on the approval card
     if (c.status !== "active") fail(`${name} is not approved yet, so nothing was contacted. Ask an admin or department head to approve it.`);
@@ -256,7 +266,7 @@ async function verifyRow(deps: ConnectionDeps, c: Connection, probe?: { path: st
       return { status: c.status, output: `HTTP ${r.status}` };
     }
     if (c.kind === "sql") return { status: c.status, output: `Connected\n${await querySql(deps.sql ?? realSql, sqlTarget(deps, c), "SELECT 1", true)}` };
-    return { status: c.status, output: `Connected; ${(await listMcpTools(deps.fetchFn, mcpConn(deps, c))).length} tools` };
+    return { status: c.status, output: `Connected; ${(await listMcpTools(deps.fetchFn, await mcpConn(deps, c))).length} tools` };
   }
   const r = await exec(deps, c, "exit 0");
   if (r.hostKeyMismatch) {
@@ -299,7 +309,11 @@ export async function runSsh(deps: ConnectionDeps, tenantId: string, definitionI
 
 const secretOf = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => (c.secretCipher ? decrypt(deps.secretsKey, c.secretCipher) : undefined);
 const httpConn = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => ({ target: c.target, config: c.config as HttpConfig, secret: secretOf(deps, c) });
-const mcpConn = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => ({ target: c.target, headerName: (c.config as { headerName?: string }).headerName, secret: secretOf(deps, c) });
+/** The header an mcp server gets: the stored one, or a bearer token for a server BE Teammate signed in to. */
+const mcpConn = async (deps: Pick<ConnectionDeps, "db" | "secretsKey" | "fetchFn">, c: Connection) =>
+  oauthOf(c)
+    ? { target: c.target, headerName: "Authorization", secret: `Bearer ${await accessToken(deps, c)}` }
+    : { target: c.target, headerName: (c.config as { headerName?: string }).headerName, secret: secretOf(deps, c) };
 
 /** http_read (GET/HEAD on any active http connection) and http_change (a change connection, confirmed per call). */
 export async function runHttp(deps: ConnectionDeps, tenantId: string, definitionId: string, name: string, req: HttpRequest, mode: ConnectionMode): Promise<string> {
@@ -335,11 +349,15 @@ export async function connectionMcpConfigs(
   secretsKey: Buffer,
   tenantId: string,
   definitionId: string,
+  fetchFn: typeof fetch = fetch,
 ): Promise<{ servers: Record<string, McpServerConfig>; readOnly: { name: string; readOnlyTools: string[] }[] }> {
   const active = activeMcp(await listConnectionsFor(db, tenantId, definitionId));
   const servers: Record<string, McpServerConfig> = {};
   for (const c of active) {
-    const { headerName, secret } = mcpConn({ secretsKey }, c);
+    // a sign-in the server no longer honours leaves that server out of the turn; the connection is back to pending for an admin to see
+    const conn = await mcpConn({ db, secretsKey, fetchFn }, c).catch((e: unknown) => void console.error(`mcp ${c.name}:`, e instanceof Error ? e.message : "error"));
+    if (!conn) continue;
+    const { headerName, secret } = conn;
     servers[`conn-${c.name}`] = { type: "http", url: c.target, ...(headerName && secret ? { headers: { [headerName]: secret } } : {}) };
   }
   return { servers, readOnly: mcpReadOnly(active) };

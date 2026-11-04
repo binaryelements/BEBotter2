@@ -21,7 +21,7 @@ export type TurnTimings = { receivedAt: string; engineReadyAt?: string; firstOut
 export type ConnectionConfig =
   | { port: number; username: string }
   | { auth?: { in: "header" | "query"; name: string; prefix?: string } }
-  | { headerName?: string; readOnlyTools: string[] }
+  | { headerName?: string; readOnlyTools: string[]; /** the server signs BE Teammate in as an OAuth client; the secret then holds its tokens */ oauth?: { clientId: string; authorizationEndpoint: string; tokenEndpoint: string; scope?: string } }
   | { engine: "postgres" | "mysql" | "mssql"; port: number; database: string; username: string; tls?: boolean };
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();

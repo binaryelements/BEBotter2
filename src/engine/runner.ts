@@ -102,7 +102,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       })
     : undefined;
   const noComputer = definition.computer && !containerId ? " Your computer is switched on but could not start right now; if a task needs it, say so." : "";
-  const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id);
+  const conn = await connectionMcpConfigs(db, deps.secretsKey, tenantId, definition.id, deps.fetchFn);
   const [mailbox] = deps.agentmailUrl ? await db.select().from(mailboxes).where(eq(mailboxes.definitionId, definition.id)) : [];
   // the bot's own agent key goes to the SDK subprocess as a header, never to the model or the computer
   let mail: { address: string; keyId: string | null; key: string } | undefined;

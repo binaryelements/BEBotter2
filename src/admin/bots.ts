@@ -6,8 +6,9 @@ import {
   addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setGraph, setPersona,
   updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
+import { accessToken, beginSignIn, discover, finishSignIn, oauthOf, OAuthError } from "../connections/oauth.js";
 import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
 import type { ConnectionKind, ConnectionMode } from "../connections/store.js";
 import { SQL_ENGINES } from "../connections/sql.js";
@@ -21,7 +22,7 @@ import type { ToolRule } from "../engine/gate.js";
 import { knownTools, recordTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
 import { decrypt } from "../secrets/cipher.js";
 import { beginAction, completeAction } from "../audit/audit.js";
-import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionConnections, mailboxes, people } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, connections, definitionConnections, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
 import { ensureMailbox, MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
 import type { MailDeps } from "../mail/mailboxes.js";
@@ -29,7 +30,7 @@ import { DirectoryError, listDepartments } from "../org/directory.js";
 import { getTenantSettings } from "../org/org.js";
 import { createRoutine, deleteRoutine, listRoutines, updateRoutine } from "../routines/store.js";
 import { addLearning, deleteLearning, listLearnings, updateLearning } from "../learnings/store.js";
-import { isAdmin, mayEditPersona } from "./access.js";
+import { isAdmin, mayEditPersona, mayEnter } from "./access.js";
 import { AUTO, html, layout, raw, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
@@ -51,11 +52,15 @@ const many = (req: Request, name: string) => {
 const list = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
 
-export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: string; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner }): Router {
+export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string; defaultModel: string; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner }): Router {
   const { db, secretsKey, defaultModel, onSaved, mail } = deps;
   const fetchFn = deps.fetchFn ?? fetch;
   const connDeps = { db, secretsKey, fetchFn, ssh: deps.ssh ?? systemSsh(), ...(deps.sql ? { sql: deps.sql } : {}) };
+  const oauthRedirect = `${deps.publicUrl}/admin/connections/oauth/callback`;
   const router = express.Router();
+  /** An OAuth mcp server's state after the status: signed in, or a sign-in button for an admin or department head. */
+  const signInCell = (c: Connection, csrf: SafeHtml) =>
+    !oauthOf(c) || c.status === "revoked" ? "" : c.status === "active" ? html` · signed in` : html` <form method="post" action="/admin/connections/${c.id}/signin">${csrf}<button class="be-btn sm primary">sign in</button></form>`;
   const render = (res: Response, title: string, body: SafeHtml) => {
     const { actor, csrf } = adminOf(res);
     res.type("html").send(layout({ title, body, actor, csrf }));
@@ -126,7 +131,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; defaultModel: stri
       const csrf = csrfField(res);
       const rows = conns.map((c) => {
         const bots = links.filter((l) => l.connectionId === c.id);
-        return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td>${c.mode}</td><td>${c.status}</td>
+        return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td>
 <td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
 <td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`}</td>
 <td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
@@ -146,6 +151,7 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
 <label>database<span class="hint">sql only</span><input name="database"></label>
 <label>header name<span class="hint">mcp/http: where the secret goes, e.g. Authorization</span><input name="headerName"></label>
 <label>secret<span class="hint">sql password, or the header value (e.g. Bearer …); stored encrypted, never shown again</span><input type="password" name="secret" autocomplete="off"></label>
+<label>sign in instead<span class="hint">mcp only: the server has its own login (OAuth); you sign in once after adding it, and every bot given the server shares that sign-in</span><input type="checkbox" name="oauth" value="on"></label>
 </div>
 <p>give to: ${defs.filter((d) => d.identity !== "person").map((d) => html`<label><input type="checkbox" name="definitionId" value="${d.id}"> ${d.displayName ? `${d.displayName} · ${d.label}` : d.label}</label> `)}</p>
 <p class="muted">ssh: a key pair is made for the connection; install its public key on the target, then press test.</p>
@@ -167,16 +173,49 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
       if (kind === "ssh") config = { username: field(req, "username").trim(), port: port ?? 22 };
       if (kind === "sql") config = { engine: field(req, "engine"), port, database: field(req, "database").trim(), username: field(req, "username").trim() };
       if (kind === "http") config = headerName ? { auth: { in: "header", name: headerName } } : {};
-      if (kind === "mcp") {
+      let clientSecret: string | undefined;
+      if (kind === "mcp" && field(req, "oauth") === "on") {
+        // the tools are listed after the sign-in, when the server will talk to us
+        const { clientSecret: cs, ...oauth } = await discover(fetchFn, target, oauthRedirect).catch((e) => { throw e instanceof OAuthError ? new DirectoryError(e.message) : e; });
+        clientSecret = cs;
+        config = { oauth, readOnlyTools: [] };
+      } else if (kind === "mcp") {
         // the server's own read-only marks decide which tools run without a card; an unreachable server is still saved
         const tools = await listMcpToolInfo(fetchFn, { target, headers: headerName && secret ? { [headerName]: secret } : {} }).catch(() => []);
         config = { ...(headerName ? { headerName } : {}), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) };
       }
       const c = await createConnection(connDeps, actor.tenantId, {
-        kind, name: field(req, "name").trim(), target, mode: field(req, "mode") as ConnectionMode, config: config as never, secret, personId: actor.personId, definitionIds: many(req, "definitionId"),
+        kind, name: field(req, "name").trim(), target, mode: field(req, "mode") as ConnectionMode, config: config as never, secret, ...(clientSecret ? { clientSecret } : {}), personId: actor.personId, definitionIds: many(req, "definitionId"),
       }).catch((e) => { throw e instanceof ConnectionError ? new DirectoryError(e.message) : e; });
       if (c.kind === "ssh") return res.redirect(303, "/admin/connections");
+      if (oauthOf(c)) return res.redirect(302, beginSignIn(c, oauthRedirect));
       await testPage(res, actor, c.id); // the secret was just typed in, so a typo shows up now rather than in a bot's chat
+    }),
+  );
+
+  // an admin or a department head signs in to an OAuth mcp server for every bot that has it; the browser goes to the server's login and comes back below
+  router.post(
+    "/connections/:id/signin",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!mayEnter(actor)) return deny(res);
+      const [c] = await db.select().from(connections).where(and(eq(connections.id, req.params.id), eq(connections.tenantId, actor.tenantId)));
+      if (!c || !oauthOf(c) || c.status === "revoked") return page(res, 404, "No such sign-in.");
+      res.redirect(302, beginSignIn(c, oauthRedirect));
+    }),
+  );
+  router.get(
+    "/connections/oauth/callback",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!mayEnter(actor)) return deny(res);
+      const { code, state, error } = req.query as Record<string, string | undefined>;
+      if (error || !code || !state) return page(res, 400, `The sign-in did not complete${error ? ` (${error})` : ""}. Start it again from Connections.`);
+      const c = await finishSignIn(connDeps, actor.tenantId, state, code).catch((e) => { throw e instanceof OAuthError ? new DirectoryError(e.message) : e; });
+      // now the server talks to us: its read-only marks decide which tools run without a card
+      const tools = await listMcpToolInfo(fetchFn, { target: c.target, headers: { Authorization: `Bearer ${await accessToken(connDeps, c)}` } }).catch(() => []);
+      await db.update(connections).set({ config: { ...(c.config as object), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) } as never }).where(eq(connections.id, c.id));
+      render(res, "Signed in", html`<h1>Signed in to ${c.name}</h1><p>Every bot given this connection can use it now. ${tools.length ? `${tools.length} tools found.` : "No tools were listed; press test on the connection to check it."}</p><p><a href="${isAdmin(actor) ? "/admin/connections" : "/admin"}">Back</a></p>`);
     }),
   );
 
@@ -387,7 +426,7 @@ ${person ? html`<p class="muted">Acts as each person who uses it, in their own c
           section = await actionsSectionFor(res, def, linked);
         } else if (tab === "connections") {
           // the company's connections, split by whether this bot uses them: one list per question an admin asks
-          const connRow = (c: Connection, uses: boolean) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}</td>
+          const connRow = (c: Connection, uses: boolean) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td>
 <td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${uses ? "off" : "on"}"><button class="be-btn sm${uses ? "" : " primary"}">${uses ? "take away" : "give to this bot"}</button></form>${
             c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td>
 <td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
