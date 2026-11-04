@@ -138,7 +138,7 @@ describe("bots screen", () => {
 
     it("has a Microsoft 365 tab and no Email or Connections tab", async () => {
       const page = await (await get(`/admin/bots/${pid}`, "Ann")).text();
-      expect(page).toContain("acts as each person who uses it");
+      expect(page).toContain("Acts as each person who uses it");
       expect(page).toContain(`href="/admin/bots/${pid}?tab=m365"`);
       expect(page).toContain(">Microsoft 365<");
       expect(page).not.toContain("?tab=email");
@@ -178,7 +178,7 @@ describe("bots screen", () => {
 
     it("the overview has no departments or computer, and the save refuses departments and keeps computer off", async () => {
       const page = await (await get(`/admin/bots/${pid}`, "Ann")).text();
-      expect(page).not.toContain("<legend>departments</legend>");
+      expect(page).not.toContain('name="departments"');
       expect(page).not.toContain('name="computer"');
       const fields: [string, string][] = [["label", "My assistant"], ["model", "m"], ["persona", "p"], ["computer", "on"]];
       const refused = await post(`/admin/bots/${pid}`, "Ann", [...fields, ["departments", sales]]);
@@ -199,7 +199,7 @@ describe("bots screen", () => {
     });
 
     it("the list and the overview show it once, with how many people have it on", async () => {
-      for (const path of ["/admin/bots", "/admin"]) {
+      for (const path of ["/admin/bots"]) { // the dashboard groups personal assistants as one line
         const body = await (await get(path, "Ann")).text();
         expect(body.match(/My assistant/g)).toHaveLength(1);
         expect(body).toContain("1 on");

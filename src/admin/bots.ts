@@ -30,7 +30,7 @@ import { getTenantSettings } from "../org/org.js";
 import { createRoutine, deleteRoutine, listRoutines, updateRoutine } from "../routines/store.js";
 import { addLearning, deleteLearning, listLearnings, updateLearning } from "../learnings/store.js";
 import { isAdmin, mayEditPersona } from "./access.js";
-import { html, layout, raw, scroll } from "./html.js";
+import { AUTO, html, layout, raw, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
@@ -320,7 +320,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
     const groupSwitch = (g: string) => html`<div class="be-seg" role="radiogroup" aria-label="all ${g}">${(["", "free", "confirm"] as const).map(
       (r) => html`<label><input type="radio" name="all:${g}" value="${r}" ${r === "" ? "checked" : ""}><span>${r ? `all: ${RULE_LABEL[r]}` : "as below"}</span></label>`,
     )}</div>`;
-    return html`<h2>Actions</h2><form method="post" action="/admin/bots/${def.id}/actions">${csrfField(res, "actions")}${[...groups.keys()].sort().map(
+    return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}${[...groups.keys()].sort().map(
       (g) => html`<h3>${g}</h3>${groups.get(g)!.length > 1 ? groupSwitch(g) : ""}${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}`,
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
@@ -358,16 +358,20 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         // one endpoint saves the whole definition, so each of the two forms carries the other's fields unchanged
         const person = def.identity === "person";
         const hide = (name: string, value: string) => html`<input type="hidden" name="${name}" value="${value}">`;
-        const settings = (on: "overview" | "persona") => html`<form method="post" action="/admin/bots/${def.id}">${csrf}${
+        const settings = (on: "overview" | "persona") => html`<form class="be-form" method="post" action="/admin/bots/${def.id}">${csrf}${
           on === "overview"
-            ? html`<p><label>name <input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label> <label>label <input name="label" value="${def.label}" required></label> <label>model <input name="model" value="${def.model}" required></label></p>
-<p><label><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search and browser</label>${person ? "" : html` <label><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> computer</label>`}</p>
-${person ? "" : html`<fieldset><legend>departments</legend>${depts.map((d) => html`<label><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</fieldset>`}${hide("persona", def.persona)}`
+            ? html`<div class="fields">
+<label>name<span class="hint">what people call it in chat</span><input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label>
+<label>role<span class="hint">shown after the name</span><input name="label" value="${def.label}" required></label>
+<label>model<span class="hint">a Claude model id</span><input name="model" value="${def.model}" required></label>
+</div>
+<p class="be-label">can use</p><p><label class="be-toggle"><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search and browser</label>${person ? "" : html` <label class="be-toggle"><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> a computer</label>`}</p>
+${person ? html`<p class="muted">Acts as each person who uses it, in their own chat.</p>` : html`<p class="be-label">who can talk to it <span class="hint">none ticked means everyone in the company</span></p><p>${depts.map((d) => html`<label class="be-toggle"><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</p>`}${hide("persona", def.persona)}`
             : html`${personaBox}${hide("displayName", def.displayName ?? "")}${hide("label", def.label)}${hide("model", def.model)}${def.webSearch ? hide("webSearch", "on") : ""}${def.computer ? hide("computer", "on") : ""}${person ? "" : allowed.map((d) => hide("departments", d))}`
         }<p><button class="be-btn primary">save</button></p></form>`;
         let section: SafeHtml;
         if (tab === "overview") {
-          section = html`<dl class="be-kv"><div><dt>model</dt><dd>${def.model}</dd></div><div><dt>web search and browser</dt><dd>${yesNo(def.webSearch)}</dd></div>${person ? "" : html`<div><dt>computer</dt><dd>${yesNo(def.computer)}</dd></div><div><dt>departments</dt><dd>${depts.filter((d) => allowed.includes(d.id)).map((d) => d.name).join(", ") || "none"}</dd></div>`}</dl>${person ? html`<p>acts as each person who uses it</p>` : ""}${settings("overview")}`;
+          section = settings("overview");
         } else if (tab === "m365") {
           section = html`<p class="muted">What each person's assistant may do in their Microsoft 365, as them. Sending and changing still ask in the chat unless an admin sets the action free on the Actions tab.</p>
 <form method="post" action="/admin/bots/${def.id}/m365">${csrf}<p>${GRAPH_CAPABILITIES.map((c) => html`<label class="be-toggle"><input type="checkbox" name="graph" value="${c}" ${def.graph.includes(c) ? "checked" : ""}> ${capabilityWords(c)}</label> `)}</p><p><button class="be-btn primary">save</button></p></form>`;
@@ -423,9 +427,10 @@ ${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Nam
           section = html`<h2>Routines and reminders</h2>
 ${live.length ? table(live) : html`<div class="be-empty">Nothing waiting or repeating.</div>`}
 ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${table(ran)}</details>` : ""}
-<form method="post" action="/admin/bots/${def.id}/routines">${csrf}
-<p><label>chat <select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>schedule <input name="schedule" placeholder="0 9 * * 1-5" required></label> <label><input type="checkbox" name="quiet"> quiet</label> <label><input type="checkbox" name="grant"> grant my access</label></p>
-<p><label>prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn">add routine</button></form>`;
+<form class="be-form" method="post" action="/admin/bots/${def.id}/routines">${csrf}
+<div class="fields"><label>chat<span class="hint">where it runs and posts</span><select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>schedule<span class="hint">cron: minute hour day month weekday, e.g. 0 9 * * 1-5 is weekdays 9:00 am</span><input name="schedule" placeholder="0 9 * * 1-5" required></label></div>
+<p><label class="be-toggle"><input type="checkbox" name="quiet"> quiet: post only when it changed something</label> <label class="be-toggle"><input type="checkbox" name="grant"> grant my access: changes run without a card</label></p>
+<p><label class="be-label">prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn primary">add routine</button></form>`;
         } else if (tab === "learnings") {
           const rows = await listLearnings(db, actor.tenantId, def.id);
           const day = await whenFor(db, actor.tenantId);

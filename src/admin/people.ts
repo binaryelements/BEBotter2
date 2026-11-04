@@ -9,7 +9,7 @@ import { syncPeople } from "../org/directory-sync.js";
 import type { FetchUsers } from "../org/directory-sync.js";
 import { isAdmin, loadActor, mayManageDepartment, mayManagePerson } from "./access.js";
 import { armedPage, isArmed } from "./arm.js";
-import { html, layout, pageHead, scroll } from "./html.js";
+import { AUTO, html, layout, pageHead, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
@@ -62,11 +62,11 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
           const editable = admin || p.id !== actor.personId;
           return html`<tr><td>${p.name}</td><td>${p.email ?? ""}</td><td>${
             admin
-              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/role">${csrf}<select class="be-select" name="role" aria-label="Role">${options(ROLES, p.role)}</select> <button class="be-btn sm">save</button></form>`
+              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/role" data-autosave>${csrf}${AUTO}<select class="be-select" name="role" aria-label="Role">${options(ROLES, p.role)}</select> <button class="be-btn sm auto">save</button></form>`
               : p.role
           }</td><td>${
             editable
-              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/personal-bot">${csrf}<input type="checkbox" name="personalBot" aria-label="My assistant" ${p.personalBot ? "checked" : ""}> <button class="be-btn sm">save</button></form>`
+              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/personal-bot" data-autosave>${csrf}${AUTO}<label class="be-toggle"><input type="checkbox" name="personalBot" ${p.personalBot ? "checked" : ""}> ${p.personalBot ? "on" : "off"}</label> <button class="be-btn sm auto">save</button></form>`
               : p.personalBot ? "On" : "Off"
           }</td><td>${p.memberships.filter((m) => admin || actor.headOf.includes(m.departmentId)).map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
         })}</tbody></table>`)

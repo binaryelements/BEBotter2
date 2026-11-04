@@ -63,10 +63,10 @@ describe("assignments screen", () => {
     expect(page).toContain('value="Project Falcon"');
     expect(page).toMatch(/<td>group<\/td><td>Ann, Hal<\/td>/);
     expect(page).toMatch(/<td>one-to-one<\/td><td>Ann<\/td>/);
-    expect(page).toContain(">listening</button>");
+    expect(page).toContain('<input type="checkbox" checked aria-label="listening"> listening</label>');
     expect((await post(path("g1") + "/listening", "Ann", [["listening", "off"]])).status).toBe(303);
     expect((await db.select().from(chats).where(eq(chats.id, "g1")))[0].listening).toBe(false);
-    expect(await (await get("/admin/assignments", "Ann")).text()).toContain(">not listening</button>");
+    expect(await (await get("/admin/assignments", "Ann")).text()).toContain('<input type="checkbox"  aria-label="listening"> listening</label>');
     expect((await post(path("g1") + "/listening", "Hal", [["listening", "on"]])).status).toBe(403);
     await post(path("g1") + "/label", "Ann", [["label", "Falcon team"]]);
     await upsertChat(db, { id: "g1", tenantId: T, conversationType: "groupChat", name: "Project Falcon" });

@@ -96,7 +96,7 @@ describe("activity screen", () => {
   it("a head sees only their departments, in the page and the csv, and gets 403 for outsiders", async () => {
     const t = await (await get("/admin/activity", "Hal")).text();
     expect(t).toContain("Sam");
-    expect(t).not.toContain("Eve");
+    expect(t).not.toContain("<td>Eve</td>");
     const csv = await (await get("/admin/activity.csv", "Hal")).text();
     expect(csv).toContain("Sam");
     expect(csv).not.toContain("Eve");

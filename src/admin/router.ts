@@ -49,6 +49,15 @@ export function adminRouter(deps: AdminDeps): Router {
 
   router.use((req, res, next) => {
     res.set({ "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });
+    // a form that saved itself on change lands back with a "saved" mark; the body is parsed by the time a route redirects
+    if (req.method === "POST") {
+      const redirect = res.redirect.bind(res) as (status: number, url: string) => void;
+      res.redirect = ((status: number | string, url?: string) => {
+        const [code, to] = typeof status === "number" ? [status, url!] : [302, status];
+        const auto = (req.body as Record<string, unknown> | undefined)?.autosave === "1" && to.startsWith("/admin");
+        redirect(code, auto ? `${to}${to.includes("?") ? "&" : "?"}saved=1` : to);
+      }) as typeof res.redirect;
+    }
     withShell(req, res, next);
   });
   router.use(oidcRoutes(deps));
