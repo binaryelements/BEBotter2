@@ -334,7 +334,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const admin = isAdmin(actor);
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
-      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div></header>${
+      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn sm" href="/admin/bots/${def.id}/try">try it</a></div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
       const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
