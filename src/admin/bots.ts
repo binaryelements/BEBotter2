@@ -396,7 +396,7 @@ ${person ? html`<p class="muted">Acts as each person who uses it, in their own c
           const mine = conns.filter((c) => linkedIds.has(c.id));
           const others = conns.filter((c) => !linkedIds.has(c.id) && c.status !== "revoked");
           section = html`<h2>Connections this bot uses</h2>
-${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: give it one below, or ask the bot in chat to set one up</div>`}
+${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: ${others.length ? "give it one below" : html`add an ssh, sql, MCP or http connection on the <a href="/admin/connections#add">Connections page</a>`}, or ask the bot in chat to set one up</div>`}
 ${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}
 <h2>MCP servers</h2>
 ${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th><th></th></tr></thead><tbody>${def.mcpServers.map(
