@@ -788,7 +788,7 @@ describe("choosing the bot in a one-to-one chat", () => {
     const s = await chat();
     const a = await s.service("it", "IT Support");
     await s.db.update(botDefinitions).set({ displayName: "Mickey" }).where(eq(botDefinitions.id, a.id));
-    const group = (text: string, mentioned: boolean, from = "u2") => handleMessage(s.deps, { ...msg("groupChat"), text, mentioned, from: { aadObjectId: from, name: from === "u1" ? "Ann" : "Bob" } }, s.io);
+    const group = (text: string, mentioned: boolean, from = "u2", mentionedOthers = false) => handleMessage(s.deps, { ...msg("groupChat"), text, mentioned, mentionedOthers, from: { aadObjectId: from, name: from === "u1" ? "Ann" : "Bob" } }, s.io);
     await group("the printer is down", false);
     await setChatDefinition(s.db, "t1", "c1", a.id);
     await group("I'll check the toner", false, "u1");
@@ -799,6 +799,19 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect((s.runTurn.mock.calls[0] as any)[0].text).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nBob: the printer is down\nAnn: I'll check the toner]\n\nmickey, r u there?");
     await group("fixed now", true);
     expect((s.runTurn.mock.calls[1] as any)[0].text).toBe("fixed now");
+    // follow-ups: for two minutes after the bot answered Bob, Bob needs no name; Ann does, and so does Bob when he talks to Ann
+    const bob = await upsertPerson(s.db, { tenantId: "t1", aadObjectId: "u2", name: "Bob" });
+    const answered = await beginAction(s.db, { tenantId: "t1", chatId: "c1", definitionId: a.id, personId: bob.id, kind: "message", summary: "fixed now" });
+    await completeAction(s.db, answered, { status: "done" });
+    await group("fine", false, "u1");
+    await group("Ann, can you check the toner", false);
+    await group("thanks all", false, "u2", true);
+    expect(s.runTurn).toHaveBeenCalledTimes(2);
+    await group("check zfs", false);
+    expect((s.runTurn.mock.calls[2] as any)[0].text).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nAnn: fine\nBob: Ann, can you check the toner\nBob: thanks all]\n\ncheck zfs");
+    await s.db.update(auditEvents).set({ finishedAt: new Date(Date.now() - 3 * 60_000) }).where(eq(auditEvents.id, answered));
+    await group("still there?", false);
+    expect(s.runTurn).toHaveBeenCalledTimes(3);
     expect(addressedByName("Hey Mickey: help", { displayName: "Mickey", label: "IT" })).toBe(true);
     expect(addressedByName("Mickeys are mice", { displayName: "Mickey", label: "IT" })).toBe(false);
     expect(addressedByName("it support, help", { displayName: null, label: "IT Support" })).toBe(true);
