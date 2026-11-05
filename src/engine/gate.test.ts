@@ -29,6 +29,7 @@ describe("classify", () => {
       ["mcp__routine__post", "read"],
       ...["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read"] as [string, string]),
       ["mcp__computer__bash", "read"],
+      ["mcp__attachments__read_attachment", "read"],
       ["mcp__mail__send_email", "write"],
       ["mcp__mail__reply_to_email", "write"],
       ["mcp__mail__list_messages", "read"],

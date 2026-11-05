@@ -4,7 +4,7 @@ import { and, desc, eq, gt, lt } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { chatAttachments } from "../db/schema.js";
-import { MAX_ATTACHMENT, readBytes } from "../engine/read-document.js";
+import { MAX_ATTACHMENT, readBytes, sniffImage } from "../engine/read-document.js";
 
 /** A file or image that came with a Teams message; `download` fetches it once, with the bot's own token where Teams needs one. */
 export type IncomingAttachment = { name: string; mediaType: string; download: () => Promise<Buffer> };
@@ -34,7 +34,8 @@ export function incomingAttachments(activity: Activity, fetchFn: typeof fetch, b
     const type = a.contentType ?? "";
     if (type.startsWith("image/") && a.contentUrl) {
       const url = a.contentUrl;
-      out.push({ name: a.name || `image.${type.split("/")[1]}`, mediaType: type, download: async () => fetchBytes(url, await botToken()) });
+      // Teams says only "image/*" for a pasted picture; the real type and extension come from the bytes once downloaded
+      out.push({ name: a.name || "image", mediaType: type, download: async () => fetchBytes(url, await botToken()) });
     } else if (type === FILE_INFO && typeof (a.content as { downloadUrl?: unknown })?.downloadUrl === "string") {
       const { downloadUrl: url, fileType } = a.content as { downloadUrl: string; fileType?: string };
       const ext = (fileType ?? a.name?.split(".").pop() ?? "").toLowerCase();
@@ -53,7 +54,10 @@ export async function storeAttachments(db: Db, m: { tenantId: string; chatId: st
       if (bytes) console.error(`attachment ${a.name} skipped: ${bytes.length} bytes`);
       continue;
     }
-    const row = { id: crypto.randomUUID(), tenantId: m.tenantId, chatId: m.chatId, personId: m.personId ?? null, name: a.name, senderName: m.senderName, mediaType: a.mediaType, bytes, at: m.at ?? new Date() };
+    const sniffed = sniffImage(bytes);
+    const mediaType = sniffed ?? a.mediaType;
+    const name = sniffed && !/\.\w+$/.test(a.name) ? `${a.name}.${sniffed.slice(6).replace("jpeg", "jpg")}` : a.name;
+    const row = { id: crypto.randomUUID(), tenantId: m.tenantId, chatId: m.chatId, personId: m.personId ?? null, name, senderName: m.senderName, mediaType, bytes, at: m.at ?? new Date() };
     await db.insert(chatAttachments).values(row);
     posted.push({ id: row.id, name: row.name, senderName: row.senderName, mediaType: row.mediaType, at: row.at });
   }

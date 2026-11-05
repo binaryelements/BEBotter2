@@ -31,7 +31,8 @@ const wellKnown = (issuer: string, name: string) => {
 };
 
 /** Finds the server's login and registers BE Teammate there: protected-resource metadata names the authorization server, else the server's own origin is tried. */
-export async function discover(fetchFn: typeof fetch, mcpUrl: string, redirectUri: string): Promise<OAuthConfig & { clientSecret?: string }> {
+/** The server's OAuth setup with BE Teammate registered as a client; undefined when the server publishes no login at all. */
+export async function discover(fetchFn: typeof fetch, mcpUrl: string, redirectUri: string): Promise<(OAuthConfig & { clientSecret?: string }) | undefined> {
   const resource = (await getJson(fetchFn, wellKnown(mcpUrl, "oauth-protected-resource"))) ?? (await getJson(fetchFn, wellKnown(new URL(mcpUrl).origin, "oauth-protected-resource")));
   const issuers = Array.isArray(resource?.authorization_servers) && resource.authorization_servers.length ? (resource.authorization_servers as string[]) : [new URL(mcpUrl).origin];
   let meta: Record<string, unknown> | undefined;
@@ -40,14 +41,14 @@ export async function discover(fetchFn: typeof fetch, mcpUrl: string, redirectUr
     if (typeof meta?.authorization_endpoint === "string" && typeof meta?.token_endpoint === "string") break;
     meta = undefined;
   }
-  if (!meta) fail("The server did not say where to sign in: no OAuth metadata was found");
+  if (!meta) return undefined;
   if (typeof meta!.registration_endpoint !== "string") fail("The server does not register clients, so BE Teammate can't sign in to it");
   const reg = await getJson(fetchFn, meta!.registration_endpoint as string, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ client_name: "BE Teammate", redirect_uris: [redirectUri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }),
   });
-  if (typeof reg?.client_id !== "string") fail("The server refused to register BE Teammate as a client");
+  if (typeof reg?.client_id !== "string") fail(`${mcpUrl} has its own login but refused to register BE Teammate as a client (some servers only accept Claude's or Cursor's callback); its operator must allow the callback URL ${redirectUri}`);
   const scopes = resource?.scopes_supported;
   return {
     clientId: reg!.client_id as string,

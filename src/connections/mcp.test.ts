@@ -129,4 +129,22 @@ describe("connections mcp", () => {
     expect((c.config as { oauth?: { clientId: string } }).oauth?.clientId).toBe("client-1");
     expect((await tools.verify!.handler({ name: "wasabi" })).content[0]!.text).toBe("wasabi: pending\nWaiting for the sign-in");
   });
+
+  it("an mcp server with a login that refuses to register BE Teammate is reported, not given a secret link", async () => {
+    const fetchFn = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://mcp.example.test/.well-known/oauth-protected-resource/locked") return Response.json({ authorization_servers: ["https://mcp.example.test/"] });
+      if (url === "https://mcp.example.test/.well-known/oauth-authorization-server") return Response.json({ authorization_endpoint: "https://mcp.example.test/oauth/authorize", token_endpoint: "https://mcp.example.test/oauth/token", registration_endpoint: "https://mcp.example.test/oauth/register" });
+      if (url === "https://mcp.example.test/oauth/register") return Response.json({ error: "server_error" }, { status: 500 });
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    const definitionId = (await upsertDefinition(db, key, "t1", { name: "ops2", label: "Ops", persona: "p" })).id;
+    const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "" }), secretsKey: key, publicUrl: "https://bot.example.test", fetchFn }, { tenantId: "t1", definitionId, personId, confirmedBy: () => undefined });
+    const tools = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
+    const r = await tools.request!.handler({ kind: "mcp", name: "locked", target: "https://mcp.example.test/locked", mode: "read-only", headerName: "Authorization", needsSecret: true });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("refused to register BE Teammate");
+    expect(r.content[0]!.text).toContain("https://bot.example.test/admin/connections/oauth/callback");
+    expect(await getConnection(db, "t1", "locked")).toBeUndefined();
+  });
 });

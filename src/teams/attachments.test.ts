@@ -11,11 +11,11 @@ describe("chat attachments", () => {
     const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => new Response(url.toString().includes("teams-img") ? png : "hello", { status: (init?.headers as Record<string, string>)?.Authorization === "Bearer bot" || !url.toString().includes("teams-img") ? 200 : 401 }));
     const items = incomingAttachments({ attachments: [
       { contentType: "text/html", content: "<p>hi</p>" },
-      { contentType: "image/png", contentUrl: "https://smba.example/teams-img/1" },
+      { contentType: "image/*", contentUrl: "https://smba.example/teams-img/1" },
       { contentType: "application/vnd.microsoft.teams.file.download.info", name: "notes.txt", content: { downloadUrl: "https://files.example/notes", fileType: "txt" } },
       { contentType: "application/vnd.microsoft.card.adaptive", content: {} },
     ] }, fetchFn as unknown as typeof fetch, async () => "bot");
-    expect(items.map((i) => [i.name, i.mediaType])).toEqual([["image.png", "image/png"], ["notes.txt", "text/plain"]]);
+    expect(items.map((i) => [i.name, i.mediaType])).toEqual([["image", "image/*"], ["notes.txt", "text/plain"]]);
     expect(await items[0]!.download()).toEqual(png);
     expect((await items[1]!.download()).toString()).toBe("hello");
   });
@@ -29,16 +29,16 @@ describe("chat attachments", () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const [old] = await storeAttachments(db, { tenantId: "t1", chatId: "c1", senderName: "Ann", at: new Date(t0.getTime() - 11 * 60_000) }, [{ name: "old.txt", mediaType: "text/plain", download: async () => Buffer.from("old") }]);
     const posted = await storeAttachments(db, { tenantId: "t1", chatId: "c1", senderName: "Ann", at: new Date(t0.getTime() - 3 * 60_000) }, [
-      { name: "shaver.png", mediaType: "image/png", download: async () => png },
+      { name: "image", mediaType: "image/*", download: async () => png }, // as Teams sends a pasted picture
       { name: "broken.pdf", mediaType: "application/pdf", download: async () => { throw new Error("403"); } },
     ]);
     const [now] = await storeAttachments(db, { tenantId: "t1", chatId: "c1", senderName: "Bob", at: t0 }, [{ name: "notes.txt", mediaType: "text/plain", download: async () => Buffer.from("the serial is 123") }]);
     err.mockRestore();
-    expect(posted.map((p) => p.name)).toEqual(["shaver.png"]);
+    expect(posted.map((p) => p.name)).toEqual(["image.png"]);
     const recent = await recentAttachments(db, "c1", t0);
-    expect(recent.map((r) => r.name)).toEqual(["notes.txt", "shaver.png"]);
+    expect(recent.map((r) => r.name)).toEqual(["notes.txt", "image.png"]);
     expect(withAttachments(recent, "what is this?", t0)).toBe(
-      `[Files and images posted in this chat, newest first; open one with read_attachment and its id when it matters:\n- notes.txt (text/plain, id ${now!.id}) from Bob, with this message\n- shaver.png (image/png, id ${posted[0]!.id}) from Ann, 3 min ago]\n\nwhat is this?`,
+      `[Files and images posted in this chat, newest first; open one with read_attachment and its id when it matters:\n- notes.txt (text/plain, id ${now!.id}) from Bob, with this message\n- image.png (image/png, id ${posted[0]!.id}) from Ann, 3 min ago]\n\nwhat is this?`,
     );
     expect(withAttachments([], "hi")).toBe("hi");
 
