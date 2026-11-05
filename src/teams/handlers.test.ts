@@ -795,9 +795,11 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(s.runTurn).not.toHaveBeenCalled();
     expect(s.sent).toEqual([]);
     // a photo posted without a word is kept too, and the bot is told what is at hand when it is finally asked
-    const photo = { name: "toner.png", mediaType: "image/png", download: async () => Buffer.from("png") };
-    await handleMessage(s.deps, { ...msg("groupChat"), text: "", attachments: [photo], mentioned: false, from: { aadObjectId: "u1", name: "Ann" } }, s.io);
+    // the download takes a while and the question comes straight after, as from a phone: the answer still waits for the photo
+    const photo = { name: "toner.png", mediaType: "image/png", download: () => new Promise<Buffer>((r) => setTimeout(() => r(Buffer.from("png")), 100)) };
+    const posting = handleMessage(s.deps, { ...msg("groupChat"), text: "", attachments: [photo], mentioned: false, from: { aadObjectId: "u1", name: "Ann" } }, s.io);
     await group("mickey, r u there?", false);
+    await posting;
     expect(s.runTurn).toHaveBeenCalledTimes(1);
     const text = (s.runTurn.mock.calls[0] as any)[0].text as string;
     expect(text).toMatch(/^\[Files and images posted in this chat, newest first; open one with read_attachment and its id when it matters:\n- toner\.png \(image\/png, id [0-9a-f-]{36}\) from Ann, with this message\]\n\n/);

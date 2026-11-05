@@ -199,9 +199,11 @@ export async function handleMessage(
     // a photo alone still says something; kept only where the chat is listened to, like the words
     const names = msg.attachments?.map((a) => a.name) ?? [];
     const text = msg.text.trim() || (names.length ? `[sent ${names.join(", ")}]` : "");
-    if ((await recordOverheard(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, name: person.name, text, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) })) && names.length)
-      await storeAttachments(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, senderName: person.name, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) }, msg.attachments!);
-    return;
+    // in the chat's queue, so a question that follows a slow-to-download photo is answered with the photo at hand
+    return void (await serialize(`${msg.chatId}:${definition?.id}`, async () => {
+      if ((await recordOverheard(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, name: person.name, text, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) })) && names.length)
+        await storeAttachments(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, senderName: person.name, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) }, msg.attachments!);
+    }));
   }
   if (msg.conversationType !== "personal" && (!definition || msg.text.trim().toLowerCase() === "switch")) {
     const bots = await groupBots(db, msg.tenantId, person.id);
