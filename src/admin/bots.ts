@@ -133,7 +133,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
         const bots = links.filter((l) => l.connectionId === c.id);
         return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td>
 <td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
-<td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`}</td>
+<td>${c.status === "revoked" ? "" : c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm" title="forgets the pinned host key; only after you have checked the machine really changed it">reset host key</button></form>` : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`}</td>
 <td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
       });
       render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1></div></header>
@@ -697,7 +697,7 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th>
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       await resetHostKey(db, actor.tenantId, req.params.connectionId);
-      res.redirect(303, "/admin/bots");
+      res.redirect(303, req.get("referer")?.includes("/admin/bots/") ? "/admin/bots" : "/admin/connections");
     }),
   );
 

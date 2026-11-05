@@ -21,11 +21,22 @@ type Activity = { attachments?: { contentType?: string; contentUrl?: string; nam
  * a file (Teams uploads, OneDrive and SharePoint shares) brings a download link of its own. Cards and the HTML copy of the text are not files.
  */
 export function incomingAttachments(activity: Activity, fetchFn: typeof fetch, botToken: () => Promise<string>): IncomingAttachment[] {
-  const fetchBytes = async (url: string, token?: string) => {
+  // the Teams service now and then sits on a download for the whole timeout, then serves it at once on the next try
+  const fetchBytes = async (url: string, token?: string, retry = true): Promise<Buffer> => {
+    const started = Date.now();
     const r = await fetchFn(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(30_000) })
-      .catch((e: Error) => { throw new Error(`${e.message} (${new URL(url).host})`); });
+      .catch((e: Error) => {
+        if (retry && e.name === "TimeoutError") {
+          console.error(`attachment download from ${new URL(url).host} timed out, retrying`);
+          return undefined;
+        }
+        throw new Error(`${e.message} (${new URL(url).host})`);
+      });
+    if (!r) return fetchBytes(url, token, false);
     if (!r.ok) throw new Error(`attachment download ${r.status} from ${new URL(url).host}`);
-    return Buffer.from(await r.arrayBuffer());
+    const bytes = Buffer.from(await r.arrayBuffer());
+    console.log(`attachment downloaded: ${bytes.length} bytes in ${Date.now() - started} ms`);
+    return bytes;
   };
   const out: IncomingAttachment[] = [];
   const shapes = (activity.attachments ?? []).filter((a) => a.contentType !== "text/html").map((a) => `${a.contentType} ${a.contentUrl ? new URL(a.contentUrl).host : "-"}`);
