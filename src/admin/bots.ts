@@ -8,7 +8,7 @@ import {
 } from "../bots/definitions.js";
 import { and, count, eq } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
-import { accessToken, beginSignIn, discover, finishSignIn, oauthOf, OAuthError } from "../connections/oauth.js";
+import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
 import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
 import type { ConnectionKind, ConnectionMode } from "../connections/store.js";
 import { SQL_ENGINES } from "../connections/sql.js";
@@ -200,25 +200,40 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
     if (!mayEnter(actor)) return deny(res);
     const [c] = await db.select().from(connections).where(and(eq(connections.id, req.params.id), eq(connections.tenantId, actor.tenantId)));
     if (!c || !oauthOf(c) || c.status === "revoked") return page(res, 404, "No such sign-in.");
-    res.redirect(302, beginSignIn(c, oauthRedirect));
+    const login = beginSignIn(c, oauthRedirect);
+    if (!oauthOf(c)!.redirectUri) return res.redirect(302, login);
+    // the server registered only a loopback callback: after the login the browser lands on an address with nothing behind it, and the person brings that address here
+    render(res, "Sign in", html`<h1>Sign in to ${c.name}</h1>
+<p>1. <a href="${login}" target="_blank" rel="noopener">Open the login at ${c.target}</a> and sign in there.</p>
+<p>2. Afterwards the browser is sent to an address starting with <code>${LOOPBACK_REDIRECT}</code> and shows a page that cannot load. That is expected: copy the whole address from the address bar.</p>
+<form method="post" action="/admin/connections/${c.id}/signin/landed">${csrfField(res)}<p>3. <label>Paste it here <input name="url" size="80" required></label> <button class="be-btn primary">Finish sign-in</button></p></form>`);
   });
   // a link in the chat opens it with GET; the button on the page posts
   router.get("/connections/:id/signin", signIn);
   router.post("/connections/:id/signin", signIn);
-  router.get(
-    "/connections/oauth/callback",
+  router.post(
+    "/connections/:id/signin/landed",
     wrap(async (req, res) => {
-      const { actor } = adminOf(res);
-      if (!mayEnter(actor)) return deny(res);
-      const { code, state, error } = req.query as Record<string, string | undefined>;
-      if (error || !code || !state) return page(res, 400, `The sign-in did not complete${error ? ` (${error})` : ""}. Start it again from Connections.`);
-      const c = await finishSignIn(connDeps, actor.tenantId, state, code).catch((e) => { throw e instanceof OAuthError ? new DirectoryError(e.message) : e; });
-      // now the server talks to us: its read-only marks decide which tools run without a card
-      const tools = await listMcpToolInfo(fetchFn, { target: c.target, headers: { Authorization: `Bearer ${await accessToken(connDeps, c)}` } }).catch(() => []);
-      await db.update(connections).set({ config: { ...(c.config as object), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) } as never }).where(eq(connections.id, c.id));
-      render(res, "Signed in", html`<h1>Signed in to ${c.name}</h1><p>Every bot given this connection can use it now. ${tools.length ? `${tools.length} tools found.` : "No tools were listed; press test on the connection to check it."}</p><p><a href="${isAdmin(actor) ? "/admin/connections" : "/admin"}">Back</a></p>`);
+      const u = URL.parse(field(req, "url").trim());
+      if (!u) return page(res, 400, "That is not a web address. Copy the whole address from the browser's address bar.");
+      await completeSignIn(res, Object.fromEntries(u.searchParams));
     }),
   );
+  router.get(
+    "/connections/oauth/callback",
+    wrap(async (req, res) => completeSignIn(res, req.query as Record<string, string | undefined>)),
+  );
+  async function completeSignIn(res: Response, q: Record<string, string | undefined>) {
+    const { actor } = adminOf(res);
+    if (!mayEnter(actor)) return deny(res);
+    const { code, state, error } = q;
+    if (error || !code || !state) return page(res, 400, `The sign-in did not complete${error ? ` (${error})` : ""}. Start it again from Connections.`);
+    const c = await finishSignIn(connDeps, actor.tenantId, state, code).catch((e) => { throw e instanceof OAuthError ? new DirectoryError(e.message) : e; });
+    // now the server talks to us: its read-only marks decide which tools run without a card
+    const tools = await listMcpToolInfo(fetchFn, { target: c.target, headers: { Authorization: `Bearer ${await accessToken(connDeps, c)}` } }).catch(() => []);
+    await db.update(connections).set({ config: { ...(c.config as object), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) } as never }).where(eq(connections.id, c.id));
+    render(res, "Signed in", html`<h1>Signed in to ${c.name}</h1><p>Every bot given this connection can use it now. ${tools.length ? `${tools.length} tools found.` : "No tools were listed; press test on the connection to check it."}</p><p><a href="${isAdmin(actor) ? "/admin/connections" : "/admin"}">Back</a></p>`);
+  }
 
   const testPage = async (res: Response, actor: { tenantId: string; personId: string }, id: string) => {
     const output = await adminVerify(connDeps, actor.tenantId, id, actor.personId).catch((e) => (e instanceof ConnectionError ? `Failed: ${e.message}` : Promise.reject(e)));

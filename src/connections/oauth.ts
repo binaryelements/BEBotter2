@@ -6,7 +6,9 @@ import type { Connection } from "../db/schema.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
 /** An MCP server that signs BE Teammate in as an OAuth client (MCP authorization: RFC 9728 discovery, RFC 7591 registration, PKCE). */
-export type OAuthConfig = { clientId: string; authorizationEndpoint: string; tokenEndpoint: string; scope?: string };
+export type OAuthConfig = { clientId: string; authorizationEndpoint: string; tokenEndpoint: string; scope?: string; /** set when the server registered only a loopback callback: the person brings the address their browser lands on */ redirectUri?: string };
+/** The callback a server that registers only loopback addresses (Wasabi's, for one) accepts; nothing listens there, the person copies the address. */
+export const LOOPBACK_REDIRECT = "http://127.0.0.1:8976/callback";
 /** What the connection's secret holds once signed in; `expiresAt` 0 means the server gave no lifetime. */
 type Tokens = { access: string; refresh?: string; expiresAt: number; clientSecret?: string };
 type Deps = { db: Db; secretsKey: Buffer; fetchFn: typeof fetch };
@@ -43,18 +45,23 @@ export async function discover(fetchFn: typeof fetch, mcpUrl: string, redirectUr
   }
   if (!meta) return undefined;
   if (typeof meta!.registration_endpoint !== "string") fail("The server does not register clients, so BE Teammate can't sign in to it");
-  const reg = await getJson(fetchFn, meta!.registration_endpoint as string, {
+  const register = (uri: string) => getJson(fetchFn, meta!.registration_endpoint as string, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_name: "BE Teammate", redirect_uris: [redirectUri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }),
+    body: JSON.stringify({ client_name: "BE Teammate", redirect_uris: [uri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }),
   });
-  if (typeof reg?.client_id !== "string") fail(`${mcpUrl} has its own login but refused to register BE Teammate as a client (some servers only accept Claude's or Cursor's callback); its operator must allow the callback URL ${redirectUri}`);
+  let uri = redirectUri;
+  let reg = await register(uri);
+  // some servers register only loopback (and a few named) callbacks; then the person brings the code back by hand
+  if (typeof reg?.client_id !== "string") reg = await register((uri = LOOPBACK_REDIRECT));
+  if (typeof reg?.client_id !== "string") fail(`${mcpUrl} has its own login but refused to register BE Teammate as a client; its operator must allow the callback URL ${redirectUri}`);
   const scopes = resource?.scopes_supported;
   return {
     clientId: reg!.client_id as string,
     authorizationEndpoint: meta!.authorization_endpoint as string,
     tokenEndpoint: meta!.token_endpoint as string,
     ...(Array.isArray(scopes) && scopes.length ? { scope: scopes.join(" ") } : {}),
+    ...(uri !== redirectUri ? { redirectUri: uri } : {}),
     ...(typeof reg!.client_secret === "string" ? { clientSecret: reg!.client_secret } : {}),
   };
 }
@@ -63,9 +70,10 @@ export async function discover(fetchFn: typeof fetch, mcpUrl: string, redirectUr
 const pending = new Map<string, { tenantId: string; connectionId: string; verifier: string; redirectUri: string; at: number }>();
 const b64url = (b: Buffer) => b.toString("base64url");
 
-/** The URL to send the person to; the state remembers the connection for ten minutes. */
-export function beginSignIn(c: Connection, redirectUri: string): string {
+/** The URL to send the person to; the state remembers the connection for ten minutes. A loopback registration overrides the callback. */
+export function beginSignIn(c: Connection, callback: string): string {
   const oauth = oauthOf(c) ?? fail(`${c.name} is not an OAuth connection`);
+  const redirectUri = oauth.redirectUri ?? callback;
   for (const [k, v] of pending) if (Date.now() - v.at > SIGN_IN_TTL_MS) pending.delete(k);
   const verifier = b64url(randomBytes(32));
   const state = b64url(randomBytes(16));

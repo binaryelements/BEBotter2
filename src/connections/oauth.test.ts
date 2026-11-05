@@ -8,7 +8,7 @@ import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
-import { accessToken, beginSignIn, discover, finishSignIn } from "./oauth.js";
+import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT } from "./oauth.js";
 import { connectionMcpConfigs, createConnection, listConnections } from "./store.js";
 
 const key = randomBytes(32);
@@ -20,6 +20,7 @@ function fakeServer() {
   const calls: { url: string; body: string }[] = [];
   let issued = 0;
   let refuseRefresh = false;
+  let loopbackOnly = false;
   const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     const body = String(init?.body ?? "");
@@ -27,11 +28,15 @@ function fakeServer() {
     if (url === "https://mcp.example.test/.well-known/oauth-protected-resource/s3") return Response.json({ resource: MCP, authorization_servers: ["https://login.example.test/"], scopes_supported: ["s3:read", "s3:write"] });
     if (url === "https://login.example.test/.well-known/oauth-authorization-server")
       return Response.json({ authorization_endpoint: "https://login.example.test/authorize", token_endpoint: "https://login.example.test/token", registration_endpoint: "https://login.example.test/register" });
-    if (url === "https://login.example.test/register") return Response.json({ client_id: "client-1", redirect_uris: JSON.parse(body).redirect_uris }, { status: 201 });
+    if (url === "https://login.example.test/register") {
+      const uris = JSON.parse(body).redirect_uris as string[];
+      if (loopbackOnly && !uris[0]!.startsWith("http://127.0.0.1")) return Response.json({ error: "server_error" }, { status: 500 });
+      return Response.json({ client_id: "client-1", redirect_uris: uris }, { status: 201 });
+    }
     if (url === "https://login.example.test/token") {
       const p = new URLSearchParams(body);
       if (p.get("grant_type") === "authorization_code") {
-        if (p.get("code") !== "code-1" || p.get("redirect_uri") !== REDIRECT) return Response.json({ error: "invalid_grant" }, { status: 400 });
+        if (p.get("code") !== "code-1" || p.get("redirect_uri") !== (loopbackOnly ? LOOPBACK_REDIRECT : REDIRECT)) return Response.json({ error: "invalid_grant" }, { status: 400 });
         if (createHash("sha256").update(p.get("code_verifier")!).digest("base64url") !== fakeServer.challenge) return Response.json({ error: "invalid_grant" }, { status: 400 });
       } else if (p.get("grant_type") !== "refresh_token" || p.get("refresh_token") !== "refresh-1" || refuseRefresh) return Response.json({ error: "invalid_grant" }, { status: 400 });
       issued += 1;
@@ -39,7 +44,7 @@ function fakeServer() {
     }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
-  return { fetchFn, calls, refuse: () => (refuseRefresh = true) };
+  return { fetchFn, calls, refuse: () => (refuseRefresh = true), loopbackOnly: () => (loopbackOnly = true) };
 }
 fakeServer.challenge = "";
 
@@ -64,6 +69,18 @@ describe("mcp OAuth sign-in", () => {
     expect(oauth).toEqual({ clientId: "client-1", authorizationEndpoint: "https://login.example.test/authorize", tokenEndpoint: "https://login.example.test/token", scope: "s3:read s3:write" });
     expect(JSON.parse(server.calls.at(-1)!.body)).toMatchObject({ client_name: "BE Teammate", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" });
     await expect(discover(server.fetchFn, "https://nowhere.example.test/mcp", REDIRECT)).resolves.toBeUndefined();
+  });
+
+  it("a server that registers only loopback callbacks gets one, and the sign-in and token exchange use it", async () => {
+    server.loopbackOnly();
+    const oauth = await discover(server.fetchFn, MCP, REDIRECT);
+    expect(oauth).toMatchObject({ clientId: "client-1", redirectUri: LOOPBACK_REDIRECT });
+    expect(server.calls.filter((c) => c.url.endsWith("/register")).map((c) => JSON.parse(c.body).redirect_uris[0])).toEqual([REDIRECT, LOOPBACK_REDIRECT]);
+    const c = await createConnection({ db, secretsKey: key, ssh: fakeSsh() }, "t1", { kind: "mcp", name: "wasabi", target: MCP, mode: "read-only", config: { oauth, readOnlyTools: [] } as never, personId, definitionIds: [defId] });
+    const url = new URL(beginSignIn(c, REDIRECT));
+    expect(url.searchParams.get("redirect_uri")).toBe(LOOPBACK_REDIRECT);
+    fakeServer.challenge = url.searchParams.get("code_challenge")!;
+    expect((await finishSignIn(deps, "t1", url.searchParams.get("state")!, "code-1")).status).toBe("active");
   });
 
   it("an OAuth connection waits pending for the sign-in, then holds tokens the engine sends as a bearer header, refreshing them when stale", async () => {
