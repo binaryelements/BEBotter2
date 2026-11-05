@@ -15,7 +15,7 @@ import { connectionMcpConfigs } from "../connections/store.js";
 import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
-import { attachmentsMcpServer } from "../teams/attachments.js";
+import { attachmentsMcpServer, chatAttachment } from "../teams/attachments.js";
 import { learningsMcpServer } from "../learnings/mcp.js";
 import { learningsNote, listLearnings } from "../learnings/store.js";
 import type { Db } from "../db/client.js";
@@ -148,6 +148,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
       graphToken: async () => current()?.graphToken?.(),
       signInLost: () => current()?.signInLost(),
+      attachment: (id: string) => chatAttachment(db, chatId, id),
       get person() { return current()?.person; },
       get relay() { return current()?.relay ?? 0; },
       get askConfirmation() { return current()?.askConfirmation; },

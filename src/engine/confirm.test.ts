@@ -15,6 +15,9 @@ describe("Confirmations", () => {
     const { c, actionId, outcome } = make(["alice", "boss"]);
     await expect(c.resolve(actionId, "boss", "yes")).resolves.toBe("confirmed");
     await expect(outcome).resolves.toEqual({ result: "confirmed", personId: "boss" });
+    // a second delivery of the same click answers the same way, and only for a while
+    await expect(c.resolve(actionId, "boss", "yes")).resolves.toBe("confirmed");
+    vi.advanceTimersByTime(600_001);
     await expect(c.resolve(actionId, "boss", "yes")).resolves.toBe("unknown");
   });
 

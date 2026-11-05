@@ -10,7 +10,8 @@ import type { GraphDeps } from "./client.js";
  * graphToken: the token of the turn running now, read on every call; a warm engine outlives the turn that started it.
  * signInLost: Graph refused the token, so the turn signs the person out and their next message brings the sign-in card.
  */
-type Ctx = { graphToken: () => Promise<string | undefined>; signInLost?: () => void };
+type Ctx = { graphToken: () => Promise<string | undefined>; signInLost?: () => void; /** a file posted in the chat, for sending along */ attachment?: (id: string) => Promise<{ name: string; mediaType: string; bytes: Uint8Array } | undefined> };
+const ATTACH_LIMIT = 3 * 1024 * 1024; // Graph takes a message of 4 MB; the rest is the body and base64 overhead
 
 const PREVIEW = 300;
 const BODY = 20_000;
@@ -113,6 +114,18 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
   const g: GraphDeps = { fetchFn: deps.fetchFn, token: () => ctx.graphToken(), ...(deps.sleep ? { sleep: deps.sleep } : {}) };
   const get = async <T>(path: string, headers?: Record<string, string>) => (await graphFetch(g, path, headers ? { headers } : {})).json() as Promise<T>;
   const post = async (path: string, json: unknown) => (await graphFetch(g, path, { method: "POST", json })).body?.cancel();
+  const attachments = async (ids: string[] | undefined) => {
+    if (!ids?.length) return {};
+    let total = 0;
+    const list = [];
+    for (const id of ids) {
+      const a = await ctx.attachment?.(id);
+      if (!a) throw new Error(`No file with id ${id} was posted in this chat`);
+      if ((total += a.bytes.length) > ATTACH_LIMIT) throw new Error("The files add up to more than 3 MB, which is as much as one email can carry here; send fewer or smaller ones");
+      list.push({ "@odata.type": "#microsoft.graph.fileAttachment", name: a.name, contentType: a.mediaType, contentBytes: Buffer.from(a.bytes).toString("base64") });
+    }
+    return { attachments: list };
+  };
   const run = <A>(f: (a: A) => Promise<unknown>) => async (a: A) => {
     try {
       return ok(await f(a));
@@ -141,15 +154,16 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       const read = await readBytes(bytes, a.name ?? "", a.contentType ?? "", deps.readDocument);
       return "image" in read ? new Content([{ type: "image", ...read.image }]) : { ...details, ...read };
     }))],
-    ["mail.send", tool("send_mail", "Send an email as the person; they confirm it in the chat first.", { to: z.array(z.string()).min(1), cc: z.array(z.string()).optional(), subject: z.string(), body: z.string() }, run(async (a) => {
+    ["mail.send", tool("send_mail", "Send an email as the person; they confirm it in the chat first. attachmentIds: files or images posted in this chat (their ids are listed at the start of the message) to send along.", { to: z.array(z.string()).min(1), cc: z.array(z.string()).optional(), subject: z.string(), body: z.string(), attachmentIds: z.array(z.string()).optional() }, run(async (a) => {
       await post("/me/sendMail", {
-        message: { subject: a.subject, body: { contentType: "Text", content: a.body }, toRecipients: recipients(a.to), ...(a.cc?.length ? { ccRecipients: recipients(a.cc) } : {}) },
+        message: { subject: a.subject, body: { contentType: "Text", content: a.body }, toRecipients: recipients(a.to), ...(a.cc?.length ? { ccRecipients: recipients(a.cc) } : {}), ...(await attachments(a.attachmentIds)) },
         saveToSentItems: true,
       });
       return "Sent.";
     }))],
-    ["mail.send", tool("reply_mail", "Reply to an email as the person (all: reply to everyone); they confirm it in the chat first.", { id: z.string().min(1), body: z.string(), all: z.boolean().optional() }, run(async ({ id, body, all }) => {
-      await post(`/me/messages/${idPart(id)}/${all ? "replyAll" : "reply"}`, { comment: body });
+    ["mail.send", tool("reply_mail", "Reply to an email as the person (all: reply to everyone); they confirm it in the chat first. attachmentIds: files or images posted in this chat to send along.", { id: z.string().min(1), body: z.string(), all: z.boolean().optional(), attachmentIds: z.array(z.string()).optional() }, run(async ({ id, body, all, attachmentIds }) => {
+      const extra = await attachments(attachmentIds);
+      await post(`/me/messages/${idPart(id)}/${all ? "replyAll" : "reply"}`, { comment: body, ...("attachments" in extra ? { message: extra } : {}) });
       return "Sent.";
     }))],
     ["calendar.read", tool("list_events", `List the person's calendar between from and to, at most 31 days apart (${times}). Times come back in UTC.`, { from: z.string(), to: z.string() }, run(async ({ from, to }) => {
