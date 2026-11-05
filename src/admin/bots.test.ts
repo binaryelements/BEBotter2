@@ -284,9 +284,11 @@ describe("bots screen", () => {
       const h = await conn("revhttp", { kind: "http", target: "https://x.example.test", config: {}, publicKey: null });
       expect(await (await post(`/admin/connections/${h}/revoke`, "Ann", [["confirm", "yes"]])).text()).toContain("Revoke the token at its source");
     });
-    it("reset host key moves a blocked connection back to pending", async () => {
+    it("reset host key is offered on the Connections page for a blocked connection and moves it back to pending", async () => {
       const c = await conn("blk", { status: "blocked", hostKey: "k" });
-      expect((await post(`/admin/connections/${c}/reset-host-key`, "Ann", [])).status).toBe(303);
+      expect(await (await get("/admin/connections", "Ann")).text()).toContain(`/admin/connections/${c}/reset-host-key`);
+      const r = await post(`/admin/connections/${c}/reset-host-key`, "Ann", []);
+      expect([r.status, r.headers.get("location")]).toEqual([303, "/admin/connections"]);
       const [row] = await db.select().from(connections).where(eq(connections.id, c));
       expect([row.status, row.hostKey]).toEqual(["pending", null]);
     });

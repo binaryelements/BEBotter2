@@ -20,6 +20,20 @@ describe("chat attachments", () => {
     expect((await items[1]!.download()).toString()).toBe("hello");
   });
 
+  it("tries a download once more when the Teams service sits on it, and gives up on the second stall", async () => {
+    const stall = () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    const fetchFn = vi.fn().mockImplementationOnce(stall).mockImplementationOnce(async () => new Response(png)).mockImplementation(stall);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const item = () => incomingAttachments({ attachments: [{ contentType: "image/*", contentUrl: "https://smba.example/teams-img/1" }] }, fetchFn as unknown as typeof fetch, async () => "bot")[0]!;
+    expect(await item().download()).toEqual(png);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    await expect(item().download()).rejects.toThrow("timeout (smba.example)");
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    err.mockRestore();
+    log.mockRestore();
+  });
+
   it("keeps what was posted, lists the last ten minutes newest first, opens an image as itself and a text file as text, and prunes", async () => {
     const db = await testDb();
     await upsertTenant(db, { id: "t1" });
