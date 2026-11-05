@@ -69,10 +69,11 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
         },
         (a) =>
           run(async () => {
-            // an mcp server that says where to sign in gets the OAuth way; one that says nothing gets a pasted secret as before
-            const found = a.kind === "mcp" && !a.headerName && !a.needsSecret
+            // an mcp server that says where to sign in gets the OAuth way, whatever the bot guessed about a key; one that says nothing gets a pasted secret as before
+            const found = a.kind === "mcp"
               ? await discover(deps.fetchFn, a.target, `${deps.publicUrl}/admin/connections/oauth/callback`).catch((e) => { if (e instanceof OAuthError) return undefined; throw e; })
               : undefined;
+            if (found) a = { ...a, headerName: undefined, needsSecret: undefined };
             const { clientSecret, ...oauth } = found ?? {};
             const config: Record<string, unknown> =
               a.kind === "ssh" ? { port: a.port ?? 22, username: a.username ?? "" }

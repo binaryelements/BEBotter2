@@ -121,7 +121,8 @@ describe("connections mcp", () => {
     const definitionId = (await upsertDefinition(db, key, "t1", { name: "ops", label: "Ops", persona: "p" })).id;
     const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "" }), secretsKey: key, publicUrl: "https://bot.example.test", fetchFn }, { tenantId: "t1", definitionId, personId, confirmedBy: () => undefined });
     const tools = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
-    const r = (await tools.request!.handler({ kind: "mcp", name: "wasabi", target: "https://mcp.example.test/s3", mode: "read-only" })).content[0]!.text;
+    // the bot guessed the server wants a pasted key; the server's own login wins
+    const r = (await tools.request!.handler({ kind: "mcp", name: "wasabi", target: "https://mcp.example.test/s3", mode: "read-only", headerName: "Authorization", needsSecret: true })).content[0]!.text;
     const c = (await getConnection(db, "t1", "wasabi"))!;
     expect(r).toContain(`Sign-in link, for an admin or department head to open and log in to https://mcp.example.test/s3: https://bot.example.test/admin/connections/${c.id}/signin`);
     expect(r).not.toContain("Secret link");
