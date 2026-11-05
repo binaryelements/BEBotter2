@@ -22,6 +22,7 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__routine__post: "read",
   mcp__bots__tell_bot: "read", // the told bot's own tools ask their own confirmations
   mcp__computer__bash: "read",
+  mcp__attachments__read_attachment: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
   ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "read_attachment", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
   // Graph writes act as the person: they ask by default, and an admin may set one free per bot

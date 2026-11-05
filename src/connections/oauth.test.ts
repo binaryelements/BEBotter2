@@ -63,7 +63,7 @@ describe("mcp OAuth sign-in", () => {
     const oauth = await discover(server.fetchFn, MCP, REDIRECT);
     expect(oauth).toEqual({ clientId: "client-1", authorizationEndpoint: "https://login.example.test/authorize", tokenEndpoint: "https://login.example.test/token", scope: "s3:read s3:write" });
     expect(JSON.parse(server.calls.at(-1)!.body)).toMatchObject({ client_name: "BE Teammate", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" });
-    await expect(discover(server.fetchFn, "https://nowhere.example.test/mcp", REDIRECT)).rejects.toThrow(/no OAuth metadata/);
+    await expect(discover(server.fetchFn, "https://nowhere.example.test/mcp", REDIRECT)).resolves.toBeUndefined();
   });
 
   it("an OAuth connection waits pending for the sign-in, then holds tokens the engine sends as a bearer header, refreshing them when stale", async () => {

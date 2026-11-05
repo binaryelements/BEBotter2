@@ -176,7 +176,8 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
       let clientSecret: string | undefined;
       if (kind === "mcp" && field(req, "oauth") === "on") {
         // the tools are listed after the sign-in, when the server will talk to us
-        const { clientSecret: cs, ...oauth } = await discover(fetchFn, target, oauthRedirect).catch((e) => { throw e instanceof OAuthError ? new DirectoryError(e.message) : e; });
+        const { clientSecret: cs, ...oauth } = (await discover(fetchFn, target, oauthRedirect).catch((e) => { throw e instanceof OAuthError ? new DirectoryError(e.message) : e; }))
+          ?? (() => { throw new DirectoryError("The server did not say where to sign in: no OAuth metadata was found"); })();
         clientSecret = cs;
         config = { oauth, readOnlyTools: [] };
       } else if (kind === "mcp") {
