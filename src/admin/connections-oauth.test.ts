@@ -91,4 +91,22 @@ describe("signing in to an OAuth mcp server from the admin site", () => {
     expect(await (await get("/admin/connections", "Ann")).text()).toContain("active · signed in");
     expect(seen).not.toContain("https://mcp.example.test/.well-known/openid-configuration");
   });
+
+  it("a connection registered with a loopback callback shows a page to open the login and paste the address the browser lands on", async () => {
+    const oauth = { clientId: "cid", authorizationEndpoint: "https://mcp.example.test/authorize", tokenEndpoint: "https://mcp.example.test/token", redirectUri: "http://127.0.0.1:8976/callback" };
+    const [c] = await db.insert(connections).values({ id: "conn-loop", tenantId: T, name: "locked", kind: "mcp", target: MCP, config: { oauth, readOnlyTools: [] } as never, mode: "read-only", status: "pending", secretCipher: null, publicKey: null, hostKey: null, requestedByPersonId: id.Ann, approvedByPersonId: null }).returning();
+    const shown = await get(`/admin/connections/${c!.id}/signin`, "Hal");
+    expect(shown.status).toBe(200);
+    const body = await shown.text();
+    const login = new URL(body.match(/href="(https:\/\/mcp\.example\.test\/authorize[^"]*)"/)![1]!.replace(/&amp;/g, "&"));
+    expect(login.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:8976/callback");
+    expect(body).toContain("http://127.0.0.1:8976/callback");
+    expect(body).toContain(`action="/admin/connections/${c!.id}/signin/landed"`);
+    expect((await post(`/admin/connections/${c!.id}/signin/landed`, "Hal", [["url", "not a url"]])).status).toBe(400);
+    expect((await post(`/admin/connections/${c!.id}/signin/landed`, "Eve", [["url", `http://127.0.0.1:8976/callback?code=good&state=${login.searchParams.get("state")}`]])).status).toBe(403);
+    const done = await post(`/admin/connections/${c!.id}/signin/landed`, "Hal", [["url", `http://127.0.0.1:8976/callback?code=good&state=${login.searchParams.get("state")}`]]);
+    expect(done.status).toBe(200);
+    expect(await done.text()).toContain("Signed in to locked");
+    expect((await db.select().from(connections).where(eq(connections.id, c!.id)))[0]!.status).toBe("active");
+  });
 });
