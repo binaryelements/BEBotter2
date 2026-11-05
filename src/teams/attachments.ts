@@ -22,11 +22,14 @@ type Activity = { attachments?: { contentType?: string; contentUrl?: string; nam
  */
 export function incomingAttachments(activity: Activity, fetchFn: typeof fetch, botToken: () => Promise<string>): IncomingAttachment[] {
   const fetchBytes = async (url: string, token?: string) => {
-    const r = await fetchFn(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(30_000) });
-    if (!r.ok) throw new Error(`attachment download ${r.status}`);
+    const r = await fetchFn(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(30_000) })
+      .catch((e: Error) => { throw new Error(`${e.message} (${new URL(url).host})`); });
+    if (!r.ok) throw new Error(`attachment download ${r.status} from ${new URL(url).host}`);
     return Buffer.from(await r.arrayBuffer());
   };
   const out: IncomingAttachment[] = [];
+  const shapes = (activity.attachments ?? []).filter((a) => a.contentType !== "text/html").map((a) => `${a.contentType} ${a.contentUrl ? new URL(a.contentUrl).host : "-"}`);
+  if (shapes.length) console.log(`teams attachments: ${shapes.join(", ")}`);
   for (const a of activity.attachments ?? []) {
     const type = a.contentType ?? "";
     if (type.startsWith("image/") && a.contentUrl) {
