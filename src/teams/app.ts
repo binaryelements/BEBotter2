@@ -4,6 +4,7 @@ import type { Db } from "../db/client.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { findPersonId } from "../org/org.js";
+import { incomingAttachments } from "./attachments.js";
 import { resultCard } from "./cards.js";
 import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, signInFailed } from "./handlers.js";
 import type { TeamsStream } from "./handlers.js";
@@ -172,6 +173,9 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         } : {}),
         from: { aadObjectId: from.aadObjectId, name: from.name ?? "", ...(ctx.activity.localTimezone ? { timezone: ctx.activity.localTimezone } : {}) },
         text: (ctx.activity.text ?? "").trim(),
+        // the token the adapter itself uses for the Teams service, so an inline image downloads like a reply sends
+        attachments: incomingAttachments(ctx.activity, fetch, () =>
+          app.adapter.connectionManager.getTokenProviderFromActivity(ctx.identity, ctx.activity).getAccessToken(ctx.identity.azp ?? ctx.identity.appid ?? "https://api.botframework.com")),
         receivedAt,
         conversationReference: ctx.activity.getConversationReference(),
       },

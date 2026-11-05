@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
+import { pruneAttachments } from "../teams/attachments.js";
 import { pruneOverheard } from "../teams/overheard.js";
 import { auditEvents, tenants } from "../db/schema.js";
 import type { Authority, AuditEvent, TurnTimings } from "../db/schema.js";
@@ -93,7 +94,7 @@ export function startAuditPruning(db: Db, intervalMs: number, log: (line: string
   const run = async () => {
     try {
       const counts = [];
-      for (const t of await db.select({ id: tenants.id, days: tenants.retentionDays }).from(tenants)) counts.push(`${t.id}=${await pruneAudit(db, t.id, t.days)}+${await pruneOverheard(db, t.id, t.days)}`);
+      for (const t of await db.select({ id: tenants.id, days: tenants.retentionDays }).from(tenants)) counts.push(`${t.id}=${await pruneAudit(db, t.id, t.days)}+${await pruneOverheard(db, t.id, t.days)}+${await pruneAttachments(db, t.id, t.days)}`);
       log(`audit prune: ${counts.join(" ")}`);
     } catch (err) {
       console.error("audit prune failed", err);

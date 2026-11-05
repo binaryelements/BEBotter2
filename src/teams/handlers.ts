@@ -10,6 +10,8 @@ import { isAdmin, loadActor, mayUseDefinition } from "../admin/access.js";
 import { findPersonId, getTenantSettings, recordChatOwner, saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { botTitle, chooseBotCard, confirmationCard, resultCard, toolWords, withRoleLabel } from "./cards.js";
 import { recordOverheard, takeOverheard, withOverheard } from "./overheard.js";
+import { recentAttachments, storeAttachments, withAttachments } from "./attachments.js";
+import type { IncomingAttachment } from "./attachments.js";
 import type { AdaptiveCard } from "./cards.js";
 
 export type IncomingMessage = {
@@ -24,6 +26,8 @@ export type IncomingMessage = {
   mentionedOthers?: boolean;
   from: { aadObjectId: string; name: string; /** the sender's Teams client time zone, e.g. Australia/Melbourne */ timezone?: string };
   text: string;
+  /** Files and images on the message, fetched only once the bot keeps them. */
+  attachments?: IncomingAttachment[];
   receivedAt?: Date;
   conversationReference: unknown;
 };
@@ -192,7 +196,11 @@ export async function handleMessage(
   }
   // a group chat the bot may hear in full: it answers only when @mentioned or addressed by name, and keeps the rest as context
   if (msg.conversationType !== "personal" && msg.mentioned === false && !(definition && (addressedByName(msg.text, definition) || (await followUp(db, msg, definition.id, person.id))))) {
-    await recordOverheard(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, name: person.name, text: msg.text, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) });
+    // a photo alone still says something; kept only where the chat is listened to, like the words
+    const names = msg.attachments?.map((a) => a.name) ?? [];
+    const text = msg.text.trim() || (names.length ? `[sent ${names.join(", ")}]` : "");
+    if ((await recordOverheard(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, name: person.name, text, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) })) && names.length)
+      await storeAttachments(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, senderName: person.name, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) }, msg.attachments!);
     return;
   }
   if (msg.conversationType !== "personal" && (!definition || msg.text.trim().toLowerCase() === "switch")) {
@@ -277,12 +285,14 @@ export async function handleMessage(
     };
     try {
       const heard = personal ? [] : await takeOverheard(db, msg.chatId);
+      if (msg.attachments?.length) await storeAttachments(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, senderName: person.name, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) }, msg.attachments);
+      const now = msg.receivedAt ?? new Date();
       const result = await deps.runTurn({
         tenantId: msg.tenantId,
         chatId: msg.chatId,
         definition,
         person,
-        text: withOverheard(heard, msg.text),
+        text: withAttachments(await recentAttachments(db, msg.chatId, now), withOverheard(heard, msg.text), now),
         receivedAt: msg.receivedAt,
         ...(graphToken ? { graphToken } : {}),
         askConfirmation: async (req) => {

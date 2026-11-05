@@ -794,11 +794,19 @@ describe("choosing the bot in a one-to-one chat", () => {
     await group("I'll check the toner", false, "u1");
     expect(s.runTurn).not.toHaveBeenCalled();
     expect(s.sent).toEqual([]);
+    // a photo posted without a word is kept too, and the bot is told what is at hand when it is finally asked
+    const photo = { name: "toner.png", mediaType: "image/png", download: async () => Buffer.from("png") };
+    await handleMessage(s.deps, { ...msg("groupChat"), text: "", attachments: [photo], mentioned: false, from: { aadObjectId: "u1", name: "Ann" } }, s.io);
     await group("mickey, r u there?", false);
     expect(s.runTurn).toHaveBeenCalledTimes(1);
-    expect((s.runTurn.mock.calls[0] as any)[0].text).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nBob: the printer is down\nAnn: I'll check the toner]\n\nmickey, r u there?");
+    const text = (s.runTurn.mock.calls[0] as any)[0].text as string;
+    expect(text).toMatch(/^\[Files and images posted in this chat, newest first; open one with read_attachment and its id when it matters:\n- toner\.png \(image\/png, id [0-9a-f-]{36}\) from Ann, with this message\]\n\n/);
+    expect(text.split("\n\n").slice(1).join("\n\n")).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nBob: the printer is down\nAnn: I'll check the toner\nAnn: [sent toner.png]]\n\nmickey, r u there?");
     await group("fixed now", true);
-    expect((s.runTurn.mock.calls[1] as any)[0].text).toBe("fixed now");
+    // the photo stays listed for ten minutes, so a later "what was that?" can open it
+    const body = (t: string) => t.replace(/^\[Files and images posted[\s\S]*?\]\n\n/, "");
+    expect((s.runTurn.mock.calls[1] as any)[0].text).toMatch(/^\[Files and images posted/);
+    expect(body((s.runTurn.mock.calls[1] as any)[0].text)).toBe("fixed now");
     // follow-ups: for two minutes after the bot answered Bob, Bob needs no name; Ann does, and so does Bob when he talks to Ann
     const bob = await upsertPerson(s.db, { tenantId: "t1", aadObjectId: "u2", name: "Bob" });
     const answered = await beginAction(s.db, { tenantId: "t1", chatId: "c1", definitionId: a.id, personId: bob.id, kind: "message", summary: "fixed now" });
@@ -808,7 +816,7 @@ describe("choosing the bot in a one-to-one chat", () => {
     await group("thanks all", false, "u2", true);
     expect(s.runTurn).toHaveBeenCalledTimes(2);
     await group("check zfs", false);
-    expect((s.runTurn.mock.calls[2] as any)[0].text).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nAnn: fine\nBob: Ann, can you check the toner\nBob: thanks all]\n\ncheck zfs");
+    expect(body((s.runTurn.mock.calls[2] as any)[0].text)).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nAnn: fine\nBob: Ann, can you check the toner\nBob: thanks all]\n\ncheck zfs");
     await s.db.update(auditEvents).set({ finishedAt: new Date(Date.now() - 3 * 60_000) }).where(eq(auditEvents.id, answered));
     await group("still there?", false);
     expect(s.runTurn).toHaveBeenCalledTimes(3);

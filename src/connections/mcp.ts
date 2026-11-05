@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { people } from "../db/schema.js";
 import type { Connection } from "../db/schema.js";
+import { discover, OAuthError, oauthOf } from "./oauth.js";
 import { createSecretLink } from "./secret-links.js";
 import { approveConnection, ConnectionError, linkedConnection, listConnectionsFor, needsSecret, requestConnection, runHttp, runSql, runSsh, verifyConnection } from "./store.js";
 import type { ConnectionDeps } from "./store.js";
@@ -47,7 +48,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       tool(
         "request",
         "Request access to a system. ssh: target is the host, give username (and port if not 22); you get the public key to have installed. " +
-          "http: target is the base URL; auth says where the service adds the secret. mcp: target is the server URL; readOnlyTools names the tools that only read. " +
+          "http: target is the base URL; auth says where the service adds the secret. mcp: target is the server URL; readOnlyTools names the tools that only read; a server with its own login (OAuth) is found on its own, and the result then holds a sign-in link for an admin or department head instead of a secret link. " +
           "sql: target is the database server's host; give engine (postgres, mysql or mssql), database and username (port if not the usual one, tls if the server needs it); the password always comes through the secret link. " +
           "read-only connections must use an account or token that can only read. " +
           "Secrets are never typed into the chat: when an http, mcp or sql connection needs one, the result holds a one-time link (30 minutes, only for the person asking); send them that link instead.",
@@ -68,17 +69,24 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
         },
         (a) =>
           run(async () => {
+            // an mcp server that says where to sign in gets the OAuth way; one that says nothing gets a pasted secret as before
+            const found = a.kind === "mcp" && !a.headerName && !a.needsSecret
+              ? await discover(deps.fetchFn, a.target, `${deps.publicUrl}/admin/connections/oauth/callback`).catch((e) => { if (e instanceof OAuthError) return undefined; throw e; })
+              : undefined;
+            const { clientSecret, ...oauth } = found ?? {};
             const config: Record<string, unknown> =
               a.kind === "ssh" ? { port: a.port ?? 22, username: a.username ?? "" }
               : a.kind === "http" ? (a.auth ? { auth: a.auth } : {})
               : a.kind === "sql" ? { engine: a.engine, port: a.port, database: a.database, username: a.username, tls: a.tls }
-              : { ...(a.headerName ? { headerName: a.headerName } : {}), readOnlyTools: a.readOnlyTools ?? [] };
+              : { ...(a.headerName ? { headerName: a.headerName } : {}), ...(found ? { oauth } : {}), readOnlyTools: a.readOnlyTools ?? [] };
             const { connection, publicKey } = await requestConnection(deps, tenantId, {
-              kind: a.kind, name: a.name, target: a.target, mode: a.mode, config: config as never, needsSecret: a.needsSecret, definitionId, personId: ctx.personId,
+              kind: a.kind, name: a.name, target: a.target, mode: a.mode, config: config as never, needsSecret: a.needsSecret, ...(clientSecret ? { clientSecret } : {}), definitionId, personId: ctx.personId,
             });
-            const waiting = needsSecret(connection) && !connection.secretCipher && connection.status !== "revoked";
-            // only the person who asked for the connection may supply its secret
+            const signedIn = (c: Connection) => c.status === "active" || c.status === "awaiting-approval";
+            const waiting = needsSecret(connection) && !signedIn(connection) && (oauthOf(connection) || !connection.secretCipher) && connection.status !== "revoked";
+            // only the person who asked for the connection may supply its secret; a sign-in is for an admin or department head, whoever asked
             const secretLine = !waiting ? []
+              : oauthOf(connection) ? [`Sign-in link, for an admin or department head to open and log in to ${connection.target}: ${deps.publicUrl}/admin/connections/${connection.id}/signin`]
               : connection.requestedByPersonId === ctx.personId ? [`Secret link: ${await createSecretLink(db, tenantId, connection.id, ctx.personId, deps.publicUrl)}`]
               : [`The secret link went to ${await personName(db, tenantId, connection.requestedByPersonId)}, who asked for this connection; they can ask again for a fresh link.`];
             return [facts(connection), ...(publicKey ? [`Public key: ${publicKey}`] : []), ...secretLine].join("\n");
