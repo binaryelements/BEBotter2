@@ -109,4 +109,23 @@ describe("connections mcp", () => {
     const plain = await call("request", { kind: "mcp", name: "open", target: "https://mcp.example.test/open", mode: "read-only" });
     expect(plain.content[0].text).not.toContain("Secret link");
   });
+
+  it("an mcp server with its own login is registered with and the request gives a sign-in link, not a secret link", async () => {
+    const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://mcp.example.test/.well-known/oauth-protected-resource/s3") return Response.json({ authorization_servers: ["https://login.example.test/"] });
+      if (url === "https://login.example.test/.well-known/oauth-authorization-server") return Response.json({ authorization_endpoint: "https://login.example.test/authorize", token_endpoint: "https://login.example.test/token", registration_endpoint: "https://login.example.test/register" });
+      if (url === "https://login.example.test/register") return Response.json({ client_id: "client-1", redirect_uris: JSON.parse(String(init?.body)).redirect_uris }, { status: 201 });
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    const definitionId = (await upsertDefinition(db, key, "t1", { name: "ops", label: "Ops", persona: "p" })).id;
+    const server = connectionsMcpServer({ db, ssh: fakeSsh({ output: "" }), secretsKey: key, publicUrl: "https://bot.example.test", fetchFn }, { tenantId: "t1", definitionId, personId, confirmedBy: () => undefined });
+    const tools = (server.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
+    const r = (await tools.request!.handler({ kind: "mcp", name: "wasabi", target: "https://mcp.example.test/s3", mode: "read-only" })).content[0]!.text;
+    const c = (await getConnection(db, "t1", "wasabi"))!;
+    expect(r).toContain(`Sign-in link, for an admin or department head to open and log in to https://mcp.example.test/s3: https://bot.example.test/admin/connections/${c.id}/signin`);
+    expect(r).not.toContain("Secret link");
+    expect((c.config as { oauth?: { clientId: string } }).oauth?.clientId).toBe("client-1");
+    expect((await tools.verify!.handler({ name: "wasabi" })).content[0]!.text).toBe("wasabi: pending\nWaiting for the sign-in");
+  });
 });

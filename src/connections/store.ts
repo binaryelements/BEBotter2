@@ -27,6 +27,8 @@ export type ConnectionRequest = {
   config: ConnectionConfig;
   /** http/mcp: the person supplies a secret through a one-time link; it needs `auth` (http) or `headerName` (mcp) to say where it goes. */
   needsSecret?: boolean;
+  /** mcp OAuth: a secret the server's registration handed out, kept for token requests */
+  clientSecret?: string;
   definitionId: string;
   personId: string;
 };
@@ -164,7 +166,7 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
     if (existing.status === "pending" && (JSON.stringify(existing.config) !== JSON.stringify(config) || existing.mode !== input.mode)) {
       // a secret given for the old settings may belong somewhere else now, so it is asked for again (an ssh key stays)
       const [row] = await db.update(connections)
-        .set({ config, mode: input.mode, ...(existing.kind === "ssh" ? {} : { secretCipher: null }), updatedAt: new Date() })
+        .set({ config, mode: input.mode, ...(existing.kind === "ssh" ? {} : { secretCipher: input.clientSecret ? clientSecretCipher(deps.secretsKey, input.clientSecret) : null }), updatedAt: new Date() })
         .where(and(byId(tenantId, existing.id), eq(connections.status, "pending"))).returning();
       if (row) return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
     }
@@ -173,7 +175,7 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   const key = input.kind === "ssh" ? await deps.ssh.generateKey(`${definition!.name}@${input.name}`) : undefined;
   const values = {
     kind: input.kind, target: input.target, config, mode: input.mode, status: "pending",
-    secretCipher: key ? encrypt(deps.secretsKey, key.privateKey) : null, publicKey: key?.publicKey ?? null, hostKey: null,
+    secretCipher: key ? encrypt(deps.secretsKey, key.privateKey) : input.clientSecret ? clientSecretCipher(deps.secretsKey, input.clientSecret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
     requestedByPersonId: input.personId, approvedByPersonId: null, updatedAt: new Date(),
   };
   // a revoked connection keeps its row and starts over; a concurrent request for a new name loses the race and gets the winner
@@ -187,7 +189,7 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
 }
 
-export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; /** mcp OAuth: a secret the server's registration handed out, kept for token requests */ clientSecret?: string; definitionIds: string[] };
+export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; definitionIds: string[] };
 
 /** An admin sets a connection up with its secret typed in, so it is approved at once; ssh still needs its key installed and a verify, and an OAuth mcp server a sign-in. */
 export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, tenantId: string, input: AdminConnectionInput): Promise<Connection> {

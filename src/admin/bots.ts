@@ -194,16 +194,16 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
   );
 
   // an admin or a department head signs in to an OAuth mcp server for every bot that has it; the browser goes to the server's login and comes back below
-  router.post(
-    "/connections/:id/signin",
-    wrap(async (req, res) => {
-      const { actor } = adminOf(res);
-      if (!mayEnter(actor)) return deny(res);
-      const [c] = await db.select().from(connections).where(and(eq(connections.id, req.params.id), eq(connections.tenantId, actor.tenantId)));
-      if (!c || !oauthOf(c) || c.status === "revoked") return page(res, 404, "No such sign-in.");
-      res.redirect(302, beginSignIn(c, oauthRedirect));
-    }),
-  );
+  const signIn = wrap(async (req, res) => {
+    const { actor } = adminOf(res);
+    if (!mayEnter(actor)) return deny(res);
+    const [c] = await db.select().from(connections).where(and(eq(connections.id, req.params.id), eq(connections.tenantId, actor.tenantId)));
+    if (!c || !oauthOf(c) || c.status === "revoked") return page(res, 404, "No such sign-in.");
+    res.redirect(302, beginSignIn(c, oauthRedirect));
+  });
+  // a link in the chat opens it with GET; the button on the page posts
+  router.get("/connections/:id/signin", signIn);
+  router.post("/connections/:id/signin", signIn);
   router.get(
     "/connections/oauth/callback",
     wrap(async (req, res) => {

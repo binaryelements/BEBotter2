@@ -112,9 +112,9 @@ describe("startAuditPruning", () => {
     await old();
     const log = vi.fn();
     const stop = startAuditPruning(db, 200, log);
-    await vi.waitFor(() => expect(log).toHaveBeenCalledWith("audit prune: t1=1+0"));
+    await vi.waitFor(() => expect(log).toHaveBeenCalledWith("audit prune: t1=1+0+0"));
     await old();
-    await vi.waitFor(() => expect(log.mock.calls.filter(([l]) => l === "audit prune: t1=1+0")).toHaveLength(2), { timeout: 5000 });
+    await vi.waitFor(() => expect(log.mock.calls.filter(([l]) => l === "audit prune: t1=1+0+0")).toHaveLength(2), { timeout: 5000 });
     stop();
     expect(await listActions(db, { tenantId: "t1" })).toEqual([]);
   });

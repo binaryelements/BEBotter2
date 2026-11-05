@@ -2,7 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { GraphCapability } from "../db/schema.js";
-import { OFFICE } from "../engine/office-pdf.js";
+import { readBytes, TEXT_NAME, TEXT_TYPE } from "../engine/read-document.js";
 import { GraphError, graphFetch } from "./client.js";
 import type { GraphDeps } from "./client.js";
 
@@ -97,14 +97,6 @@ const event = (e: Event) => ({
 type DriveItem = { id: string; name: string; size?: number; webUrl?: string; lastModifiedDateTime?: string; folder?: unknown; file?: { mimeType?: string }; "@microsoft.graph.downloadUrl"?: string };
 const FILE_FIELDS = "id,name,size,webUrl,lastModifiedDateTime,folder";
 const item = (f: DriveItem) => ({ id: f.id, name: f.name, size: f.size, modified: f.lastModifiedDateTime, webUrl: f.webUrl, ...(f.folder ? { folder: true } : {}) });
-const TEXT_TYPE = /^(text\/|application\/(json|xml|csv|x-yaml|yaml|javascript|x-sh)\b)/;
-const TEXT_NAME = /\.(txt|md|csv|tsv|json|xml|html?|log|ya?ml|ini|sql|js|ts|py|sh)$/i;
-const IMAGE_TYPE = /^image\/(png|jpeg|gif|webp)$/;
-const MAX_IMAGE = 3_750_000; // bytes: the model's limit for one image
-const MAX_ATTACHMENT = 10 * 1024 * 1024;
-// shortcut: one document stops here, to stay under the tool result limit (about 25,000 tokens); add paging if longer ones matter
-const MAX_DOCUMENT = 80_000;
-const documentText = (text: string) => (text.length > MAX_DOCUMENT ? { text: text.slice(0, MAX_DOCUMENT), note: `cut short: first ${MAX_DOCUMENT} of ${text.length} characters` } : { text });
 type Attachment = { "@odata.type"?: string; id: string; name?: string; contentType?: string; size?: number; isInline?: boolean; contentBytes?: string };
 const attachment = (a: Attachment) => ({ id: a.id, name: a.name, type: a.contentType, size: a.size, ...(a.isInline ? { inline: true } : {}) });
 
@@ -146,14 +138,8 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       const details = attachment(a);
       const bytes = a["@odata.type"] === "#microsoft.graph.fileAttachment" && a.contentBytes ? Buffer.from(a.contentBytes, "base64") : undefined;
       if (!bytes) return { ...details, note: "an attached email or link, not a file" };
-      if (bytes.length > MAX_ATTACHMENT) return { ...details, note: "too large to read" };
-      const type = a.contentType ?? "";
-      if (TEXT_TYPE.test(type) || TEXT_NAME.test(a.name ?? "")) return { ...details, ...documentText(bytes.toString("utf8")) };
-      if (IMAGE_TYPE.test(type) && bytes.length <= MAX_IMAGE) return new Content([{ type: "image", data: a.contentBytes!, mimeType: type }]);
-      const name = a.name ?? "";
-      const pdf = type === "application/pdf" || /\.pdf$/i.test(name);
-      if ((pdf || OFFICE.test(name)) && deps.readDocument) return { ...details, ...documentText(await deps.readDocument(a.contentBytes!, pdf ? name || "file.pdf" : name)) };
-      return { ...details, note: "not readable as text" };
+      const read = await readBytes(bytes, a.name ?? "", a.contentType ?? "", deps.readDocument);
+      return "image" in read ? new Content([{ type: "image", ...read.image }]) : { ...details, ...read };
     }))],
     ["mail.send", tool("send_mail", "Send an email as the person; they confirm it in the chat first.", { to: z.array(z.string()).min(1), cc: z.array(z.string()).optional(), subject: z.string(), body: z.string() }, run(async (a) => {
       await post("/me/sendMail", {

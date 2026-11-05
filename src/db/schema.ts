@@ -1,4 +1,4 @@
-import { boolean, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { boolean, customType, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 
 export type McpServerRecord = {
   name: string;
@@ -84,6 +84,25 @@ export const chatMessages = pgTable(
   (t) => [index("chat_messages_chat_idx").on(t.chatId, t.at)],
 );
 export type ChatMessage = typeof chatMessages.$inferSelect;
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+/** A file or image someone posted in a chat, kept so the bot can open it in this turn or a later one; pruned with the audit. */
+export const chatAttachments = pgTable(
+  "chat_attachments",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    chatId: text("chat_id").notNull().references(() => chats.id),
+    personId: text("person_id").references(() => people.id),
+    name: text("name").notNull(),
+    senderName: text("sender_name").notNull(),
+    mediaType: text("media_type").notNull(),
+    bytes: bytea("bytes").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("chat_attachments_chat_idx").on(t.chatId, t.at)],
+);
+export type ChatAttachment = typeof chatAttachments.$inferSelect;
 
 export const botDefinitions = pgTable(
   "bot_definitions",

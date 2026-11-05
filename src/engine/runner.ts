@@ -15,6 +15,7 @@ import { connectionMcpConfigs } from "../connections/store.js";
 import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { routineMcpServer } from "../routines/mcp.js";
+import { attachmentsMcpServer } from "../teams/attachments.js";
 import { learningsMcpServer } from "../learnings/mcp.js";
 import { learningsNote, listLearnings } from "../learnings/store.js";
 import type { Db } from "../db/client.js";
@@ -186,6 +187,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
         knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
         ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
         routine: routineMcpServer(deps, ctx),
+        attachments: attachmentsMcpServer(deps, ctx),
         learnings: learningsMcpServer(deps, ctx, personal),
         // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
         bots: tellMcpServer({ db, run: (t) => runTurn(deps, t as RunTurnInput), ...(deps.personToken ? { personToken: deps.personToken } : {}) }, ctx),

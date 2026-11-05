@@ -72,6 +72,8 @@ describe("signing in to an OAuth mcp server from the admin site", () => {
 
     // a department head may start the sign-in; a plain user may not
     expect((await post(`/admin/connections/${c!.id}/signin`, "Eve", [])).status).toBe(403);
+    expect((await get(`/admin/connections/${c!.id}/signin`, "Eve")).status).toBe(403);
+    expect((await get(`/admin/connections/${c!.id}/signin`, "Hal")).status).toBe(302); // the link a bot gives in the chat
     const started = await post(`/admin/connections/${c!.id}/signin`, "Hal", []);
     expect(started.status).toBe(302);
     const state = new URL(started.headers.get("location")!).searchParams.get("state")!;
