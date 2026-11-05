@@ -24,7 +24,8 @@ const json = (v: unknown, status = 200) => () => new Response(JSON.stringify(v),
 
 function server(fetchFn: typeof fetch, capabilities: readonly GraphCapability[] = GRAPH_CAPABILITIES, token: () => Promise<string | undefined> = async () => TOKEN, readDocument?: (pdf: string) => Promise<string>) {
   const signInLost = vi.fn();
-  const s = m365McpServer({ fetchFn, sleep: async () => {}, ...(readDocument ? { readDocument } : {}) }, { graphToken: token, signInLost }, capabilities);
+  const files: Record<string, { name: string; mediaType: string; bytes: Uint8Array }> = { f1: { name: "switch.jpg", mediaType: "image/jpeg", bytes: Buffer.from("jpg") }, big: { name: "big.bin", mediaType: "application/octet-stream", bytes: Buffer.alloc(3 * 1024 * 1024 + 1) } };
+  const s = m365McpServer({ fetchFn, sleep: async () => {}, ...(readDocument ? { readDocument } : {}) }, { graphToken: token, signInLost, attachment: async (id) => files[id] }, capabilities);
   const tools = (s.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
   return {
     signInLost,
@@ -139,9 +140,16 @@ describe("m365 mcp", () => {
     expect(g.seen).toHaveLength(0);
   });
 
-  it("send and reply post to Graph as the person", async () => {
+  it("send and reply post to Graph as the person, with files from the chat along; an unknown or oversize file is refused before anything is sent", async () => {
     const g = graph();
     const s = server(g.fetchFn);
+    expect((await s.call("send_mail", { to: ["bea@example.test"], subject: "Pic", body: "See attached", attachmentIds: ["f1"] })).isError).toBeUndefined();
+    expect(JSON.parse(g.seen[0]!.body!).message.attachments).toEqual([{ "@odata.type": "#microsoft.graph.fileAttachment", name: "switch.jpg", contentType: "image/jpeg", contentBytes: Buffer.from("jpg").toString("base64") }]);
+    expect((await s.call("reply_mail", { id: "m1", body: "here", attachmentIds: ["f1"] })).isError).toBeUndefined();
+    expect(JSON.parse(g.seen[1]!.body!)).toMatchObject({ comment: "here", message: { attachments: [{ name: "switch.jpg" }] } });
+    for (const ids of [["nope"], ["big"]]) expect((await s.call("send_mail", { to: ["bea@example.test"], subject: "x", body: "y", attachmentIds: ids })).isError).toBe(true);
+    expect(g.seen).toHaveLength(2);
+    g.seen.length = 0;
     expect((await s.call("send_mail", { to: ["bea@example.test"], cc: ["cy@example.test"], subject: "Hi", body: "Hello" })).isError).toBeUndefined();
     expect(g.seen[0]).toMatchObject({ method: "POST", url: new URL("https://graph.microsoft.com/v1.0/me/sendMail") });
     expect(JSON.parse(g.seen[0]!.body!)).toEqual({

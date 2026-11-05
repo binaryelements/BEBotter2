@@ -5,6 +5,8 @@ type Pending = { mayConfirm: (personId: string) => Promise<boolean>; settle: (o:
 /** In-memory by design: a restart expires every pending confirmation. */
 export class Confirmations {
   private pending = new Map<string, Pending>();
+  // Teams delivers a click twice now and then; the second must not turn "Confirmed by" into "expired"
+  private settled = new Map<string, "confirmed" | "denied">();
 
   constructor(private schedule: (fn: () => void, ms: number) => unknown = setTimeout) {}
 
@@ -16,6 +18,10 @@ export class Confirmations {
     const outcome = new Promise<Outcome>((resolve) => {
       const settle = (o: Outcome) => {
         this.pending.delete(actionId);
+        if (o.result !== "expired") {
+          this.settled.set(actionId, o.result);
+          (this.schedule(() => this.settled.delete(actionId), opts.ttlMs ?? 600_000) as { unref?: () => void } | undefined)?.unref?.();
+        }
         resolve(o);
       };
       this.pending.set(actionId, { mayConfirm: opts.mayConfirm, settle });
@@ -27,9 +33,9 @@ export class Confirmations {
 
   async resolve(actionId: string, personId: string, answer: "yes" | "no"): Promise<"confirmed" | "denied" | "not_allowed" | "unknown"> {
     const p = this.pending.get(actionId);
-    if (!p) return "unknown";
+    if (!p) return this.settled.get(actionId) ?? "unknown";
     if (!(await p.mayConfirm(personId).catch(() => false))) return "not_allowed";
-    if (this.pending.get(actionId) !== p) return "unknown"; // settled while the policy was being checked
+    if (this.pending.get(actionId) !== p) return this.settled.get(actionId) ?? "unknown"; // settled while the policy was being checked
     p.settle(answer === "yes" ? { result: "confirmed", personId } : { result: "denied" });
     return answer === "yes" ? "confirmed" : "denied";
   }

@@ -4,6 +4,7 @@ import { and, desc, eq, gt, lt } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { chatAttachments } from "../db/schema.js";
+import type { ChatAttachment } from "../db/schema.js";
 import { MAX_ATTACHMENT, readBytes, sniffImage } from "../engine/read-document.js";
 
 /** A file or image that came with a Teams message; `download` fetches it once, with the bot's own token where Teams needs one. */
@@ -97,13 +98,17 @@ export async function pruneAttachments(db: Db, tenantId: string, retentionDays: 
 }
 
 /** The bot opens a file or image posted in the chat it is in: an image as itself, a document as text. */
+/** A file posted in this chat, by the id the model was shown; another chat's file is not found. */
+export const chatAttachment = async (db: Db, chatId: string, id: string): Promise<ChatAttachment | undefined> =>
+  (await db.select().from(chatAttachments).where(and(eq(chatAttachments.id, id), eq(chatAttachments.chatId, chatId))))[0];
+
 export function attachmentsMcpServer(deps: { db: Db; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: { chatId: string }): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: "attachments",
     tools: [
       tool("read_attachment", "Open a file or image posted in this chat (ids are listed at the start of the message): text, PDF, Word, PowerPoint, Excel and images; other kinds give their details only.", { id: z.string().min(1) }, async ({ id }) => {
         try {
-          const [a] = await deps.db.select().from(chatAttachments).where(and(eq(chatAttachments.id, id), eq(chatAttachments.chatId, ctx.chatId)));
+          const a = await chatAttachment(deps.db, ctx.chatId, id);
           if (!a) return { isError: true, content: [{ type: "text" as const, text: "No such attachment in this chat." }] };
           const read = await readBytes(Buffer.from(a.bytes), a.name, a.mediaType, deps.readDocument); // a bytea comes back as a bare byte array from some drivers
           if ("image" in read) return { content: [{ type: "image" as const, ...read.image }] };
