@@ -92,7 +92,7 @@ describe("bots screen", () => {
   it("an admin adds an sql connection with its password and gives it to a bot; the page never shows the password", async () => {
     const d = await def("helper");
     const res = await post("/admin/connections", "Ann", [
-      ["name", "sap"], ["kind", "sql"], ["target", "sql1.example.test"], ["mode", "read-only"], ["engine", "mssql"], ["database", "SBO"], ["username", "reader"], ["secret", "pw-top"], ["definitionId", d.id],
+      ["name", "sap"], ["kind", "sql"], ["target", "sql1.example.test"], ["mode", "read-only"], ["engine", "mssql"], ["database", "SBO"], ["username", "reader"], ["secret", "pw-top"], ["definitionId", d.id], ["description", "SAP B1 company database; look things up, never write"],
     ]);
     expect(res.status).toBe(200); // the test page, straight after saving
     const tested = await res.text();
@@ -101,7 +101,11 @@ describe("bots screen", () => {
     const page = await (await get("/admin/connections", "Ann")).text();
     expect(page).toMatch(/<td>sap<\/td><td>sql<\/td><td>sql1\.example\.test<\/td><td>read-only<\/td><td>active<\/td>/);
     expect(page).toContain(`/admin/bots/${d.id}?tab=connections`);
+    expect(page).toContain("SAP B1 company database; look things up, never write");
     expect(page).not.toContain("pw-top");
+    const id = page.match(/\/admin\/connections\/([^/]+)\/description/)![1];
+    expect((await post(`/admin/connections/${id}/description`, "Ann", [["description", "SAP B1 live company; read only"]])).status).toBe(303);
+    expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("SAP B1 live company; read only");
     expect((await post("/admin/connections", "Ann", [["name", "sap"], ["kind", "sql"], ["target", "x"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"]])).status).toBe(400);
     expect((await post("/admin/connections", "Hal", [["name", "x"], ["kind", "http"], ["target", "https://x.test/"], ["mode", "read-only"]])).status).toBe(403);
   });

@@ -19,7 +19,7 @@ const fail = (e: unknown) => {
   return { isError: true, content: [{ type: "text" as const, text: e instanceof ConnectionError ? e.message : "Connections error" }] };
 };
 
-const facts = (c: Connection) => `${c.name}: ${c.kind} ${c.target}, ${c.mode}, ${c.status}`;
+const facts = (c: Connection) => `${c.name}: ${c.kind} ${c.target}, ${c.mode}, ${c.status}${c.description ? `\n  ${c.description.replace(/\n/g, "\n  ")}` : ""}`;
 
 async function personName(db: Db, tenantId: string, personId: string | null): Promise<string> {
   const [p] = personId ? await db.select({ name: people.name }).from(people).where(and(eq(people.tenantId, tenantId), eq(people.id, personId))) : [];
@@ -43,20 +43,21 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
   return createSdkMcpServer({
     name: "connections",
     tools: [
-      tool("list", "List the connections this bot may use, with kind, target, mode and status.", {}, () =>
+      tool("list", "List the connections this bot may use, with kind, target, mode, status and what each system is for.", {}, () =>
         run(async () => (await listConnectionsFor(db, tenantId, definitionId)).map(facts).join("\n") || "No connections")),
       tool(
         "request",
         "Request access to a system. ssh: target is the host, give username (and port if not 22); you get the public key to have installed. " +
           "http: target is the base URL; auth says where the service adds the secret. mcp: target is the server URL; readOnlyTools names the tools that only read; a server with its own login (OAuth) is found on its own, and the result then holds a sign-in link for an admin or department head instead of a secret link. " +
           "sql: target is the database server's host; give engine (postgres, mysql or mssql), database and username (port if not the usual one, tls if the server needs it); the password always comes through the secret link. " +
-          "read-only connections must use an account or token that can only read. " +
+          "read-only connections must use an account or token that can only read. description: plain words on what the system is for, what is safe to run and what to leave alone; it is shown with the connection from then on. " +
           "Secrets are never typed into the chat: when an http, mcp or sql connection needs one, the result holds a one-time link (30 minutes, only for the person asking); send them that link instead.",
         {
           kind: z.enum(["ssh", "http", "mcp", "sql"]),
           name: z.string(),
           target: z.string(),
           mode: z.enum(["read-only", "change"]),
+          description: z.string().optional(),
           port: z.number().int().optional(),
           username: z.string().optional(),
           auth: z.object({ in: z.enum(["header", "query"]), name: z.string(), prefix: z.string().optional() }).optional(),
@@ -82,7 +83,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
               : a.kind === "sql" ? { engine: a.engine, port: a.port, database: a.database, username: a.username, tls: a.tls }
               : { ...(a.headerName ? { headerName: a.headerName } : {}), ...(found ? { oauth } : {}), readOnlyTools: a.readOnlyTools ?? [] };
             const { connection, publicKey } = await requestConnection(deps, tenantId, {
-              kind: a.kind, name: a.name, target: a.target, mode: a.mode, config: config as never, needsSecret: a.needsSecret, ...(clientSecret ? { clientSecret } : {}), definitionId, personId: ctx.personId,
+              kind: a.kind, name: a.name, target: a.target, mode: a.mode, description: a.description, config: config as never, needsSecret: a.needsSecret, ...(clientSecret ? { clientSecret } : {}), definitionId, personId: ctx.personId,
             });
             const signedIn = (c: Connection) => c.status === "active" || c.status === "awaiting-approval";
             const waiting = needsSecret(connection) && !signedIn(connection) && (oauthOf(connection) || !connection.secretCipher) && connection.status !== "revoked";

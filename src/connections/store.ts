@@ -25,6 +25,8 @@ export type ConnectionRequest = {
   target: string;
   mode: ConnectionMode;
   config: ConnectionConfig;
+  /** plain words for the bot: what the system is for, what is safe to run, what to leave alone */
+  description?: string;
   /** http/mcp: the person supplies a secret through a one-time link; it needs `auth` (http) or `headerName` (mcp) to say where it goes. */
   needsSecret?: boolean;
   /** mcp OAuth: a secret the server's registration handed out, kept for token requests */
@@ -174,7 +176,7 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   }
   const key = input.kind === "ssh" ? await deps.ssh.generateKey(`${definition!.name}@${input.name}`) : undefined;
   const values = {
-    kind: input.kind, target: input.target, config, mode: input.mode, status: "pending",
+    kind: input.kind, target: input.target, config, mode: input.mode, status: "pending", description: input.description?.trim() || null,
     secretCipher: key ? encrypt(deps.secretsKey, key.privateKey) : input.clientSecret ? clientSecretCipher(deps.secretsKey, input.clientSecret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
     requestedByPersonId: input.personId, approvedByPersonId: null, updatedAt: new Date(),
   };
@@ -202,7 +204,7 @@ export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, te
   const key = input.kind === "ssh" ? await deps.ssh.generateKey(`admin@${input.name}`) : undefined;
   const secret = key?.privateKey ?? (input.secret?.trim() || undefined);
   const values = {
-    kind: input.kind, target: input.target, config, mode: input.mode, status: key || signIn ? "pending" : "active",
+    kind: input.kind, target: input.target, config, mode: input.mode, status: key || signIn ? "pending" : "active", description: input.description?.trim() || null,
     secretCipher: signIn ? (input.clientSecret ? clientSecretCipher(deps.secretsKey, input.clientSecret) : null) : secret ? encrypt(deps.secretsKey, secret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
     requestedByPersonId: input.personId, approvedByPersonId: input.personId, updatedAt: new Date(),
   };
@@ -370,6 +372,10 @@ export async function revokeConnection(db: Db, tenantId: string, id: string): Pr
   if (!row) fail("Connection not found");
   await db.delete(secretLinks).where(and(eq(secretLinks.tenantId, tenantId), eq(secretLinks.connectionId, id), isNull(secretLinks.usedAt)));
   return row;
+}
+
+export async function setDescription(db: Db, tenantId: string, id: string, description: string): Promise<void> {
+  await db.update(connections).set({ description: description.trim() || null, updatedAt: new Date() }).where(byId(tenantId, id));
 }
 
 export async function resetHostKey(db: Db, tenantId: string, id: string): Promise<void> {

@@ -40,7 +40,7 @@ describe("connections mcp", () => {
     const results = [
       await call("request", { kind: "ssh", name: "pve1", target: "pve1.example.test", mode: "read-only", username: "bot" }),
       await call("request", { kind: "ssh", name: "pve2", target: "pve2.example.test", mode: "change", username: "bot" }),
-      await call("request", { kind: "http", name: "api", target: "https://api.example.test/", mode: "read-only", auth: { in: "header", name: "Authorization" } }),
+      await call("request", { kind: "http", name: "api", target: "https://api.example.test/", mode: "read-only", description: "Ticket API; read tickets only, never close one", auth: { in: "header", name: "Authorization" } }),
       await call("list"),
       await call("verify", { name: "pve1" }),
       await call("verify", { name: "pve2" }),
@@ -49,6 +49,7 @@ describe("connections mcp", () => {
       await call("ssh_change", { name: "pve1", command: "reboot" }),
       await call("approve", { name: "pve2" }),
     ];
+    expect((results[3].content[0] as { text: string }).text).toContain("api: http https://api.example.test/, read-only, pending\n  Ticket API; read tickets only, never close one");
     expect(results[0].content[0].text).toContain("Public key: ssh-ed25519 AAAAfake ops@pve1");
     expect(results[7].content[0].text).toBe("up 3 days");
     expect(results[8].isError).toBe(true);

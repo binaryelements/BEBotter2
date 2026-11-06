@@ -259,6 +259,7 @@ export const connections = pgTable(
     config: jsonb("config").$type<ConnectionConfig>().notNull(),
     mode: text("mode").notNull(), // read-only | change
     status: text("status").notNull(), // pending | awaiting-approval | active | blocked | revoked
+    description: text("description"), // what the system is for and how a bot should treat it, shown to the bot
     secretCipher: text("secret_cipher"),
     publicKey: text("public_key"),
     hostKey: text("host_key"),
