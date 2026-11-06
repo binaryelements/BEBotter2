@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { confirmerPolicy } from "../admin/access.js";
 import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
-import { definitionsForChat, mcpServerConfigs } from "../bots/definitions.js";
+import { mcpServerConfigs } from "../bots/definitions.js";
 import { tellMcpServer } from "../bots/tell.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
@@ -64,7 +64,7 @@ export type RunnerDeps = {
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
 export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
-export type RunResult = { text: string; costUsd: number; sessionId: string; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean };
+export type RunResult = { text: string; costUsd: number; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean };
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
 export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string } | { kind: "delta"; text: string } | { kind: "message-end" };
 
@@ -89,7 +89,7 @@ type TurnContext = {
 };
 const turnContexts = new Map<string, TurnContext>();
 
-/** Everything a turn's engine depends on, shared by turns and prewarm so a warmed process is the one a turn would start. */
+/** Everything a turn's engine depends on. */
 async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean, key: string) {
   const { db } = deps;
   // a computer that can't start (no Docker on this host, image missing) costs the bot its computer, not the whole reply
@@ -239,7 +239,6 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const at = new Date().toISOString();
     if (event.kind === "ready") {
       timings.engineReadyAt ??= at;
-      if (event.warm) timings.live = true;
       return;
     }
     if (event.kind === "tools") {
@@ -266,9 +265,6 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     .select()
     .from(sessions)
     .where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
-  // the engine reports a session's running total, resumed sessions included; a turn's cost is the growth since the last one seen
-  let lastCost = Number(session?.lastCostUsd ?? 0);
-  const turnCost = (total: number) => (ownSession ? total : Math.round((total >= lastCost ? total - lastCost : total) * 1e6) / 1e6);
   const key = `${chatId}:${definition.id}`;
   const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine, key);
   const { conn } = setup;
@@ -400,27 +396,21 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return auditId;
   };
 
-  // the app's MCP client, for an engine that runs the loop itself; a runtime engine connects its own
+  // the app's MCP client; it connects the servers this turn built and closes them at the end
   let registry: McpRegistry | undefined;
   let tools: EngineTool[] = [];
 
-  // one engine run per attempt; the engine handles a transient-network retry and a warm-process fallback
-  const runEngine = (checkpoint?: string): Promise<EngineResult> => {
-    const replay = deps.engine.toolMode === "app" && session?.messages ? session.messages : [];
-    const history: EngineMessage[] = [...replay, { role: "user", text: prompt }];
-    const systemPrompt =
-      deps.engine.toolMode === "app" && session?.summary
-        ? `${setup.processOptions.systemPrompt}\n\nEarlier in this conversation:\n${session.summary}`
-        : setup.processOptions.systemPrompt;
+  const runEngine = (): Promise<EngineResult> => {
+    const history: EngineMessage[] = [...(session?.messages ?? []), { role: "user", text: prompt }];
+    const systemPrompt = session?.summary
+      ? `${setup.processOptions.systemPrompt}\n\nEarlier in this conversation:\n${session.summary}`
+      : setup.processOptions.systemPrompt;
     const input: EngineRunInput = {
       ...setup.processOptions,
       systemPrompt,
       // a background job works through many pages (each browser click is a step), so it gets more steps than a chat turn
       maxSteps: turn.routine?.background ? 100 : setup.processOptions.maxSteps,
-      key,
-      fingerprint: setup.fingerprint,
       history,
-      useWarm: !ownSession,
       signal: new AbortController().signal,
       onEvent,
       tools,
@@ -428,59 +418,28 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       authoriseTool,
       completeTool,
       onAttemptStart: resetTimings,
-      onAttemptEnd: settle,
-      ...(checkpoint ? { checkpoint } : {}),
     };
     return deps.engine.run(input);
   };
 
   try {
     turnContexts.set(key, context);
-    if (deps.engine.toolMode === "app") {
-      registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
-      tools = await registry.listTools();
-    }
-    let result: EngineResult | undefined;
-    if (session && deps.engine.toolMode === "runtime") {
-      try {
-        result = await runEngine(session.sdkSessionId ?? undefined);
-      } catch (err) {
-        console.error("resume failed", err);
-      }
-      if (!result || result.stopReason !== "text") {
-        // the transcript may be gone (redeploy, lost volume); start a fresh session once
-        if (result) await auditMessage(FAILED_TEXT, "failed", turnCost(result.usage.costUsd));
-        lastCost = 0; // a fresh session starts its own total
-        await db.delete(sessions).where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
-        deps.engine.reset?.(key); // it holds the session just given up
-        await settle();
-        result = await runEngine();
-      }
-    } else {
-      result = await runEngine();
-    }
-    if (!result) {
-      await auditMessage(FAILED_TEXT, "failed");
-      throw new Error("engine run ended without a result");
-    }
+    registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
+    tools = await registry.listTools();
+    const result = await runEngine();
     timings.resultAt = new Date().toISOString();
     const ok = result.stopReason === "text";
     const text = ok ? result.text : FAILED_TEXT;
     const now = new Date();
-    const costUsd = deps.engine.toolMode === "app" ? result.usage.costUsd : turnCost(result.usage.costUsd);
-    const checkpoint = result.checkpoint ?? session?.sdkSessionId ?? null;
-    const provider = deps.engine.toolMode === "app" ? (resolveModel(definition.model)?.provider.id ?? null) : "claude";
-    const kept =
-      deps.engine.toolMode === "app"
-        ? compact(result.messages, session?.summary ?? undefined, contextWindowFor(definition.model))
-        : { messages: result.messages, ...(session?.summary ? { summary: session.summary } : {}) };
+    const costUsd = result.usage.costUsd;
+    const provider = resolveModel(definition.model)?.provider.id ?? null;
+    const kept = compact(result.messages, session?.summary ?? undefined, contextWindowFor(definition.model));
     if (!ownSession)
       await db
         .insert(sessions)
         .values({
           chatId,
           definitionId: definition.id,
-          sdkSessionId: checkpoint,
           lastCostUsd: String(result.usage.costUsd),
           messages: withoutImages(kept.messages),
           summary: kept.summary ?? null,
@@ -493,7 +452,6 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         .onConflictDoUpdate({
           target: [sessions.chatId, sessions.definitionId],
           set: {
-            sdkSessionId: checkpoint,
             lastCostUsd: String(result.usage.costUsd),
             messages: withoutImages(kept.messages),
             summary: kept.summary ?? null,
@@ -505,62 +463,11 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
           },
         });
     const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings);
-    return { text, costUsd, sessionId: checkpoint ?? "", changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
+    return { text, costUsd, changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
     await registry?.close();
     turnContexts.delete(key);
-    await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
+    await settle(); // allowed but never finished (interrupted, maxSteps hit, stream died)
     await toolsRecorded;
-  }
-}
-
-/** Starts the live process a turn on this chat and bot would use, resuming its stored session, without sending a message. Never throws. */
-export async function prewarm(deps: RunnerDeps, key: { tenantId: string; chatId: string; definitionId: string }): Promise<void> {
-  const { db, engine } = deps;
-  if (!engine.prewarm) return;
-  try {
-    const [chat] = await db.select({ tenantId: chats.tenantId }).from(chats).where(eq(chats.id, key.chatId));
-    // the bot a message would reach now; a session left by a bot no longer assigned, or another tenant's, is not warmed
-    const [definition] = await definitionsForChat(db, key.chatId);
-    if (chat?.tenantId !== key.tenantId || definition?.id !== key.definitionId || definition.tenantId !== key.tenantId) {
-      console.log("prewarm skipped", key.chatId);
-      return;
-    }
-    const liveKey = `${key.chatId}:${definition.id}`;
-    const [session] = await db.select().from(sessions).where(and(eq(sessions.chatId, key.chatId), eq(sessions.definitionId, definition.id)));
-    const setup = await engineSetup(deps, key.tenantId, key.chatId, definition, false, liveKey);
-    await engine.prewarm({
-      key: liveKey,
-      fingerprint: setup.fingerprint,
-      ...(session?.sdkSessionId ? { checkpoint: session.sdkSessionId } : {}),
-      start: () => setup.processOptions,
-      // a tool call on a process with no turn running acts for nobody, and is audited as failed
-      orphanTool: async (name, input) => {
-        const auditId = await beginAction(db, { tenantId: key.tenantId, chatId: key.chatId, definitionId: definition.id, kind: "tool", toolName: name, summary: summarise(name, input) });
-        await completeAction(db, auditId, { status: "failed" });
-        return { allow: false, message: "Not done: no message is being answered." };
-      },
-    });
-    console.log("prewarmed", key.chatId);
-  } catch (err) {
-    console.error("prewarm failed", key.chatId, err instanceof Error ? err.name : "unknown");
-  }
-}
-
-/** Warms the chats whose session was used within `withinMs`, most recent first, at most `max`, one at a time. Never throws. */
-export async function prewarmRecent(deps: RunnerDeps, opts: { withinMs: number; max: number }): Promise<void> {
-  try {
-    const started = Date.now();
-    const recent = await deps.db
-      .select({ tenantId: chats.tenantId, chatId: sessions.chatId, definitionId: sessions.definitionId })
-      .from(sessions)
-      .innerJoin(chats, eq(sessions.chatId, chats.id))
-      .where(gt(sessions.updatedAt, new Date(started - opts.withinMs)))
-      .orderBy(desc(sessions.updatedAt))
-      .limit(opts.max);
-    for (const key of recent) await prewarm(deps, key);
-    console.log(`prewarm done: ${recent.length} chats in ${Date.now() - started} ms`);
-  } catch (err) {
-    console.error("prewarm failed", err instanceof Error ? err.name : "unknown");
   }
 }

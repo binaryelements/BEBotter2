@@ -44,10 +44,10 @@ describe("settings screen", () => {
   });
 
   it("saves, trims, and stores an empty bot name as null", async () => {
-    const r = await post("Ann", { botName: "  Helper  ", retentionDays: "30", defaultModel: " claude-sonnet-5 " });
+    const r = await post("Ann", { botName: "  Helper  ", retentionDays: "30", defaultModel: " deepseek/deepseek-flash " });
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/admin/settings");
-    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "claude-sonnet-5", timezone: "UTC", location: null, country: null });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "deepseek/deepseek-flash", timezone: "UTC", location: null, country: null });
     const page = await (await get("Ann")).text();
     expect(page).toContain('value="Helper"');
     expect(page).toContain('value="30"');
@@ -86,9 +86,9 @@ describe("settings screen", () => {
   });
 
   it("a definition created without a model takes the tenant default", async () => {
-    await post("Ann", { retentionDays: "30", defaultModel: "claude-opus-9" });
-    expect((await upsertDefinition(db, secretsKey, T, { name: "x", label: "X", persona: "" })).model).toBe("claude-opus-9");
-    expect((await upsertDefinition(db, secretsKey, T, { name: "y", label: "Y", persona: "", model: "claude-z" })).model).toBe("claude-z");
-    expect((await upsertDefinition(db, secretsKey, "t-plain", { name: "x", label: "X", persona: "" })).model).toBe("claude-haiku-5-5");
+    await post("Ann", { retentionDays: "30", defaultModel: "deepseek/deepseek-flash" });
+    expect((await upsertDefinition(db, secretsKey, T, { name: "x", label: "X", persona: "" })).model).toBe("deepseek/deepseek-flash");
+    expect((await upsertDefinition(db, secretsKey, T, { name: "y", label: "Y", persona: "", model: "qwen/qwen3.8-flash" })).model).toBe("qwen/qwen3.8-flash");
+    expect((await upsertDefinition(db, secretsKey, "t-plain", { name: "x", label: "X", persona: "" })).model).toBe("deepseek/deepseek-flash");
   });
 });

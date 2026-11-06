@@ -16,7 +16,7 @@ export type EngineMessage =
 
 /** `ready` and `tools` are runtime facts; the rest are the reply as it is written. */
 export type EngineEvent =
-  | { kind: "ready"; warm?: boolean }
+  | { kind: "ready" }
   | { kind: "tools"; tools: string[] }
   | { kind: "text"; text: string }
   | { kind: "tool"; toolName: string }
@@ -33,8 +33,6 @@ export type EngineUsage = {
 export type EngineResult = {
   text: string;
   messages: EngineMessage[];
-  /** An engine-private resume token; the app stores it and hands it back unchanged. */
-  checkpoint?: string;
   usage: EngineUsage;
   steps: number;
   stopReason: "text" | "max-steps" | "aborted" | "error";
@@ -48,31 +46,24 @@ export type EngineTool = { name: string; description: string; inputSchema: Recor
 /** What a tool call hands back: text for the transcript, and any image the model may look at. */
 export type ToolResult = { text: string; isError?: boolean; images?: EngineImage[] };
 
-/** What the app has built for one turn, independent of who runs it. */
+/** What the app has built for one turn. */
 export type EngineProcessOptions = {
   /** The bot's configured model id. */
   model: string;
   systemPrompt: string;
-  /** MCP servers for a runtime that executes tools itself. */
+  /** MCP servers the app has built for this turn. */
   mcpServers: Record<string, McpServerConfig>;
   maxSteps: number;
   cwd: string;
-  /** Whether the bot may use the runtime's own web search tools. */
+  /** Whether the bot may use the provider's own web search tools. */
   webSearch: boolean;
 };
 
 export type EngineRunInput = EngineProcessOptions & {
-  /** Identifies the conversation for a warm runtime; a stateless engine ignores it. */
-  key: string;
-  /** Changes when the turn's options change; a warm runtime with a different fingerprint starts again. */
-  fingerprint?: string;
   history: EngineMessage[];
-  checkpoint?: string;
-  /** False for a run that must not share the chat's warm runtime (a grant or a background job). */
-  useWarm?: boolean;
   signal: AbortSignal;
   onEvent: (event: EngineEvent) => void;
-  /** The tools the app offers; an engine that runs the loop calls `callTool` for each. */
+  /** The tools the app offers; the engine calls `callTool` for each. */
   tools: EngineTool[];
   callTool: (name: string, input: Record<string, unknown>) => Promise<ToolResult>;
   /** The app's gate, audit row and confirmation card. */
@@ -81,29 +72,10 @@ export type EngineRunInput = EngineProcessOptions & {
   completeTool: (callId: string, status: "done" | "failed") => Promise<void>;
   /** Called before each attempt, so the app can reset per-attempt timings. */
   onAttemptStart?: () => void;
-  /** Called when an attempt ends without a result, so the app can close unfinished audit rows. */
-  onAttemptEnd?: () => Promise<void>;
-};
-
-export type EnginePrewarmInput = {
-  key: string;
-  fingerprint: string;
-  checkpoint?: string;
-  start: () => EngineProcessOptions;
-  /** A tool call on a warm runtime with no turn running. */
-  orphanTool: (name: string, input: Record<string, unknown>) => Promise<ToolDecision>;
 };
 
 export interface Engine {
-  /** "runtime": the engine's own runtime executes tools; "app": the engine calls back into the app. */
-  readonly toolMode: "runtime" | "app";
   run(input: EngineRunInput): Promise<EngineResult>;
-  /** Starts any warm runtime a turn on this key would use. */
-  prewarm?(input: EnginePrewarmInput): Promise<void>;
-  /** Drops a warm runtime whose stored session is being abandoned. */
-  reset?(key: string): void;
-  /** Stops every warm runtime. */
-  close?(): Promise<void>;
 }
 
 /** A failed turn's reply; never leak provider error text into the chat. */

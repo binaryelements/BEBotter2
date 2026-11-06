@@ -1,8 +1,9 @@
-# The engine seam (PR 1)
+# The engine seam and the cutover
 
-This branch removes the Claude Agent SDK from `runner.ts` without changing behaviour. Claude is still the
-engine; it now sits behind a neutral contract in `src/engine/engine.ts` and an adapter in
-`src/engine/claude.ts`.
+The branch chain removes the Claude Agent SDK. PR 1 introduced the neutral contract and moved the SDK
+behind `ClaudeEngine`; PR 2 put the tools on the open MCP SDK; PR 3 added the OpenAI-compatible engine;
+PR 4 closed the document and MCP-process gaps; PR 5 deletes the SDK and the Claude engine entirely.
+The product now runs on `OpenAICompatEngine` and the provider profiles in `providers.ts`.
 
 ## What moved
 
@@ -87,8 +88,8 @@ into a deterministic summary and keeps the recent window. The `sessions` row now
 `summary`, `input_tokens`, `output_tokens`, `provider` and `model`; `sdk_session_id` is nullable, so
 Claude can keep its resume token while the new engine replays the neutral transcript.
 
-`ENGINE=claude|openai` selects the engine. `DEFAULT_MODEL` is a Claude id for the first and a
-`provider/model` slug for the second; the admin settings page accepts either.
+`DEFAULT_MODEL` is a `provider/model` slug; the admin settings page accepts one. Adding a provider is
+a block in `providers.ts` plus its API key, not a new engine.
 
 ## The last gaps (PR 4)
 
@@ -104,15 +105,22 @@ pool is closed on SIGTERM.
 and IPv4-mapped addresses before `discover` fetches a model-chosen URL or posts to a server-supplied
 registration endpoint.
 
-## Not in this branch
+## Cutover (PR 5)
+
+`@anthropic-ai/claude-agent-sdk` is gone from `package.json`, the lockfile and the image. `ClaudeEngine`,
+`live.ts`, the warm process pool, `prewarm` and the Claude-specific `RunnerDeps` plumbing are deleted.
+`main.ts` always builds `OpenAICompatEngine`; `runner.ts` always replays the neutral transcript and
+closes the MCP registry at the end of the turn. `sessions.sdk_session_id` remains as a nullable column
+for old rows, but nothing writes it.
+
+## What is left
 
 - admin token usage display
 - transcript encryption/retention (the handover's security item 4)
 - the remaining security items (audit redaction, OAuth sign-in scope, attachment host allowlist)
-- removing the SDK and the Claude engine (cutover)
 
 ## Why `runner.ts` is smaller
 
 The warm pool, the fingerprint, the resume retry and the SDK message mapping all left `runner.ts`. The
-app-side code now reads as: build the turn, run it, record the result. That is the property later PRs
-need: adding a provider changes `src/engine/openai.ts` and a profile, not the security path.
+app-side code reads as: build the turn, run it, record the result. Adding a provider changes
+`src/engine/providers.ts`, not the security path.

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 
 const full = {
-  DATABASE_URL: "postgres://x", ANTHROPIC_API_KEY: "k", SECRETS_KEY: Buffer.alloc(32, 1).toString("base64"),
+  DATABASE_URL: "postgres://x", DEEPSEEK_API_KEY: "d", SECRETS_KEY: Buffer.alloc(32, 1).toString("base64"),
   PUBLIC_URL: "https://x.test", clientId: "cid", tenantId: "tid", clientSecret: "sec",
 };
 
@@ -10,7 +10,7 @@ describe("loadConfig", () => {
   it("fills defaults", () => {
     const c = loadConfig(full);
     expect(c.botName).toBe("BE Bot");
-    expect(c.defaultModel).toBe("claude-haiku-5-5");
+    expect(c.defaultModel).toBe("deepseek/deepseek-flash");
     expect(c.port).toBe(3978);
     expect(c.computerImage).toBe("bebotter2-computer");
     expect(c.dockerSocket).toBe("/var/run/docker.sock");
@@ -44,27 +44,17 @@ describe("loadConfig", () => {
   it("requires an absolute https PUBLIC_URL", () => {
     for (const v of ["http://x.test", "x.test", "/admin", "https://", ""]) expect(() => loadConfig({ ...full, PUBLIC_URL: v })).toThrow(/PUBLIC_URL/);
   });
-  it("defaults to Claude and requires its key and a Claude model id", () => {
-    expect(loadConfig(full).engine).toBe("claude");
-    expect(() => loadConfig({ ...full, ANTHROPIC_API_KEY: undefined })).toThrow(/ANTHROPIC_API_KEY/);
-    expect(() => loadConfig({ ...full, DEFAULT_MODEL: "deepseek/deepseek-flash" })).toThrow(/Claude model id/);
+  it("requires a provider key", () => {
+    expect(() => loadConfig({ ...full, DEEPSEEK_API_KEY: undefined })).toThrow(/DEEPSEEK_API_KEY or DASHSCOPE_API_KEY/);
   });
-  it("selects an OpenAI-compatible provider", () => {
-    const c = loadConfig({ ...full, ENGINE: "openai", ANTHROPIC_API_KEY: undefined, DEEPSEEK_API_KEY: "d" });
-    expect(c.engine).toBe("openai");
-    expect(c.defaultModel).toBe("deepseek/deepseek-flash");
-    expect(c.providers.deepseek).toEqual({ apiKey: "d" });
-    expect(c.anthropicApiKey).toBeUndefined();
-  });
-  it("requires a provider key and a known default model for the OpenAI engine", () => {
-    expect(() => loadConfig({ ...full, ENGINE: "openai", ANTHROPIC_API_KEY: undefined })).toThrow(/DEEPSEEK_API_KEY/);
-    expect(() => loadConfig({ ...full, ENGINE: "openai", ANTHROPIC_API_KEY: undefined, DEEPSEEK_API_KEY: "d", DEFAULT_MODEL: "nope/nope" })).toThrow(/DEFAULT_MODEL/);
-  });
-  it("takes a provider base URL override", () => {
-    const c = loadConfig({ ...full, ENGINE: "openai", ANTHROPIC_API_KEY: undefined, DASHSCOPE_API_KEY: "q", DEFAULT_MODEL: "qwen/qwen3.8-flash", QWEN_BASE_URL: "https://qwen.example.test/v1" });
-    expect(c.providers.qwen).toEqual({ apiKey: "q", baseUrl: "https://qwen.example.test/v1" });
+  it("requires a known default model", () => {
+    expect(() => loadConfig({ ...full, DEFAULT_MODEL: "nope/nope" })).toThrow(/DEFAULT_MODEL/);
   });
   it("requires the key for the default model's provider", () => {
-    expect(() => loadConfig({ ...full, ENGINE: "openai", ANTHROPIC_API_KEY: undefined, DASHSCOPE_API_KEY: "q" })).toThrow(/DEEPSEEK_API_KEY/);
+    expect(() => loadConfig({ ...full, DEEPSEEK_API_KEY: undefined, DASHSCOPE_API_KEY: "q" })).toThrow(/DEEPSEEK_API_KEY/);
+  });
+  it("takes a provider base URL override", () => {
+    const c = loadConfig({ ...full, DASHSCOPE_API_KEY: "q", DEFAULT_MODEL: "qwen/qwen3.8-flash", QWEN_BASE_URL: "https://qwen.example.test/v1" });
+    expect(c.providers.qwen).toEqual({ apiKey: "q", baseUrl: "https://qwen.example.test/v1" });
   });
 });

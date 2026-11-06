@@ -1,4 +1,3 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { startServer } from "@microsoft/agents-hosting-express";
 import { realOidcDeps } from "./admin/oidc.js";
 import { adminRouter } from "./admin/router.js";
@@ -11,16 +10,14 @@ import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { ensurePersonalDefinition } from "./bots/definitions.js";
 import { connect } from "./db/client.js";
 import { tenants } from "./db/schema.js";
-import { ClaudeEngine } from "./engine/claude.js";
 import { Confirmations } from "./engine/confirm.js";
-import { LiveSessions } from "./engine/live.js";
 import { McpPool } from "./engine/mcp-pool.js";
 import { OpenAICompatEngine } from "./engine/openai.js";
 import { systemSsh } from "./connections/ssh.js";
 import { agentMailAdmin } from "./mail/agentmail.js";
 import { mountMailInbound } from "./mail/inbound.js";
 import { ensureAllMailboxes, ensureMailbox } from "./mail/mailboxes.js";
-import { prewarmRecent, runTurn } from "./engine/runner.js";
+import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startScheduler } from "./routines/scheduler.js";
 import { createTeamsApp, graphToken } from "./teams/app.js";
@@ -33,11 +30,7 @@ for (const t of await db.select({ id: tenants.id }).from(tenants)) {
   await ensurePersonalDefinition(db, t.id, config.defaultModel).catch((e) => console.error(`personal assistant for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
 }
 const confirmations = new Confirmations();
-// operational limits: an idle chat's engine stops after 60 minutes, and at most 20 stay warm
-// engines stay up until `max` evicts the least recently used (~310 MB each); restarts re-warm chats used in the last day
-const warm = { idleMs: Infinity, max: 20, recentMs: 24 * 60 * 60_000 };
-const live = config.engine === "claude" ? new LiveSessions(query, warm) : undefined;
-const engine = config.engine === "openai" ? new OpenAICompatEngine({ providers: config.providers }) : new ClaudeEngine(query, { live });
+const engine = new OpenAICompatEngine({ providers: config.providers });
 // stdio MCP clients (the browser, the files server) stay warm between turns; the browser is keyed per chat
 const mcpPool = new McpPool({ idleMs: 10 * 60_000, max: 20 });
 const runnerDeps: RunnerDeps = {
@@ -66,7 +59,7 @@ const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.b
 
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 
-// The Agents SDK reads clientId, tenantId and clientSecret from the environment; the agent SDK reads ANTHROPIC_API_KEY.
+// The Agents SDK reads clientId, tenantId and clientSecret from the environment.
 startServer(app, {
   port: config.port,
   beforeListen: (express) => {
@@ -88,11 +81,9 @@ startServer(app, {
 });
 
 if (mail) void ensureAllMailboxes(mail);
-// chats used within the idle window would still be warm had the service not restarted
-void prewarmRecent(runnerDeps, { withinMs: warm.recentMs, max: warm.max });
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
-  process.once(signal, () => void Promise.all([engine.close?.(), mcpPool.close()]).finally(() => process.exit(0)));
+  process.once(signal, () => void mcpPool.close().finally(() => process.exit(0)));

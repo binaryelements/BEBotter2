@@ -60,7 +60,6 @@ const toMessage = (m: EngineMessage): ChatCompletionMessageParam => {
  * Provider differences live in `providers.ts`; this file only knows the wire format.
  */
 export class OpenAICompatEngine implements Engine {
-  readonly toolMode = "app" as const;
   private readonly clients = new Map<string, ChatClient>();
 
   constructor(
@@ -183,9 +182,6 @@ export class OpenAICompatEngine implements Engine {
       return this.result(input, messages, "error", usage, steps);
     }
   }
-
-  /** Nothing to stop: the OpenAI client keeps no process. */
-  async close(): Promise<void> {}
 
   private client(provider: ProviderProfile, keys: { apiKey: string; baseUrl?: string }): ChatClient {
     const existing = this.clients.get(provider.id);

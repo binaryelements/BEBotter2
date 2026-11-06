@@ -2,15 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { HookCallback, Options, PostToolUseHookInput, query } from "@anthropic-ai/claude-agent-sdk";
 import { beginAction, completeAction, listActions } from "../audit/audit.js";
 import { assignToChat, ensurePersonalDefinition, setAllowedDepartments, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
-import { ClaudeEngine } from "../engine/claude.js";
 import { Confirmations } from "../engine/confirm.js";
+import type { Engine } from "../engine/engine.js";
 import { runTurn } from "../engine/runner.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { createDepartment, setPersonalBot, setRole } from "../org/directory.js";
@@ -176,21 +175,16 @@ describe("scheduler", () => {
   it("a granted routine's write is recorded with grant authority and a quiet one still posts it", async () => {
     await setRole(db, "t1", annId, "admin");
     const r1 = await routine({ grantPersonId: annId, quiet: true });
-    // drives one write tool through canUseTool and PostToolUse, the way the SDK does
-    const queryFn = (({ options }: { options: Options }) =>
-      (async function* () {
-        const signal = new AbortController().signal;
-        const input = { id: 7 };
-        const d = await options.canUseTool!("mcp__tickets__close_ticket", input, { signal, toolUseID: "tu-0" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
-        if (d?.behavior === "allow") {
-          const hook = options.hooks!.PostToolUse![0]!.hooks[0] as HookCallback;
-          const common = { tool_name: "mcp__tickets__close_ticket", tool_input: input, tool_use_id: "tu-0", session_id: "s-1", transcript_path: "", cwd: "" };
-          await hook({ ...common, hook_event_name: "PostToolUse", tool_response: "ok" } as PostToolUseHookInput, "tu-0", { signal });
-        }
-        yield { type: "result", subtype: "success", result: "Closed 7.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 1, duration_ms: 1, is_error: false };
-      })()) as unknown as typeof query;
+    // drives one write tool through the app's gate and audit, the way the engine does
+    const engine: Engine = {
+      async run(input) {
+        const decision = await input.authoriseTool("tu-0", "mcp__tickets__close_ticket", { id: 7 });
+        if (decision.allow) await input.completeTool("tu-0", "done");
+        return { text: "Closed 7.", messages: [...input.history, { role: "assistant", text: "Closed 7." }], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.001 }, steps: 1, stopReason: "text" };
+      },
+    };
     const runnerDeps = {
-      db, engine: new ClaudeEngine(queryFn), confirmations: new Confirmations(), secretsKey: key, docker: fakeDockerClient(), computerImage: "img",
+      db, engine, confirmations: new Confirmations(), secretsKey: key, docker: fakeDockerClient(), computerImage: "img",
       filesDir: fs.mkdtempSync(path.join(os.tmpdir(), "bebotter2-files-")), ssh: fakeSsh(), publicUrl: "https://bot.example.test",
       fetchFn: (async () => new Response("ok")) as typeof fetch,
     };

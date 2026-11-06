@@ -28,7 +28,6 @@ const input = (overrides: Partial<EngineRunInput> = {}): EngineRunInput => ({
   maxSteps: 5,
   cwd: "/tmp",
   webSearch: false,
-  key: "c:d",
   history: [{ role: "user", text: "hi" }],
   signal: new AbortController().signal,
   onEvent: () => {},

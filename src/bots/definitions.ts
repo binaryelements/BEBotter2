@@ -49,7 +49,7 @@ export async function upsertDefinition(db: Db, secretsKey: Buffer, tenantId: str
     ...(headers && Object.keys(headers).length > 0 ? { headersCipher: encrypt(secretsKey, JSON.stringify(headers)) } : {}),
   }));
   await upsertTenant(db, { id: tenantId }); // the definition row references tenants
-  const model = p.model ?? (await getTenantSettings(db, tenantId)).defaultModel ?? "claude-haiku-5-5";
+  const model = p.model ?? (await getTenantSettings(db, tenantId)).defaultModel ?? "deepseek/deepseek-flash";
   const fields = { ...(p.displayName ? { displayName: p.displayName } : {}), label: p.label, persona: p.persona, model, webSearch: p.webSearch, computer: p.computer, mcpServers };
   const [row] = await db
     .insert(botDefinitions)

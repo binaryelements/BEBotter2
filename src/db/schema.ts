@@ -216,9 +216,9 @@ export const sessions = pgTable(
   {
     chatId: text("chat_id").notNull().references(() => chats.id),
     definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
-    /** Claude's resume token; null for an engine that replays `messages` instead. */
+    /** Legacy: Claude's resume token. Nothing writes it now; kept for old rows. */
     sdkSessionId: text("sdk_session_id"),
-    /** The last total_cost_usd the engine reported for this session; a turn's cost is the growth since. */
+    /** The last turn's cost, for the admin screen. */
     lastCostUsd: numeric("last_cost_usd", { precision: 12, scale: 6 }),
     /** The neutral transcript an engine that replays history uses. */
     messages: jsonb("messages").$type<EngineMessage[]>(),

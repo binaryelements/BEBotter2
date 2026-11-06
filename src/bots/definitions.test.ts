@@ -38,7 +38,7 @@ describe("bot definitions", () => {
     await upsertTenant(db, { id: "t1" });
     await upsertChat(db, { id: "c1", tenantId: "t1", conversationType: "groupChat" });
     const def = await upsertDefinition(db, key, "t1", { name: "a", label: "A", persona: "one" });
-    expect(def.model).toBe("claude-haiku-5-5");
+    expect(def.model).toBe("deepseek/deepseek-flash");
     expect(def.webSearch).toBe(false);
     await assignToChat(db, "c1", def.id);
     await assignToChat(db, "c1", def.id);
