@@ -9,6 +9,7 @@ import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
+import { ClaudeEngine } from "../engine/claude.js";
 import { Confirmations } from "../engine/confirm.js";
 import { runTurn } from "../engine/runner.js";
 import type { RunTurnInput } from "../engine/runner.js";
@@ -189,7 +190,7 @@ describe("scheduler", () => {
         yield { type: "result", subtype: "success", result: "Closed 7.", session_id: "s-1", total_cost_usd: 0.001, num_turns: 1, duration_ms: 1, is_error: false };
       })()) as unknown as typeof query;
     const runnerDeps = {
-      db, queryFn, confirmations: new Confirmations(), secretsKey: key, docker: fakeDockerClient(), computerImage: "img",
+      db, engine: new ClaudeEngine(queryFn), confirmations: new Confirmations(), secretsKey: key, docker: fakeDockerClient(), computerImage: "img",
       filesDir: fs.mkdtempSync(path.join(os.tmpdir(), "bebotter2-files-")), ssh: fakeSsh(), publicUrl: "https://bot.example.test",
       fetchFn: (async () => new Response("ok")) as typeof fetch,
     };

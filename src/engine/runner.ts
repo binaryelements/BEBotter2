@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { and, desc, eq, gt } from "drizzle-orm";
-import type { CanUseTool, HookCallback, McpServerConfig, Options, SDKMessage, SDKResultMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import { confirmerPolicy } from "../admin/access.js";
 import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { definitionsForChat, mcpServerConfigs } from "../bots/definitions.js";
@@ -28,13 +27,14 @@ import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
 export type { TurnTimings };
 import type { Confirmations, Outcome } from "./confirm.js";
 import { browserMcpServer } from "./browser.js";
+import type { Engine, EngineEvent, EngineProcessOptions, EngineResult, EngineRunInput, ToolDecision } from "./engine.js";
+import { FAILED_TEXT } from "./engine.js";
 import { classify } from "./gate.js";
-import type { LiveSessions } from "./live.js";
 import { recordTools, toolRule, toolRulesFor } from "./tool-rules.js";
 
 export type RunnerDeps = {
   db: Db;
-  queryFn: typeof query;
+  engine: Engine;
   confirmations: Confirmations;
   secretsKey: Buffer;
   docker: DockerClient;
@@ -50,9 +50,7 @@ export type RunnerDeps = {
   /** A PDF's or Office file's text, for attachments the person's assistant opens; without it they give their details only. */
   readDocument?: (fileBase64: string, name: string) => Promise<string>;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
-  builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
-  /** Warm engine processes per chat and bot; without it every turn starts its own. */
-  live?: LiveSessions;
+  builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, unknown>;
   /** The owner's Graph token for a one-to-one chat, outside their own turn: a bot telling their assistant needs it. */
   personToken?: (chatId: string) => Promise<string | undefined>;
 };
@@ -63,22 +61,18 @@ export type RunResult = { text: string; costUsd: number; sessionId: string; chan
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
 export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string } | { kind: "delta"; text: string } | { kind: "message-end" };
 
-const TRANSIENT = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "UND_ERR_SOCKET"]);
 const MAX_AUDIT_INPUT = 2000;
 const MAX_CARD_ARGS = 4000;
-const FAILED_TEXT = "I couldn't finish that.";
 const NOT_DONE = {
   denied: "Not done: declined in the chat.",
   expired: "Not done: nobody confirmed within 10 minutes. Tell the chat you did not do it.",
   failed: "Not done: the confirmation could not be sent.",
 };
 
-/** What a turn's SDK options act for. A live process outlives its turns, so its options read the turn running now through this. */
-type TurnScope = {
+/** What the app's tools act for on one conversation key; a warm process outlives its turns. */
+type TurnContext = {
   personId: string;
   person: Person;
-  canUseTool: CanUseTool;
-  afterTool: HookCallback;
   confirmedBy: () => string | undefined;
   post?: (text: string) => Promise<void>;
   graphToken?: () => Promise<string | undefined>;
@@ -86,14 +80,10 @@ type TurnScope = {
   askConfirmation: RunTurnInput["askConfirmation"];
   relay: number;
 };
-// live pool → key → the turn running on that key
-const liveTurns = new WeakMap<LiveSessions, Map<string, TurnScope>>();
-const turnsOn = (pool: LiveSessions) => liveTurns.get(pool) ?? liveTurns.set(pool, new Map()).get(pool)!;
+const turnContexts = new Map<string, TurnContext>();
 
-type EngineSetup = Awaited<ReturnType<typeof engineSetup>>;
-
-/** Everything a turn's engine options depend on, shared by turns and prewarm so a warmed process is the one a turn would start. */
-async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean) {
+/** Everything a turn's engine depends on, shared by turns and prewarm so a warmed process is the one a turn would start. */
+async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean, key: string) {
   const { db } = deps;
   // a computer that can't start (no Docker on this host, image missing) costs the bot its computer, not the whole reply
   const containerId = definition.computer
@@ -127,90 +117,63 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
   const rulesText =
     ruleNote("free", "An admin set these actions to run without a confirmation card, so run them and never say they need confirming") +
     ruleNote("confirm", "An admin set these actions to need a confirmation card in the chat");
-  // the SDK advertises cwd to MCP servers as the client root, so it must be the folder the files server serves
+  // the engine advertises cwd to MCP servers as the client root, so it must be the folder the files server serves
   mkdirSync(deps.filesDir, { recursive: true });
-  // a process with no turn running (warmed, or between turns) acts for nobody
-  const buildOptions = (current: () => TurnScope | undefined): Options => {
-    const turn = () => {
-      const t = current();
-      if (!t) throw new Error("no turn is running on this live session");
-      return t;
-    };
-    // getters, never copies: servers built here must act for the turn running when a tool is called, not the one that started the process
-    const ctx = {
-      tenantId,
-      chatId,
-      definitionId: definition.id,
-      get personId() { return turn().personId; },
-      // read when the servers are built too, so it is absent rather than an error with no turn; a chat process never posts
-      get post() { return current()?.post; },
-      confirmedBy: () => current()?.confirmedBy(),
-      // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
-      graphToken: async () => current()?.graphToken?.(),
-      signInLost: () => current()?.signInLost(),
-      attachment: (id: string) => chatAttachment(db, chatId, id),
-      get person() { return current()?.person; },
-      get relay() { return current()?.relay ?? 0; },
-      get askConfirmation() { return current()?.askConfirmation; },
-    };
-    const afterTool: HookCallback = async (...a) => current()?.afterTool(...a) ?? {};
-    const canUseTool: CanUseTool = async (toolName, input, o) => {
-      const t = current();
-      if (t) return t.canUseTool(toolName, input, o);
-      const auditId = await beginAction(db, { tenantId, chatId, definitionId: definition.id, kind: "tool", toolName, summary: summarise(toolName, input) });
-      await completeAction(db, auditId, { status: "failed" });
-      return { behavior: "deny", message: "Not done: no message is being answered." };
-    };
-    return {
-      model: definition.model,
-      systemPrompt: `${definition.persona}\n\n${definition.displayName ? `Your name is ${definition.displayName}. ` : ""}${
-        mail
-          ? `Your own email address is ${mail.address}.`
-          : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-      }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}`,
-      cwd: deps.filesDir,
-      tools: definition.webSearch ? ["WebSearch", "WebFetch"] : [],
-      allowedTools: [], // a tool named here bypasses canUseTool
-      // runs code in the browser server's process, which can read this container's files and secrets; nobody should be asked to judge that code
-      disallowedTools: ["mcp__browser__browser_run_code_unsafe"],
-      permissionMode: "default",
-      settingSources: [],
-      persistSession: true,
-      includePartialMessages: true, // text as it is written, for streaming replies
-      maxTurns: 25,
-      // the model's process gets no service secrets, only what it needs to run
-      env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-      mcpServers: {
-        ...mcpServerConfigs(definition, deps.secretsKey),
-        ...(containerId ? { computer: computerMcpServer(deps.docker, containerId) } : {}),
-        ...(definition.webSearch ? { browser: browserMcpServer() } : {}),
-        // Personal reads shared notes but stores nothing and reaches no company systems: what it saw in one person's mail must not reach others
-        knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
-        ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
-        routine: routineMcpServer(deps, ctx),
-        attachments: attachmentsMcpServer(deps, ctx),
-        learnings: learningsMcpServer(deps, ctx, personal),
-        // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
-        bots: tellMcpServer({ db, run: (t) => runTurn(deps, t as RunTurnInput), ...(deps.personToken ? { personToken: deps.personToken } : {}) }, ctx),
-        ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
-        ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
-        ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
-        ...(definition.identity === "person" ? {} : conn.servers),
-      },
-      canUseTool,
-      hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
-    };
+  // getters, never copies: servers built here must act for the turn running when a tool is called, not the one that started the process
+  const turn = () => {
+    const t = turnContexts.get(key);
+    if (!t) throw new Error("no turn is running on this live session");
+    return t;
+  };
+  const ctx = {
+    tenantId,
+    chatId,
+    definitionId: definition.id,
+    get personId() { return turn().personId; },
+    // read when the servers are built too, so it is absent rather than an error with no turn; a chat process never posts
+    get post() { return turnContexts.get(key)?.post; },
+    confirmedBy: () => turnContexts.get(key)?.confirmedBy(),
+    // asked on every Graph call, so a warm process uses the token of the turn running now; between turns there is none
+    graphToken: async () => turnContexts.get(key)?.graphToken?.(),
+    signInLost: () => turnContexts.get(key)?.signInLost(),
+    attachment: (id: string) => chatAttachment(db, chatId, id),
+    get person() { return turnContexts.get(key)?.person; },
+    get relay() { return turnContexts.get(key)?.relay ?? 0; },
+    get askConfirmation() { return turnContexts.get(key)?.askConfirmation; },
+  };
+  const systemPrompt = `${definition.persona}\n\n${definition.displayName ? `Your name is ${definition.displayName}. ` : ""}${
+    mail
+      ? `Your own email address is ${mail.address}.`
+      : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
+  }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}`;
+  const processOptions: EngineProcessOptions = {
+    model: definition.model,
+    systemPrompt,
+    maxSteps: 25,
+    cwd: deps.filesDir,
+    webSearch: definition.webSearch,
+    mcpServers: {
+      ...mcpServerConfigs(definition, deps.secretsKey),
+      ...(containerId ? { computer: computerMcpServer(deps.docker, containerId) } : {}),
+      ...(definition.webSearch ? { browser: browserMcpServer() } : {}),
+      // Personal reads shared notes but stores nothing and reaches no company systems: what it saw in one person's mail must not reach others
+      knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
+      ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
+      routine: routineMcpServer(deps, ctx),
+      attachments: attachmentsMcpServer(deps, ctx),
+      learnings: learningsMcpServer(deps, ctx, personal),
+      // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
+      bots: tellMcpServer({ db, run: (t) => runTurn(deps, t as RunTurnInput), ...(deps.personToken ? { personToken: deps.personToken } : {}) }, ctx),
+      ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
+      ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
+      ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
+      ...(definition.identity === "person" ? {} : conn.servers),
+    },
   };
   // anything the options capture at start is in the fingerprint
   const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, learnt.map((l) => [l.id, l.text]), mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
-  return { conn, buildOptions, fingerprint };
+  return { conn, processOptions, fingerprint };
 }
-
-/** A live process's options: they read whichever turn is running on its key, and resume the stored session. */
-const liveOptions = (pool: LiveSessions, key: string, setup: EngineSetup, session?: { sdkSessionId: string }): Options => ({
-  ...setup.buildOptions(() => turnsOn(pool).get(key)),
-  ...(session ? { resume: session.sdkSessionId } : {}),
-});
 
 export type RunTurnInput = {
   tenantId: string;
@@ -250,12 +213,12 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id };
   const received = turn.receivedAt ?? new Date();
   const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };
-  // phase bookkeeping for one SDK message; a live-session pool can feed its messages here too
+  // phase bookkeeping for the engine's events; a warm runtime feeds the same events
   const report = (event: ProgressEvent) => {
     try {
       turn.progress?.(event);
     } catch (err) {
-      console.error("progress callback failed", err); // a broken listener must not abort the SDK stream
+      console.error("progress callback failed", err); // a broken listener must not abort the turn
     }
   };
   // each attempt starts over, so the timings describe the attempt that answered
@@ -265,32 +228,28 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   };
   // the engine's own tool list, for the admin page; awaited before the turn ends, and its failure never fails the turn
   let toolsRecorded = Promise.resolve();
-  const observe = (msg: SDKMessage) => {
+  const onEvent = (event: EngineEvent) => {
     const at = new Date().toISOString();
-    if (msg.type === "system" && msg.subtype === "init") {
+    if (event.kind === "ready") {
       timings.engineReadyAt ??= at;
-      const tools = msg.tools ?? []; // never trust the engine's message to be complete
+      if (event.warm) timings.live = true;
+      return;
+    }
+    if (event.kind === "tools") {
+      const tools = event.tools; // never trust the engine's message to be complete
       toolsRecorded = toolsRecorded.then(() => recordTools(db, definition.id, tools)).catch((e) => console.error("recording tools failed", e instanceof Error ? e.name : "unknown"));
+      return;
     }
-    if (msg.type === "result") timings.resultAt = at;
-    // a subagent's words are not the reply
-    if (msg.type === "stream_event" && msg.parent_tool_use_id === null) {
-      const e = msg.event;
-      if (e.type === "content_block_delta" && e.delta.type === "text_delta") report({ kind: "delta", text: e.delta.text });
-      else if (e.type === "message_stop") report({ kind: "message-end" });
+    if (event.kind === "delta") return report({ kind: "delta", text: event.text });
+    if (event.kind === "message-end") return report({ kind: "message-end" });
+    if (event.kind === "text") {
+      timings.firstOutputAt ??= at;
+      return report({ kind: "text", text: event.text });
     }
-    if (msg.type !== "assistant") return;
-    for (const block of msg.message.content) {
-      if (block.type === "text") {
-        timings.firstOutputAt ??= at;
-        report({ kind: "text", text: block.text });
-      } else if (block.type === "tool_use") {
-        timings.firstOutputAt ??= at;
-        timings.firstToolAt ??= at;
-        timings.tools++;
-        report({ kind: "tool", toolName: block.name });
-      }
-    }
+    timings.firstOutputAt ??= at;
+    timings.firstToolAt ??= at;
+    timings.tools++;
+    report({ kind: "tool", toolName: event.toolName });
   };
 
   // a run under an admin grant starts clean: text from the chat must not steer it, and its context stays out of the chat's session;
@@ -303,14 +262,15 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   // the engine reports a session's running total, resumed sessions included; a turn's cost is the growth since the last one seen
   let lastCost = Number(session?.lastCostUsd ?? 0);
   const turnCost = (total: number) => (ownSession ? total : Math.round((total >= lastCost ? total - lastCost : total) * 1e6) / 1e6);
-  const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine);
+  const key = `${chatId}:${definition.id}`;
+  const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine, key);
   const { conn } = setup;
 
   // tool use id → audit row of a call that was allowed and has not finished yet
   const inFlight = new Map<string, string>();
   const granted = new Set<string>(); // tool use ids allowed by a routine grant
   let changed = false;
-  // SDK tool handlers never see the confirmation. Parallel calls may be confirmed in any order, so only an
+  // Tool handlers never see the confirmation. Parallel calls may be confirmed in any order, so only an
   // approve-class call sets the marker and approve calls run one at a time, each waiting for the previous to finish.
   let lastConfirmer: string | undefined;
   const confirmedBy = () => lastConfirmer;
@@ -340,9 +300,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     approveTail = Promise.resolve();
     lastConfirmer = undefined;
   };
-  const STALE = { behavior: "deny" as const, message: "Not done: the attempt that asked has ended." };
+  const STALE = { allow: false as const, message: "Not done: the attempt that asked has ended." };
 
-  const canUseTool: CanUseTool = async (toolName, input, { toolUseID }) => {
+  const authoriseTool = async (callId: string, toolName: string, input: Record<string, unknown>): Promise<ToolDecision> => {
     const run = attemptNo;
     const audited = auditInput(toolName, input);
     const json = JSON.stringify(audited);
@@ -362,19 +322,19 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     if (run !== attemptNo) return stale();
     const kind = classify(toolName, definition, conn.readOnly, rule);
     if (kind === "read") {
-      inFlight.set(toolUseID, auditId);
-      return { behavior: "allow", updatedInput: input };
+      inFlight.set(callId, auditId);
+      return { allow: true };
     }
     const grant = turn.routine?.grantPersonId;
     if (kind === "write" && grant) {
       await recordAuthority(db, auditId, { type: "grant", personId: grant, routineId: turn.routine!.id });
-      inFlight.set(toolUseID, auditId);
-      granted.add(toolUseID);
-      return { behavior: "allow", updatedInput: input };
+      inFlight.set(callId, auditId);
+      granted.add(callId);
+      return { allow: true };
     }
     if (kind === "approve") {
       const previous = approveTail;
-      approveTail = new Promise<void>((resolve) => approveReleases.set(toolUseID, resolve));
+      approveTail = new Promise<void>((resolve) => approveReleases.set(callId, resolve));
       await previous;
       if (run !== attemptNo) return stale();
     }
@@ -382,8 +342,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       // the card shows every argument, so a call too large to show is never asked
       if (JSON.stringify(input, null, 2).length > MAX_CARD_ARGS) {
         await completeAction(db, auditId, { status: "denied" });
-        releaseApprove(toolUseID);
-        return { behavior: "deny", message: "Not done: the request was too large to show for confirmation." };
+        releaseApprove(callId);
+        return { allow: false, message: "Not done: the request was too large to show for confirmation." };
       }
       const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId) });
       let o: Outcome | { result: "failed" };
@@ -398,36 +358,33 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       if (o.result === "confirmed") {
         if (kind === "approve") lastConfirmer = o.personId;
         await recordAuthority(db, auditId, { type: "confirmation", personId: o.personId });
-        inFlight.set(toolUseID, auditId);
-        return { behavior: "allow", updatedInput: input };
+        inFlight.set(callId, auditId);
+        return { allow: true };
       }
       await completeAction(db, auditId, { status: o.result });
-      releaseApprove(toolUseID);
-      return { behavior: "deny", message: NOT_DONE[o.result] };
+      releaseApprove(callId);
+      return { allow: false, message: NOT_DONE[o.result] };
     } catch (err) {
-      releaseApprove(toolUseID); // a failure here must not hold up the next approval
+      releaseApprove(callId); // a failure here must not hold up the next approval
       throw err;
     }
   };
 
-  const afterTool: HookCallback = async (input) => {
-    if (input.hook_event_name !== "PostToolUse" && input.hook_event_name !== "PostToolUseFailure") return {};
-    const auditId = inFlight.get(input.tool_use_id);
-    if (auditId) {
-      inFlight.delete(input.tool_use_id);
-      releaseApprove(input.tool_use_id);
-      await completeAction(db, auditId, { status: input.hook_event_name === "PostToolUse" ? "done" : "failed" });
-      if (input.hook_event_name === "PostToolUse" && granted.has(input.tool_use_id)) changed = true;
-    }
-    return {};
+  const completeTool = async (callId: string, status: "done" | "failed"): Promise<void> => {
+    const auditId = inFlight.get(callId);
+    if (!auditId) return;
+    inFlight.delete(callId);
+    releaseApprove(callId);
+    await completeAction(db, auditId, { status });
+    if (status === "done" && granted.has(callId)) changed = true;
   };
 
   let signInLost = false;
-  const scope: TurnScope = {
-    personId: person.id, person, canUseTool, afterTool, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true),
+  // the app's tools read the turn through the key, so a warm process acts for whoever is talking now
+  const context: TurnContext = {
+    personId: person.id, person, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true),
     askConfirmation: turn.askConfirmation, relay: turn.relay ?? 0,
   };
-  let options: Options | undefined; // a cold run's, built only when one runs
   const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received, person);
 
   const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
@@ -436,105 +393,67 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return auditId;
   };
 
-  const once = async (resume?: string): Promise<SDKResultMessage | undefined> => {
-    resetTimings();
-    // a background job works through many pages (each browser click is a step), so it gets more steps than a chat turn
-    options ??= { ...setup.buildOptions(() => scope), ...(turn.routine?.background ? { maxTurns: 100 } : {}) };
-    for await (const msg of deps.queryFn({ prompt, options: { ...options, ...(resume ? { resume } : {}) } })) {
-      observe(msg);
-      if (msg.type === "result") return msg;
-    }
-    return undefined;
-  };
-  // one transient-network retry per turn, so with the warm process and the resume retry a turn runs at most four attempts
-  let networkRetried = false;
-  const attempt = async (resume?: string): Promise<SDKResultMessage | undefined> => {
-    try {
-      return await once(resume);
-    } catch (err) {
-      const e = err as { code?: string; message?: string; cause?: { code?: string } };
-      const code = e.cause?.code ?? e.code;
-      if (networkRetried || !((code && TRANSIENT.has(code)) || e.message === "fetch failed")) throw err;
-      networkRetried = true;
-      console.warn("engine call failed, retrying once", code);
-      await settle();
-      return once(resume);
-    }
-  };
-  // a "success" with is_error carries API error text in result, which must not reach the chat
-  const succeeded = (msg?: SDKResultMessage) => msg?.subtype === "success" && !msg.is_error;
-
-  // a run under a grant never shares the chat's process
-  const live = ownSession ? undefined : deps.live;
-  const liveKey = `${chatId}:${definition.id}`;
-  const viaLive = async (pool: LiveSessions): Promise<SDKResultMessage> => {
-    const turns = turnsOn(pool);
-    if (turns.has(liveKey)) throw new Error("another turn is running on this live session");
-    resetTimings();
-    const sentAt = new Date().toISOString();
-    let started = false;
-    turns.set(liveKey, scope);
-    try {
-      const start = () => {
-        started = true;
-        return liveOptions(pool, liveKey, setup, session);
-      };
-      const msg = await pool.send(liveKey, setup.fingerprint, start, prompt, observe);
-      // a warm process announces itself only once, so its engine is ready when the message goes in
-      if (!started) Object.assign(timings, { live: true, engineReadyAt: sentAt });
-      return msg;
-    } finally {
-      turns.delete(liveKey);
-    }
-  };
-  // the first attempt: the warm process when there is one, else (or if it fails) a cold one as before
-  const first = async (resume?: string): Promise<SDKResultMessage | undefined> => {
-    if (!live) return attempt(resume);
-    try {
-      return await viaLive(live);
-    } catch (err) {
-      console.error("live engine failed, starting a cold one", err instanceof Error ? err.message : "unknown");
-      await settle();
-      return attempt(resume);
-    }
+  // one engine run per attempt; the engine handles a transient-network retry and a warm-process fallback
+  const runEngine = (checkpoint?: string): Promise<EngineResult> => {
+    const input: EngineRunInput = {
+      ...setup.processOptions,
+      // a background job works through many pages (each browser click is a step), so it gets more steps than a chat turn
+      maxSteps: turn.routine?.background ? 100 : setup.processOptions.maxSteps,
+      key,
+      fingerprint: setup.fingerprint,
+      history: [{ role: "user", text: prompt }],
+      useWarm: !ownSession,
+      signal: new AbortController().signal,
+      onEvent,
+      authoriseTool,
+      completeTool,
+      onAttemptStart: resetTimings,
+      onAttemptEnd: settle,
+      ...(checkpoint ? { checkpoint } : {}),
+    };
+    return deps.engine.run(input);
   };
 
   try {
-    let msg: SDKResultMessage | undefined;
+    turnContexts.set(key, context);
+    let result: EngineResult | undefined;
     if (session) {
       try {
-        msg = await first(session.sdkSessionId);
+        result = await runEngine(session.sdkSessionId);
       } catch (err) {
         console.error("resume failed", err);
       }
-      if (!succeeded(msg)) {
+      if (!result || result.stopReason !== "text") {
         // the transcript may be gone (redeploy, lost volume); start a fresh session once
-        if (msg) await auditMessage(FAILED_TEXT, "failed", turnCost(msg.total_cost_usd));
+        if (result) await auditMessage(FAILED_TEXT, "failed", turnCost(result.usage.costUsd));
         lastCost = 0; // a fresh session starts its own total
         await db.delete(sessions).where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
-        live?.close(liveKey); // it holds the session just given up
+        deps.engine.reset?.(key); // it holds the session just given up
         await settle();
-        msg = await attempt();
+        result = await runEngine();
       }
     } else {
-      msg = await first();
+      result = await runEngine();
     }
-    if (!msg) {
+    if (!result) {
       await auditMessage(FAILED_TEXT, "failed");
-      throw new Error("Agent SDK query ended without a result");
+      throw new Error("engine run ended without a result");
     }
-    const ok = succeeded(msg);
-    const text = ok && msg.subtype === "success" ? msg.result : FAILED_TEXT;
+    timings.resultAt = new Date().toISOString();
+    const ok = result.stopReason === "text";
+    const text = ok ? result.text : FAILED_TEXT;
     const now = new Date();
-    const costUsd = turnCost(msg.total_cost_usd);
-    if (!ownSession)
+    const costUsd = turnCost(result.usage.costUsd);
+    const checkpoint = result.checkpoint ?? session?.sdkSessionId;
+    if (!ownSession && checkpoint)
       await db
         .insert(sessions)
-        .values({ chatId, definitionId: definition.id, sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now })
-        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: msg.session_id, lastCostUsd: String(msg.total_cost_usd), updatedAt: now } });
+        .values({ chatId, definitionId: definition.id, sdkSessionId: checkpoint, lastCostUsd: String(result.usage.costUsd), updatedAt: now })
+        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: checkpoint, lastCostUsd: String(result.usage.costUsd), updatedAt: now } });
     const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings);
-    return { text, costUsd, sessionId: msg.session_id, changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
+    return { text, costUsd, sessionId: checkpoint ?? "", changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
+    turnContexts.delete(key);
     await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
     await toolsRecorded;
   }
@@ -542,8 +461,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
 /** Starts the live process a turn on this chat and bot would use, resuming its stored session, without sending a message. Never throws. */
 export async function prewarm(deps: RunnerDeps, key: { tenantId: string; chatId: string; definitionId: string }): Promise<void> {
-  const { db, live } = deps;
-  if (!live) return;
+  const { db, engine } = deps;
+  if (!engine.prewarm) return;
   try {
     const [chat] = await db.select({ tenantId: chats.tenantId }).from(chats).where(eq(chats.id, key.chatId));
     // the bot a message would reach now; a session left by a bot no longer assigned, or another tenant's, is not warmed
@@ -552,10 +471,21 @@ export async function prewarm(deps: RunnerDeps, key: { tenantId: string; chatId:
       console.log("prewarm skipped", key.chatId);
       return;
     }
-    const [session] = await db.select().from(sessions).where(and(eq(sessions.chatId, key.chatId), eq(sessions.definitionId, definition.id)));
-    const setup = await engineSetup(deps, key.tenantId, key.chatId, definition, false);
     const liveKey = `${key.chatId}:${definition.id}`;
-    live.warm(liveKey, setup.fingerprint, () => liveOptions(live, liveKey, setup, session));
+    const [session] = await db.select().from(sessions).where(and(eq(sessions.chatId, key.chatId), eq(sessions.definitionId, definition.id)));
+    const setup = await engineSetup(deps, key.tenantId, key.chatId, definition, false, liveKey);
+    await engine.prewarm({
+      key: liveKey,
+      fingerprint: setup.fingerprint,
+      ...(session ? { checkpoint: session.sdkSessionId } : {}),
+      start: () => setup.processOptions,
+      // a tool call on a process with no turn running acts for nobody, and is audited as failed
+      orphanTool: async (name, input) => {
+        const auditId = await beginAction(db, { tenantId: key.tenantId, chatId: key.chatId, definitionId: definition.id, kind: "tool", toolName: name, summary: summarise(name, input) });
+        await completeAction(db, auditId, { status: "failed" });
+        return { allow: false, message: "Not done: no message is being answered." };
+      },
+    });
     console.log("prewarmed", key.chatId);
   } catch (err) {
     console.error("prewarm failed", key.chatId, err instanceof Error ? err.name : "unknown");

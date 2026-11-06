@@ -22,6 +22,7 @@ import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
 import { testDb } from "../db/test-db.js";
 import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { ClaudeEngine } from "./claude.js";
 import { Confirmations } from "./confirm.js";
 import { LiveSessions } from "./live.js";
 import { listRoutines } from "../routines/store.js";
@@ -88,7 +89,7 @@ const filesDir = fs.mkdtempSync(path.join(os.tmpdir(), "bebotter2-files-"));
 
 function deps(db: Db, queryFn: typeof query, confirmations = new Confirmations()) {
   const docker = fakeDockerClient();
-  return { db, queryFn, confirmations, secretsKey: key, docker, computerImage: "img", filesDir, ssh: fakeSsh(), publicUrl: "https://bot.example.test", fetchFn: (async () => new Response("ok")) as typeof fetch };
+  return { db, engine: new ClaudeEngine(queryFn), confirmations, secretsKey: key, docker, computerImage: "img", filesDir, ssh: fakeSsh(), publicUrl: "https://bot.example.test", fetchFn: (async () => new Response("ok")) as typeof fetch };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -381,13 +382,13 @@ describe("runTurn", () => {
     let n = 0;
     d.confirmations.create = (o) => { if (n++ === 0) throw new Error("boom"); return create(o); };
     const outcomes: string[] = [];
-    d.queryFn = (({ options }: { options: Options }) => (async function* () {
+    d.engine = new ClaudeEngine((({ options }: { options: Options }) => (async function* () {
       const signal = new AbortController().signal;
       const ask = (id: string) => options.canUseTool!("mcp__connections__approve", { name: "x" }, { signal, toolUseID: id } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
       outcomes.push(await ask("tu-1").then(() => "ok", () => "threw"));
       outcomes.push((await ask("tu-2"))!.behavior);
       yield { type: "result", subtype: "success", result: "Done.", session_id: "s-1", total_cost_usd: 0, num_turns: 1, duration_ms: 1, is_error: false };
-    })()) as unknown as typeof query;
+    })()) as unknown as typeof query);
     await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async (r) => void (await d.confirmations.resolve(r.actionId, boss.id, "no")) });
     expect(outcomes).toEqual(["threw", "deny"]);
   });
@@ -842,7 +843,7 @@ describe("runTurn", () => {
     const { definition, person } = await setup(db);
     await db.insert(mailboxes).values({ definitionId: definition.id, tenantId: "t1", agent: "bb2-x", localPart: "ada", inboxId: "i1", address: "ada@mail.example.test", keyId: "k1", keyCipher: encrypt(key, "am_botkey"), status: "active" });
     const q = fakeQuery({ calls: [] });
-    const d = { ...deps(db, q.fn), live: new LiveSessions(q.fn, { idleMs: 60_000, max: 5 }), agentmailUrl: "https://mail.example.test" };
+    const d = { ...deps(db, q.fn), engine: new ClaudeEngine(q.fn, { live: new LiveSessions(q.fn, { idleMs: 60_000, max: 5 }) }), agentmailUrl: "https://mail.example.test" };
     const ask = async () => {};
     await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
     await db.update(mailboxes).set({ status: "removed", keyId: null, keyCipher: null }).where(eq(mailboxes.definitionId, definition.id));
@@ -909,7 +910,7 @@ describe("runTurn", () => {
   describe("live sessions", () => {
     type Handler = (args: Record<string, string>) => Promise<{ isError?: boolean; content: { text: string }[] }>;
     const toolsOf = (server: unknown) => (server as { instance: { _registeredTools: Record<string, { handler: Handler }> } }).instance._registeredTools;
-    const liveDeps = (db: Db, queryFn: typeof query) => ({ ...deps(db, queryFn), live: new LiveSessions(queryFn, { idleMs: 60_000, max: 5 }) });
+    const liveDeps = (db: Db, queryFn: typeof query) => ({ ...deps(db, queryFn), engine: new ClaudeEngine(queryFn, { live: new LiveSessions(queryFn, { idleMs: 60_000, max: 5 }) }) });
 
     it("a warm process acts for the person of each turn", async () => {
       const db = await testDb();
@@ -964,7 +965,7 @@ describe("runTurn", () => {
       const err = vi.spyOn(console, "error").mockImplementation(() => {});
       const q = fakeQuery({ calls: [] });
       const dead = (() => Object.assign((async function* () { throw new Error("process died"); })(), { close: () => {} })) as unknown as typeof query;
-      const d = { ...deps(db, q.fn), live: new LiveSessions(dead, { idleMs: 60_000, max: 5 }) };
+      const d = { ...deps(db, q.fn), engine: new ClaudeEngine(q.fn, { live: new LiveSessions(dead, { idleMs: 60_000, max: 5 }) }) };
       const result = await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: async () => {} });
       err.mockRestore();
       expect(result.text).toBe("Done.");
@@ -991,7 +992,7 @@ describe("runTurn", () => {
           { close: () => {} },
         )) as unknown as typeof query;
       const q = fakeQuery({ calls: [approve] });
-      const d = { ...deps(db, q.fn), live: new LiveSessions(dying, { idleMs: 60_000, max: 5 }) };
+      const d = { ...deps(db, q.fn), engine: new ClaudeEngine(q.fn, { live: new LiveSessions(dying, { idleMs: 60_000, max: 5 }) }) };
       const result = await runTurn(d, {
         tenantId: "t1", chatId: "c1", definition, person, text: "approve x",
         askConfirmation: async (r) => void (await d.confirmations.resolve(r.actionId, boss.id, "yes")),
@@ -1102,7 +1103,8 @@ describe("runTurn", () => {
       await assignToChat(db, "c1", definition.id);
       await prewarm(d, { tenantId: "t2", chatId: "c1", definitionId: definition.id });
       expect(q.seen).toHaveLength(0);
-      const broken = { ...d, live: new LiveSessions((() => { throw new Error("spawn failed"); }) as unknown as typeof query, { idleMs: 60_000, max: 5 }) };
+      const brokenFn = (() => { throw new Error("spawn failed"); }) as unknown as typeof query;
+      const broken = { ...d, engine: new ClaudeEngine(brokenFn, { live: new LiveSessions(brokenFn, { idleMs: 60_000, max: 5 }) }) };
       await expect(prewarm(broken, { tenantId: "t1", chatId: "c1", definitionId: definition.id })).resolves.toBeUndefined();
       expect(err).toHaveBeenCalledWith("prewarm failed", "c1", "Error");
       log.mockRestore();
@@ -1131,7 +1133,7 @@ describe("runTurn", () => {
       const { definition, person } = await setup(db);
       const q = fakeQuery({ calls: [] });
       const d = liveDeps(db, q.fn);
-      const send = vi.spyOn(d.live, "send");
+      const send = vi.spyOn(d.engine.live!, "send");
       await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async () => {}, routine: { id: "r1", grantPersonId: person.id, post: async () => {} } });
       expect(send).not.toHaveBeenCalled();
       expect(q.seen).toHaveLength(1);

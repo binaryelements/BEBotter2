@@ -67,6 +67,11 @@ export class LiveSessions {
     }
   }
 
+  /** Whether a process is already live on key, so a send will reuse it rather than start one. */
+  has(key: string): boolean {
+    return this.live.has(key);
+  }
+
   /** Starts a process for key before its first message, unless one is live already; it idles out like any other. */
   warm(key: string, fingerprint: string, start: () => Options): void {
     if (this.live.has(key)) return;

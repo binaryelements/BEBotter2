@@ -11,6 +11,7 @@ import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { ensurePersonalDefinition } from "./bots/definitions.js";
 import { connect } from "./db/client.js";
 import { tenants } from "./db/schema.js";
+import { ClaudeEngine } from "./engine/claude.js";
 import { Confirmations } from "./engine/confirm.js";
 import { LiveSessions } from "./engine/live.js";
 import { systemSsh } from "./connections/ssh.js";
@@ -34,9 +35,10 @@ const confirmations = new Confirmations();
 // engines stay up until `max` evicts the least recently used (~310 MB each); restarts re-warm chats used in the last day
 const warm = { idleMs: Infinity, max: 20, recentMs: 24 * 60 * 60_000 };
 const live = new LiveSessions(query, warm);
+const engine = new ClaudeEngine(query, { live });
 const runnerDeps: RunnerDeps = {
   db,
-  queryFn: query,
+  engine,
   confirmations,
   secretsKey: config.secretsKey,
   docker: dockerodeClient(config.dockerSocket),
@@ -47,7 +49,6 @@ const runnerDeps: RunnerDeps = {
   agentmailUrl: config.agentmail?.url,
   fetchFn: fetch,
   readDocument: documentReader(query, config.defaultModel, config.filesDir),
-  live,
   // called only during turns, long after `proactive` and `app` below exist
   personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)),
 };
@@ -89,4 +90,4 @@ startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
-  process.once(signal, () => void live.closeAll().finally(() => process.exit(0)));
+  process.once(signal, () => void engine.close?.().finally(() => process.exit(0)));
