@@ -2,6 +2,7 @@ import express from "express";
 import type { Request, Router } from "express";
 import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
+import { resolveModel } from "../engine/providers.js";
 import { getTenantSettings, setTenantSettings } from "../org/org.js";
 import { isAdmin } from "./access.js";
 import { html, layout, pageHead } from "./html.js";
@@ -29,7 +30,7 @@ export function settingsRoutes(db: Db): Router {
 <form class="be-form" method="post" action="/admin/settings"><input type="hidden" name="csrf" value="${csrf}">
 <div class="fields">
 <label>bot name<span class="hint">how the bots introduce themselves in Teams</span><input class="be-input" name="botName" value="${s.botName ?? ""}" maxlength="40"></label>
-<label>default model<span class="hint">a Claude model id; a bot without its own uses this</span><input class="be-input" name="defaultModel" value="${s.defaultModel ?? ""}" placeholder="claude-sonnet-5-5"></label>
+<label>default model<span class="hint">a model id; a bot without its own uses this</span><input class="be-input" name="defaultModel" value="${s.defaultModel ?? ""}" placeholder="claude-sonnet-5-5 or deepseek/deepseek-flash"></label>
 <label>keep activity<span class="hint">days before the activity log and kept group messages are deleted</span><input class="be-input" name="retentionDays" type="number" min="1" max="3650" value="${s.retentionDays}" required></label>
 <label>time zone<span class="hint">the company's; each person's Teams zone wins for them</span><input class="be-input" name="timezone" value="${s.timezone}" required placeholder="Australia/Sydney"></label>
 <label>location<span class="hint">city; filled from the directory until you set it</span><input class="be-input" name="location" value="${s.location ?? ""}" maxlength="80" placeholder="Melbourne"></label>
@@ -55,7 +56,7 @@ export function settingsRoutes(db: Db): Router {
       const retentionDays = /^\d+$/.test(days) ? Number(days) : NaN;
       if (!(retentionDays >= 1 && retentionDays <= 3650)) throw new DirectoryError("Keep activity must be a whole number of days from 1 to 3650");
       const defaultModel = field(req, "defaultModel") || null;
-      if (defaultModel && !/^claude-[a-z0-9-]+$/.test(defaultModel)) throw new DirectoryError("Default model is not a valid model id");
+      if (defaultModel && !/^claude-[a-z0-9-]+$/.test(defaultModel) && !resolveModel(defaultModel)) throw new DirectoryError("Default model is not a known model id");
       const place = (key: "location" | "country") => {
         const v = field(req, key);
         if (v.length > 80) throw new DirectoryError(`${key === "location" ? "Location" : "Country"} is too long (80 characters at most)`);

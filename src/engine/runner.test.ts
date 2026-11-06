@@ -24,6 +24,7 @@ import { testDb } from "../db/test-db.js";
 import { setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { ClaudeEngine } from "./claude.js";
 import { Confirmations } from "./confirm.js";
+import type { Engine, EngineRunInput } from "./engine.js";
 import { LiveSessions } from "./live.js";
 import { listRoutines } from "../routines/store.js";
 import { prewarm, prewarmRecent, runTurn, withDefaults } from "./runner.js";
@@ -907,6 +908,32 @@ describe("runTurn", () => {
     const send = rows.find((r) => r.toolName === "mcp__m365__send_mail")!;
     expect(send.toolInput).toEqual({ to: ["bea@example.test"], subject: "Quarterly figures" });
     expect(send.summary).toContain("Quarterly figures");
+  });
+
+  it("persists the neutral transcript and replays it on the next turn", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db, { model: "deepseek/deepseek-flash", mcpServers: [] });
+    const seen: EngineRunInput[] = [];
+    const engine: Engine = {
+      toolMode: "app",
+      run: async (input) => {
+        seen.push(input);
+        return { text: "ok", messages: [...input.history, { role: "assistant", text: "ok" }], usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.001 }, steps: 1, stopReason: "text" };
+      },
+    };
+    const d = { ...deps(db, undefined as unknown as typeof query), engine };
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "one", askConfirmation: async () => {} });
+    await runTurn(d, { tenantId: "t1", chatId: "c1", definition, person, text: "two", askConfirmation: async () => {} });
+
+    expect(seen[0]!.history).toEqual([{ role: "user", text: expect.stringContaining("one") }]);
+    expect(seen[1]!.history).toEqual([
+      { role: "user", text: expect.stringContaining("one") },
+      { role: "assistant", text: "ok" },
+      { role: "user", text: expect.stringContaining("two") },
+    ]);
+    const [row] = await db.select().from(sessions);
+    expect(row).toMatchObject({ sdkSessionId: null, provider: "deepseek", model: "deepseek/deepseek-flash", inputTokens: 10, outputTokens: 2 });
+    expect(row!.messages).toHaveLength(4);
   });
 
   describe("live sessions", () => {

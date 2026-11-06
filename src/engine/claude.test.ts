@@ -16,6 +16,8 @@ const runInput = (overrides: Partial<EngineRunInput> = {}): EngineRunInput => ({
   history: [{ role: "user", text: "hi" }],
   signal: new AbortController().signal,
   onEvent: () => {},
+  tools: [],
+  callTool: async () => ({ text: "" }),
   authoriseTool: async () => ({ allow: true }),
   completeTool: async () => {},
   ...overrides,

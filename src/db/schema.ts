@@ -1,4 +1,5 @@
 import { boolean, customType, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import type { EngineMessage } from "../engine/engine.js";
 
 export type McpServerRecord = {
   name: string;
@@ -215,9 +216,18 @@ export const sessions = pgTable(
   {
     chatId: text("chat_id").notNull().references(() => chats.id),
     definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
-    sdkSessionId: text("sdk_session_id").notNull(),
+    /** Claude's resume token; null for an engine that replays `messages` instead. */
+    sdkSessionId: text("sdk_session_id"),
     /** The last total_cost_usd the engine reported for this session; a turn's cost is the growth since. */
     lastCostUsd: numeric("last_cost_usd", { precision: 12, scale: 6 }),
+    /** The neutral transcript an engine that replays history uses. */
+    messages: jsonb("messages").$type<EngineMessage[]>(),
+    /** The oldest turns folded into a note, so a long chat stays under the context limit. */
+    summary: text("summary"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    provider: text("provider"),
+    model: text("model"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.chatId, t.definitionId] })],

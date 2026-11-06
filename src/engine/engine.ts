@@ -37,10 +37,16 @@ export type EngineResult = {
   checkpoint?: string;
   usage: EngineUsage;
   steps: number;
-  stopReason: "text" | "max-steps" | "error";
+  stopReason: "text" | "max-steps" | "aborted" | "error";
 };
 
 export type ToolDecision = { allow: true } | { allow: false; message: string };
+
+/** A tool as the model sees it. */
+export type EngineTool = { name: string; description: string; inputSchema: Record<string, unknown> };
+
+/** What a tool call hands back: text for the transcript, and any image the model may look at. */
+export type ToolResult = { text: string; isError?: boolean; images?: EngineImage[] };
 
 /** What the app has built for one turn, independent of who runs it. */
 export type EngineProcessOptions = {
@@ -66,6 +72,9 @@ export type EngineRunInput = EngineProcessOptions & {
   useWarm?: boolean;
   signal: AbortSignal;
   onEvent: (event: EngineEvent) => void;
+  /** The tools the app offers; an engine that runs the loop calls `callTool` for each. */
+  tools: EngineTool[];
+  callTool: (name: string, input: Record<string, unknown>) => Promise<ToolResult>;
   /** The app's gate, audit row and confirmation card. */
   authoriseTool: (callId: string, name: string, input: Record<string, unknown>) => Promise<ToolDecision>;
   /** Closes the audit row opened by authoriseTool. */
@@ -86,6 +95,8 @@ export type EnginePrewarmInput = {
 };
 
 export interface Engine {
+  /** "runtime": the engine's own runtime executes tools; "app": the engine calls back into the app. */
+  readonly toolMode: "runtime" | "app";
   run(input: EngineRunInput): Promise<EngineResult>;
   /** Starts any warm runtime a turn on this key would use. */
   prewarm?(input: EnginePrewarmInput): Promise<void>;

@@ -14,6 +14,7 @@ import { tenants } from "./db/schema.js";
 import { ClaudeEngine } from "./engine/claude.js";
 import { Confirmations } from "./engine/confirm.js";
 import { LiveSessions } from "./engine/live.js";
+import { OpenAICompatEngine } from "./engine/openai.js";
 import { systemSsh } from "./connections/ssh.js";
 import { agentMailAdmin } from "./mail/agentmail.js";
 import { mountMailInbound } from "./mail/inbound.js";
@@ -34,8 +35,8 @@ const confirmations = new Confirmations();
 // operational limits: an idle chat's engine stops after 60 minutes, and at most 20 stay warm
 // engines stay up until `max` evicts the least recently used (~310 MB each); restarts re-warm chats used in the last day
 const warm = { idleMs: Infinity, max: 20, recentMs: 24 * 60 * 60_000 };
-const live = new LiveSessions(query, warm);
-const engine = new ClaudeEngine(query, { live });
+const live = config.engine === "claude" ? new LiveSessions(query, warm) : undefined;
+const engine = config.engine === "openai" ? new OpenAICompatEngine({ providers: config.providers }) : new ClaudeEngine(query, { live });
 const runnerDeps: RunnerDeps = {
   db,
   engine,
@@ -48,7 +49,8 @@ const runnerDeps: RunnerDeps = {
   publicUrl: config.publicUrl,
   agentmailUrl: config.agentmail?.url,
   fetchFn: fetch,
-  readDocument: documentReader(query, config.defaultModel, config.filesDir),
+  // PDFs still go through the Claude document reader; an OpenAI-only deployment gives their details only until PR 4
+  readDocument: config.engine === "claude" ? documentReader(query, config.defaultModel, config.filesDir) : undefined,
   // called only during turns, long after `proactive` and `app` below exist
   personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)),
 };

@@ -27,11 +27,14 @@ import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
 export type { TurnTimings };
 import type { Confirmations, Outcome } from "./confirm.js";
 import { browserMcpServer } from "./browser.js";
-import type { Engine, EngineEvent, EngineProcessOptions, EngineResult, EngineRunInput, ToolDecision } from "./engine.js";
+import type { Engine, EngineEvent, EngineMessage, EngineProcessOptions, EngineResult, EngineRunInput, EngineTool, ToolDecision } from "./engine.js";
 import { FAILED_TEXT } from "./engine.js";
 import { classify } from "./gate.js";
 import type { McpServerConfig } from "./mcp.js";
+import { McpRegistry } from "./mcp-registry.js";
+import { contextWindowFor, resolveModel } from "./providers.js";
 import { recordTools, toolRule, toolRulesFor } from "./tool-rules.js";
+import { compact, withoutImages } from "./transcript.js";
 
 export type RunnerDeps = {
   db: Db;
@@ -394,18 +397,31 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return auditId;
   };
 
+  // the app's MCP client, for an engine that runs the loop itself; a runtime engine connects its own
+  let registry: McpRegistry | undefined;
+  let tools: EngineTool[] = [];
+
   // one engine run per attempt; the engine handles a transient-network retry and a warm-process fallback
   const runEngine = (checkpoint?: string): Promise<EngineResult> => {
+    const replay = deps.engine.toolMode === "app" && session?.messages ? session.messages : [];
+    const history: EngineMessage[] = [...replay, { role: "user", text: prompt }];
+    const systemPrompt =
+      deps.engine.toolMode === "app" && session?.summary
+        ? `${setup.processOptions.systemPrompt}\n\nEarlier in this conversation:\n${session.summary}`
+        : setup.processOptions.systemPrompt;
     const input: EngineRunInput = {
       ...setup.processOptions,
+      systemPrompt,
       // a background job works through many pages (each browser click is a step), so it gets more steps than a chat turn
       maxSteps: turn.routine?.background ? 100 : setup.processOptions.maxSteps,
       key,
       fingerprint: setup.fingerprint,
-      history: [{ role: "user", text: prompt }],
+      history,
       useWarm: !ownSession,
       signal: new AbortController().signal,
       onEvent,
+      tools,
+      callTool: (name, args) => (registry ? registry.call(name, args) : Promise.resolve({ text: "No tool runtime.", isError: true })),
       authoriseTool,
       completeTool,
       onAttemptStart: resetTimings,
@@ -417,10 +433,14 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   try {
     turnContexts.set(key, context);
+    if (deps.engine.toolMode === "app") {
+      registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn });
+      tools = await registry.listTools();
+    }
     let result: EngineResult | undefined;
-    if (session) {
+    if (session && deps.engine.toolMode === "runtime") {
       try {
-        result = await runEngine(session.sdkSessionId);
+        result = await runEngine(session.sdkSessionId ?? undefined);
       } catch (err) {
         console.error("resume failed", err);
       }
@@ -444,16 +464,47 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const ok = result.stopReason === "text";
     const text = ok ? result.text : FAILED_TEXT;
     const now = new Date();
-    const costUsd = turnCost(result.usage.costUsd);
-    const checkpoint = result.checkpoint ?? session?.sdkSessionId;
-    if (!ownSession && checkpoint)
+    const costUsd = deps.engine.toolMode === "app" ? result.usage.costUsd : turnCost(result.usage.costUsd);
+    const checkpoint = result.checkpoint ?? session?.sdkSessionId ?? null;
+    const provider = deps.engine.toolMode === "app" ? (resolveModel(definition.model)?.provider.id ?? null) : "claude";
+    const kept =
+      deps.engine.toolMode === "app"
+        ? compact(result.messages, session?.summary ?? undefined, contextWindowFor(definition.model))
+        : { messages: result.messages, ...(session?.summary ? { summary: session.summary } : {}) };
+    if (!ownSession)
       await db
         .insert(sessions)
-        .values({ chatId, definitionId: definition.id, sdkSessionId: checkpoint, lastCostUsd: String(result.usage.costUsd), updatedAt: now })
-        .onConflictDoUpdate({ target: [sessions.chatId, sessions.definitionId], set: { sdkSessionId: checkpoint, lastCostUsd: String(result.usage.costUsd), updatedAt: now } });
+        .values({
+          chatId,
+          definitionId: definition.id,
+          sdkSessionId: checkpoint,
+          lastCostUsd: String(result.usage.costUsd),
+          messages: withoutImages(kept.messages),
+          summary: kept.summary ?? null,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          provider,
+          model: definition.model,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [sessions.chatId, sessions.definitionId],
+          set: {
+            sdkSessionId: checkpoint,
+            lastCostUsd: String(result.usage.costUsd),
+            messages: withoutImages(kept.messages),
+            summary: kept.summary ?? null,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            provider,
+            model: definition.model,
+            updatedAt: now,
+          },
+        });
     const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings);
     return { text, costUsd, sessionId: checkpoint ?? "", changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
+    await registry?.close();
     turnContexts.delete(key);
     await settle(); // allowed but never finished (interrupted, maxTurns hit, stream died)
     await toolsRecorded;
@@ -478,7 +529,7 @@ export async function prewarm(deps: RunnerDeps, key: { tenantId: string; chatId:
     await engine.prewarm({
       key: liveKey,
       fingerprint: setup.fingerprint,
-      ...(session ? { checkpoint: session.sdkSessionId } : {}),
+      ...(session?.sdkSessionId ? { checkpoint: session.sdkSessionId } : {}),
       start: () => setup.processOptions,
       // a tool call on a process with no turn running acts for nobody, and is audited as failed
       orphanTool: async (name, input) => {

@@ -52,11 +52,10 @@ checkpoint, usage, steps and why it stopped.
 Claude Code executes tools itself. Its adapter therefore uses `authoriseTool` before each call and
 `completeTool` from the PostToolUse hooks, and receives the app's MCP servers in `mcpServers`.
 
-A future OpenAI-compatible engine will execute the loop itself. The app-side MCP registry
-(`listTools` + `callTool`) is in `mcp-registry.ts`; PR 3 adds `tools` and `callTool` to
-`EngineRunInput` and lets that engine authorise, execute and complete each call through the same gate.
-The security property is the same in both models: no tool call reaches a handler without
-`authoriseTool` first.
+The OpenAI-compatible engine executes the loop itself. The app-side MCP registry
+(`listTools` + `callTool`) is in `mcp-registry.ts`; `EngineRunInput` carries `tools` and `callTool`,
+and that engine authorises, executes and completes each call through the same gate. The security
+property is the same in both models: no tool call reaches a handler without `authoriseTool` first.
 
 ## The MCP layer (PR 2)
 
@@ -72,13 +71,32 @@ content to the neutral `McpToolResult`. It is created for one turn and closed at
 The gate now asks before `bash`, `ssh_read`, `http_read` and `knowledge.write`; an admin can
 still set any of them free per bot.
 
+## The OpenAI-compatible engine (PR 3)
+
+`src/engine/providers.ts` is the model registry: `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro`,
+`qwen/qwen3.8-max` and `qwen/qwen3.8-flash`, with context windows, output limits and list prices.
+Adding a provider is a block there, not a new engine.
+
+`src/engine/openai.ts` is one loop over Chat Completions: stream the reply, accumulate tool-call
+arguments, authorise each call, execute it through `McpRegistry`, feed the result back, and repeat
+until text or `maxSteps`. It sums usage per step, prices it from the profile, and turns an image tool
+result into a user image message (OpenAI tool messages are text-only).
+
+`src/engine/transcript.ts` keeps a long chat under the context limit: it folds the oldest messages
+into a deterministic summary and keeps the recent window. The `sessions` row now stores `messages`,
+`summary`, `input_tokens`, `output_tokens`, `provider` and `model`; `sdk_session_id` is nullable, so
+Claude can keep its resume token while the new engine replays the neutral transcript.
+
+`ENGINE=claude|openai` selects the engine. `DEFAULT_MODEL` is a Claude id for the first and a
+`provider/model` slug for the second; the admin settings page accepts either.
+
 ## Not in this branch
 
-- the OpenAI-compatible engine and provider profiles (PR 3)
-- wiring the MCP registry into the engine (PR 3)
-- transcript persistence/compaction (PR 3)
-- MCP child-process pooling for stdio servers such as the browser (PR 3/4)
-- `read-document.ts`, which still uses the SDK for a PDF document block (PR 3)
+- `read-document.ts`, which still uses the SDK for a PDF document block; an OpenAI-only deployment
+  gives PDFs' details only until PR 4
+- MCP child-process pooling for stdio servers such as the browser (PR 4)
+- the `connections.request`/`verify` SSRF fix and the other security items in the handover (PR 4)
+- removing the SDK and the Claude engine (cutover)
 
 ## Why `runner.ts` is smaller
 

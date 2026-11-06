@@ -1,14 +1,21 @@
 import { z } from "zod";
+import { resolveModel } from "../engine/providers.js";
 
 const schema = z.object({
   DATABASE_URL: z.string().min(1),
-  ANTHROPIC_API_KEY: z.string().min(1),
+  /** claude: the Agent SDK; openai: any OpenAI-compatible provider in engine/providers.ts. */
+  ENGINE: z.enum(["claude", "openai"]).default("claude"),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  DEEPSEEK_API_KEY: z.string().optional(),
+  DASHSCOPE_API_KEY: z.string().optional(),
+  DEEPSEEK_BASE_URL: z.string().url().optional(),
+  QWEN_BASE_URL: z.string().url().optional(),
   SECRETS_KEY: z
     .string()
     .transform((s) => Buffer.from(s, "base64"))
     .refine((b) => b.length === 32, "SECRETS_KEY must be 32 bytes"),
   BOT_NAME: z.string().default("BE Bot"),
-  DEFAULT_MODEL: z.string().default("claude-haiku-5-5"),
+  DEFAULT_MODEL: z.string().optional(),
   PUBLIC_URL: z
     .string()
     .refine((s) => s.startsWith("https://") && URL.canParse(s), "PUBLIC_URL must be an absolute https:// URL")
@@ -29,9 +36,13 @@ const schema = z.object({
   GRAPH_OAUTH_CONNECTION: z.string().default("graph"),
 });
 
+export type ProviderConfig = { apiKey: string; baseUrl?: string };
+
 export type Config = {
   databaseUrl: string;
-  anthropicApiKey: string;
+  engine: "claude" | "openai";
+  anthropicApiKey?: string;
+  providers: Record<string, ProviderConfig>;
   secretsKey: Buffer;
   botName: string;
   defaultModel: string;
@@ -49,12 +60,33 @@ export type Config = {
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const e = schema.parse(env);
+  const engine = e.ENGINE;
+  const defaultModel = e.DEFAULT_MODEL ?? (engine === "openai" ? "deepseek/deepseek-flash" : "claude-haiku-5-5");
+
+  const providers: Record<string, ProviderConfig> = {
+    ...(e.DEEPSEEK_API_KEY ? { deepseek: { apiKey: e.DEEPSEEK_API_KEY, ...(e.DEEPSEEK_BASE_URL ? { baseUrl: e.DEEPSEEK_BASE_URL } : {}) } } : {}),
+    ...(e.DASHSCOPE_API_KEY ? { qwen: { apiKey: e.DASHSCOPE_API_KEY, ...(e.QWEN_BASE_URL ? { baseUrl: e.QWEN_BASE_URL } : {}) } } : {}),
+  };
+
+  if (engine === "claude") {
+    if (!e.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is required when ENGINE=claude");
+    if (!/^claude-[a-z0-9-]+$/.test(defaultModel)) throw new Error(`DEFAULT_MODEL ${defaultModel} is not a Claude model id`);
+  }
+  if (engine === "openai") {
+    if (!Object.keys(providers).length) throw new Error("DEEPSEEK_API_KEY or DASHSCOPE_API_KEY is required when ENGINE=openai");
+    const resolved = resolveModel(defaultModel);
+    if (!resolved) throw new Error(`DEFAULT_MODEL ${defaultModel} is not a known provider/model`);
+    if (!providers[resolved.provider.id]) throw new Error(`DEFAULT_MODEL ${defaultModel} needs ${resolved.provider.id.toUpperCase()}_API_KEY`);
+  }
+
   return {
     databaseUrl: e.DATABASE_URL,
-    anthropicApiKey: e.ANTHROPIC_API_KEY,
+    engine,
+    ...(e.ANTHROPIC_API_KEY ? { anthropicApiKey: e.ANTHROPIC_API_KEY } : {}),
+    providers,
     secretsKey: e.SECRETS_KEY,
     botName: e.BOT_NAME,
-    defaultModel: e.DEFAULT_MODEL,
+    defaultModel,
     publicUrl: e.PUBLIC_URL,
     adminEmails: e.ADMIN_EMAILS,
     port: e.PORT,

@@ -2,14 +2,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { EngineImage } from "./engine.js";
+import type { EngineImage, EngineTool, ToolResult } from "./engine.js";
 import type { McpServerConfig } from "./mcp.js";
 
 /** A tool as the model sees it: the server's name is folded into the tool name, as the SDK does. */
-export type McpTool = { name: string; description: string; inputSchema: Record<string, unknown> };
+export type McpTool = EngineTool;
 
 /** What a tool call hands back: text for the transcript, and any image the model may look at. */
-export type McpToolResult = { text: string; isError?: boolean; images?: EngineImage[] };
+export type McpToolResult = ToolResult;
 
 type Content = { type: string; text?: string; data?: string; mimeType?: string; uri?: string; resource?: { text?: string } };
 

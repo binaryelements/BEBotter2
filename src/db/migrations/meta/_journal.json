@@ -127,6 +127,13 @@
       "when": 1793924523890,
       "tag": "0017_connection-description",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793943353714,
+      "tag": "0018_dashing_zeigeist",
+      "breakpoints": true
     }
   ]
 }

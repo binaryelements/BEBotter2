@@ -19,6 +19,7 @@ function promptOf(history: EngineMessage[]): string {
  * the resume token, so nothing above it imports the SDK.
  */
 export class ClaudeEngine implements Engine {
+  readonly toolMode = "runtime" as const;
   private readonly turns = new Map<string, EngineRunInput>();
   readonly live?: LiveSessions;
 
