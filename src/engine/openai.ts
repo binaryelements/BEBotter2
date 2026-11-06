@@ -32,6 +32,39 @@ const toTool = (t: EngineTool): ChatCompletionTool => ({
   function: { name: t.name, description: t.description, parameters: t.inputSchema as never },
 });
 
+/**
+ * A compacted transcript may start with a tool result whose assistant tool-call message was dropped.
+ * Chat Completions rejects that, so keep only complete assistant-tool-call groups.
+ */
+const sanitiseHistory = (history: EngineMessage[]): EngineMessage[] => {
+  const out: EngineMessage[] = [];
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i]!;
+    if (m.role === "assistant") {
+      const calls = m.toolCalls ?? [];
+      if (!calls.length) {
+        out.push(m);
+        continue;
+      }
+      const ids = new Set(calls.map((c) => c.id));
+      const results: EngineMessage[] = [];
+      let j = i + 1;
+      while (j < history.length) {
+        const next = history[j]!;
+        if (next.role !== "tool" || !ids.has(next.toolCallId)) break;
+        results.push(next);
+        j++;
+      }
+      if (results.length === ids.size) out.push(m, ...results);
+      i = j - 1;
+      continue;
+    }
+    if (m.role === "tool") continue; // an orphan result, with no assistant call before it
+    out.push(m);
+  }
+  return out;
+};
+
 const toMessage = (m: EngineMessage): ChatCompletionMessageParam => {
   if (m.role === "user") {
     if (!m.images?.length) return { role: "user", content: m.text };
@@ -78,7 +111,7 @@ export class OpenAICompatEngine implements Engine {
 
     const client = this.client(resolved.provider, keys);
     const tools = input.tools.map(toTool);
-    const messages: EngineMessage[] = [...input.history];
+    const messages: EngineMessage[] = sanitiseHistory(input.history);
     const openai: ChatCompletionMessageParam[] = [{ role: "system", content: input.systemPrompt }, ...messages.map(toMessage)];
     const usage: NormalisedUsage = { inputTokens: 0, outputTokens: 0 };
     let steps = 0;
@@ -204,6 +237,6 @@ export class OpenAICompatEngine implements Engine {
 
   private failure(input: EngineRunInput, message: string): EngineResult {
     console.error(message);
-    return { text: FAILED_TEXT, messages: input.history, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, steps: 0, stopReason: "error" };
+    return { text: FAILED_TEXT, messages: sanitiseHistory(input.history), usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, steps: 0, stopReason: "error" };
   }
 }

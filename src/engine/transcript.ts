@@ -31,6 +31,8 @@ export function compact(messages: EngineMessage[], summary: string | undefined, 
     kept -= Math.ceil(textOf(messages[drop]!).length / CHARS_PER_TOKEN);
     drop++;
   }
+  // never start the kept window on a tool result; its assistant tool-call message must stay with it
+  while (drop > 0 && messages[drop]?.role === "tool") drop--;
   const dropped = messages.slice(0, drop);
   const text = dropped.map((m) => `${m.role}: ${textOf(m)}`).join("\n");
   const joined = [summary, text].filter(Boolean).join("\n");

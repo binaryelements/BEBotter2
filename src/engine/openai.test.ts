@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import { FAILED_TEXT } from "./engine.js";
-import type { EngineEvent, EngineRunInput } from "./engine.js";
+import type { EngineEvent, EngineMessage, EngineRunInput } from "./engine.js";
 import { OpenAICompatEngine } from "./openai.js";
 
 const chunk = (delta: unknown, usage?: unknown): ChatCompletionChunk =>
@@ -9,13 +9,17 @@ const chunk = (delta: unknown, usage?: unknown): ChatCompletionChunk =>
 
 function fakeClient(steps: ChatCompletionChunk[][]) {
   let i = 0;
+  const bodies: Record<string, unknown>[] = [];
   return {
+    bodies,
     chat: {
       completions: {
-        create: async () =>
-          (async function* () {
+        create: async (body: Record<string, unknown>) => {
+          bodies.push(JSON.parse(JSON.stringify(body)) as Record<string, unknown>);
+          return (async function* () {
             for (const c of steps[i++] ?? []) yield c;
-          })(),
+          })();
+        },
       },
     },
   };
@@ -122,6 +126,40 @@ describe("OpenAICompatEngine", () => {
     const result = await engine.run(input({ callTool: async () => ({ text: "", images: [{ data: "aGVsbG8=", mimeType: "image/png" }] }) }));
 
     expect(result.messages).toContainEqual({ role: "user", text: "Image returned by mcp__knowledge__read.", images: [{ data: "aGVsbG8=", mimeType: "image/png" }] });
+  });
+
+  it("drops an orphan tool message before sending the history", async () => {
+    const fake = fakeClient([[chunk({ content: "ok" })]]);
+    const engine = new OpenAICompatEngine({ providers: { deepseek: { apiKey: "k" } }, client: () => fake });
+    const history: EngineMessage[] = [
+      { role: "user", text: "hi" },
+      { role: "tool", toolCallId: "missing", text: "orphan" },
+      { role: "user", text: "again" },
+    ];
+
+    const result = await engine.run(input({ tools: [], history }));
+
+    expect((fake.bodies[0]!.messages as { role: string }[]).map((m) => m.role)).toEqual(["system", "user", "user"]);
+    expect(result.messages).toEqual([
+      { role: "user", text: "hi" },
+      { role: "user", text: "again" },
+      { role: "assistant", text: "ok" },
+    ]);
+  });
+
+  it("keeps a complete assistant tool call and its result", async () => {
+    const fake = fakeClient([[chunk({ content: "ok" })]]);
+    const engine = new OpenAICompatEngine({ providers: { deepseek: { apiKey: "k" } }, client: () => fake });
+    const history: EngineMessage[] = [
+      { role: "user", text: "hi" },
+      { role: "assistant", toolCalls: [{ id: "c1", name: "x", input: {} }] },
+      { role: "tool", toolCallId: "c1", text: "result" },
+      { role: "user", text: "again" },
+    ];
+
+    await engine.run(input({ tools: [], history }));
+
+    expect((fake.bodies[0]!.messages as { role: string }[]).map((m) => m.role)).toEqual(["system", "user", "assistant", "tool", "user"]);
   });
 
   it("fails cleanly for an unknown model or a missing key", async () => {

@@ -14,6 +14,10 @@ export type McpToolResult = ToolResult;
 
 type Content = { type: string; text?: string; data?: string; mimeType?: string; uri?: string; resource?: { text?: string } };
 
+const CONNECT_TIMEOUT_MS = 20_000;
+const LIST_TIMEOUT_MS = 20_000;
+const CALL_TIMEOUT_MS = 120_000;
+
 export const mcpToolName = (server: string, tool: string) => `mcp__${server}__${tool}`;
 
 /**
@@ -37,7 +41,7 @@ export class McpRegistry {
     for (const [server, config] of Object.entries(this.servers)) {
       try {
         const client = await this.client(server, config);
-        for (const tool of (await client.listTools()).tools) {
+        for (const tool of (await client.listTools(undefined, { timeout: LIST_TIMEOUT_MS })).tools) {
           out.push({ name: mcpToolName(server, tool.name), description: tool.description ?? "", inputSchema: tool.inputSchema as Record<string, unknown> });
         }
       } catch (err) {
@@ -56,18 +60,23 @@ export class McpRegistry {
     const tool = match[2]!;
     const config = this.servers[server];
     if (!config) return { text: `No MCP server named ${server}.`, isError: true };
-    const client = await this.client(server, config);
-    const result = await client.callTool({ name: tool, arguments: args });
-    const content = (result.content ?? []) as Content[];
-    const texts: string[] = [];
-    const images: EngineImage[] = [];
-    for (const c of content) {
-      if (c.type === "text" && c.text !== undefined) texts.push(c.text);
-      else if (c.type === "image" && c.data && c.mimeType) images.push({ data: c.data, mimeType: c.mimeType });
-      else if (c.type === "resource" && c.resource?.text !== undefined) texts.push(c.resource.text);
-      else if (c.type === "resource_link" && c.uri) texts.push(c.uri);
+    try {
+      const client = await this.client(server, config);
+      const result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
+      const content = (result.content ?? []) as Content[];
+      const texts: string[] = [];
+      const images: EngineImage[] = [];
+      for (const c of content) {
+        if (c.type === "text" && c.text !== undefined) texts.push(c.text);
+        else if (c.type === "image" && c.data && c.mimeType) images.push({ data: c.data, mimeType: c.mimeType });
+        else if (c.type === "resource" && c.resource?.text !== undefined) texts.push(c.resource.text);
+        else if (c.type === "resource_link" && c.uri) texts.push(c.uri);
+      }
+      return { text: texts.join("\n"), ...(result.isError ? { isError: true } : {}), ...(images.length ? { images } : {}) };
+    } catch (err) {
+      console.error(`mcp ${server} tool ${tool} failed:`, err instanceof Error ? err.message : "error");
+      return { text: `The tool ${tool} did not answer.`, isError: true };
     }
-    return { text: texts.join("\n"), ...(result.isError ? { isError: true } : {}), ...(images.length ? { images } : {}) };
   }
 
   async close(): Promise<void> {
@@ -101,16 +110,17 @@ export class McpRegistry {
     if (config.type === "sdk") {
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await config.instance.connect(serverTransport);
-      await client.connect(clientTransport);
+      await client.connect(clientTransport, { timeout: CONNECT_TIMEOUT_MS });
     } else if (config.type === "http") {
       await client.connect(
         new StreamableHTTPClientTransport(new URL(config.url), {
           ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
           ...(this.opts.fetch ? { fetch: this.opts.fetch } : {}),
         }),
+        { timeout: CONNECT_TIMEOUT_MS },
       );
     } else {
-      await client.connect(new StdioClientTransport({ command: config.command, ...(config.args ? { args: config.args } : {}), ...(config.env ? { env: config.env } : {}) }));
+      await client.connect(new StdioClientTransport({ command: config.command, ...(config.args ? { args: config.args } : {}), ...(config.env ? { env: config.env } : {}) }), { timeout: CONNECT_TIMEOUT_MS });
     }
     return client;
   }

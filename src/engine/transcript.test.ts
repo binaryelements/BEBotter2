@@ -28,6 +28,27 @@ describe("transcript", () => {
     expect(out.summary!.length).toBeLessThanOrEqual(4_000);
   });
 
+  it("never starts the kept window on a tool result", () => {
+    const messages: EngineMessage[] = [
+      user("old"),
+      { role: "assistant", toolCalls: [{ id: "c1", name: "x", input: {} }] },
+      { role: "tool", toolCallId: "c1", text: "result" },
+      ...Array.from({ length: 20 }, (_, i) => user(`m${i} ${"z".repeat(400)}`)),
+    ];
+    for (let window = 200; window <= 4_000; window += 50) {
+      expect([window, compact(messages, undefined, window).messages[0]?.role]).not.toEqual([window, "tool"]);
+    }
+  });
+
+  it("keeps an assistant tool call with its tool result", () => {
+    const messages: EngineMessage[] = [
+      user("old"),
+      { role: "assistant", toolCalls: [{ id: "c1", name: "x", input: {} }] },
+      { role: "tool", toolCallId: "c1", text: "result" },
+    ];
+    expect(compact(messages, undefined, 1_000_000).messages).toEqual(messages);
+  });
+
   it("counts an image as a flat cost", () => {
     expect(estimateTokens([{ role: "user", text: "", images: [{ data: "x", mimeType: "image/png" }] }])).toBe(1_000);
   });
