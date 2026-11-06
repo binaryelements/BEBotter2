@@ -9,7 +9,7 @@ import {
 import { and, count, eq } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
-import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setLinked } from "../connections/store.js";
+import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setDescription, setLinked } from "../connections/store.js";
 import type { ConnectionKind, ConnectionMode } from "../connections/store.js";
 import { SQL_ENGINES } from "../connections/sql.js";
 import type { SqlRunner } from "../connections/sql.js";
@@ -132,12 +132,13 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
       const rows = conns.map((c) => {
         const bots = links.filter((l) => l.connectionId === c.id);
         return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td>
+<td><form method="post" action="/admin/connections/${c.id}/description">${csrf}<textarea name="description" rows="3" cols="40" placeholder="what it is for, what is safe to run, what to leave alone">${c.description ?? ""}</textarea><br><button class="be-btn sm">save</button></form></td>
 <td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
 <td>${c.status === "revoked" ? "" : c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm" title="forgets the pinned host key; only after you have checked the machine really changed it">reset host key</button></form>` : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`}</td>
 <td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
       });
       render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1></div></header>
-${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>Used by</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
+${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>Used by</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
 <details class="add" id="add"><summary>add a connection…</summary>
 <form method="post" action="/admin/connections">${csrf}
 <div class="fields">
@@ -145,6 +146,7 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
 <label>kind<select name="kind"><option value="ssh">ssh</option><option value="sql">sql database</option><option value="mcp">MCP server</option><option value="http">http API</option></select></label>
 <label>target<span class="hint">ssh/sql: host name; mcp/http: URL</span><input name="target" required></label>
 <label>mode<select name="mode"><option value="read-only">read-only</option><option value="change">change</option></select></label>
+<label>what it is for<span class="hint">shown to the bot: what the system does, who uses it, what is safe to run, what to leave alone</span><textarea name="description" rows="4"></textarea></label>
 <label>username<span class="hint">ssh and sql</span><input name="username"></label>
 <label>port<span class="hint">blank for the usual one</span><input name="port" inputmode="numeric"></label>
 <label>database engine<span class="hint">sql only</span><select name="engine">${SQL_ENGINES.map((e) => html`<option>${e}</option>`)}</select></label>
@@ -186,7 +188,7 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
         config = { ...(headerName ? { headerName } : {}), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) };
       }
       const c = await createConnection(connDeps, actor.tenantId, {
-        kind, name: field(req, "name").trim(), target, mode: field(req, "mode") as ConnectionMode, config: config as never, secret, ...(clientSecret ? { clientSecret } : {}), personId: actor.personId, definitionIds: many(req, "definitionId"),
+        kind, name: field(req, "name").trim(), target, mode: field(req, "mode") as ConnectionMode, description: field(req, "description"), config: config as never, secret, ...(clientSecret ? { clientSecret } : {}), personId: actor.personId, definitionIds: many(req, "definitionId"),
       }).catch((e) => { throw e instanceof ConnectionError ? new DirectoryError(e.message) : e; });
       if (c.kind === "ssh") return res.redirect(303, "/admin/connections");
       if (oauthOf(c)) return res.redirect(302, beginSignIn(c, oauthRedirect));
@@ -442,12 +444,12 @@ ${person ? html`<p class="muted">Acts as each person who uses it, in their own c
           section = await actionsSectionFor(res, def, linked);
         } else if (tab === "connections") {
           // the company's connections, split by whether this bot uses them: one list per question an admin asks
-          const connRow = (c: Connection, uses: boolean) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td>
+          const connRow = (c: Connection, uses: boolean) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted">${c.description ?? ""}</td>
 <td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${uses ? "off" : "on"}"><button class="be-btn sm${uses ? "" : " primary"}">${uses ? "take away" : "give to this bot"}</button></form>${
             c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td>
 <td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
           const connTable = (list: Connection[], uses: boolean) =>
-            scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
+            scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
           const mine = conns.filter((c) => linkedIds.has(c.id));
           const others = conns.filter((c) => !linkedIds.has(c.id) && c.status !== "revoked");
           section = html`<h2>Connections this bot uses</h2>
@@ -673,6 +675,16 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th>
       await serviceBot(actor.tenantId, req.params.id);
       await setLinked(db, actor.tenantId, req.params.id, req.params.connectionId, field(req, "linked") === "on");
       res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/connections/:id/description",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await setDescription(db, actor.tenantId, req.params.id, field(req, "description"));
+      res.redirect(303, "/admin/connections");
     }),
   );
 
