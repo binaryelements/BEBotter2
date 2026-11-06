@@ -78,6 +78,8 @@ export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise
       });
     } catch (err) {
       console.error(err);
+      // a background job has nobody watching it; say it failed instead of leaving the chat waiting
+      await post("I couldn't finish that background job.").catch(() => {});
       return fail("the run failed");
     }
     // a quiet routine still says what it changed under its grant (spec 4.6)

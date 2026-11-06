@@ -73,6 +73,15 @@ describe("scheduler", () => {
     expect(sent).toEqual([["c1", "**Ops**\n\nAll good."]]);
   });
 
+  it("a background job that fails posts a short failure instead of leaving the chat waiting", async () => {
+    const r1 = await routine({ background: true });
+    const r = fakeRunTurn(async () => {
+      throw new Error("boom");
+    });
+    await runRoutine({ db, runTurn: r.run, send }, r1);
+    expect(sent).toEqual([["c1", "**Ops**\n\nI couldn't finish that background job."]]);
+  });
+
   it("records sentAt on the run's row and logs one timing line", async () => {
     await routine();
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
