@@ -34,7 +34,7 @@ export type McpServerHandle = { type: "sdk"; name: string; instance: McpServer }
 export type McpServerConfig =
   | McpServerHandle
   | { type: "http"; url: string; headers?: Record<string, string> }
-  | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+  | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string>; /** "chat" keeps a process per chat (the browser); "definition" shares one per bot. */ pool?: "chat" | "definition" };
 
 export type McpServerOptions = {
   name: string;

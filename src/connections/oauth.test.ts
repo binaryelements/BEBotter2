@@ -8,7 +8,7 @@ import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
-import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT } from "./oauth.js";
+import { accessToken, assertPublicUrl, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT } from "./oauth.js";
 import { connectionMcpConfigs, createConnection, listConnections } from "./store.js";
 
 const key = randomBytes(32);
@@ -115,5 +115,34 @@ describe("mcp OAuth sign-in", () => {
     await db.update(connections).set({ secretCipher: encrypt(key, JSON.stringify({ access: "access-2", refresh: "refresh-1", expiresAt: Date.now() - 1 })) }).where(eq(connections.id, c.id));
     expect((await connectionMcpConfigs(db, key, "t1", defId, server.fetchFn)).servers).toEqual({});
     expect((await row()).status).toBe("pending");
+  });
+});
+
+describe("assertPublicUrl", () => {
+  it("accepts a public https URL", () => {
+    expect(assertPublicUrl("https://mcp.example.test/s3").hostname).toBe("mcp.example.test");
+    expect(assertPublicUrl("https://93.184.216.34/mcp").hostname).toBe("93.184.216.34");
+  });
+
+  it("refuses http and private or link-local addresses", () => {
+    for (const url of [
+      "http://mcp.example.test/s3",
+      "https://localhost/mcp",
+      "https://127.0.0.1/mcp",
+      "https://10.0.0.5/mcp",
+      "https://172.16.0.1/mcp",
+      "https://192.168.1.1/mcp",
+      "https://169.254.169.254/latest/meta-data",
+      "https://[::1]/mcp",
+      "https://[fe80::1]/mcp",
+      "https://[fd00::1]/mcp",
+      "https://0.0.0.0/mcp",
+      "https://printer.local/mcp",
+    ])
+      expect(() => assertPublicUrl(url)).toThrow(/public address|https/);
+  });
+
+  it("refuses a URL that is not a URL", () => {
+    expect(() => assertPublicUrl("not a url")).toThrow(/not valid/);
   });
 });

@@ -1,7 +1,9 @@
-import type { SDKUserMessage, query } from "@anthropic-ai/claude-agent-sdk";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { OFFICE, SHEET, officeToPdf, sheetToCsv } from "./office-pdf.js";
-
-const ASK = "Transcribe this document's text, keeping tables and amounts exactly. Reply with the text only.";
 
 export const TEXT_TYPE = /^(text\/|application\/(json|xml|csv|x-yaml|yaml|javascript|x-sh)\b)/;
 export const TEXT_NAME = /\.(txt|md|csv|tsv|json|xml|html?|log|ya?ml|ini|sql|js|ts|py|sh)$/i;
@@ -30,29 +32,31 @@ export async function readBytes(bytes: Buffer, name: string, type: string, readD
   return { note: "not readable as text" };
 }
 
-/**
- * A PDF's text, read by the model in a run of its own with no tools: a tool result can't hand the bot's model a PDF,
- * and whatever the document says can do nothing here but come back as text.
- */
-export function documentReader(queryFn: typeof query, model: string, cwd: string, toPdf: typeof officeToPdf = officeToPdf, toCsv: typeof sheetToCsv = sheetToCsv) {
+type Run = (cmd: string, args: string[], opts: { timeout: number; maxBuffer: number }) => Promise<{ stdout: string }>;
+
+/** A PDF's text, read by pdftotext: no model is involved, so the document cannot instruct anything. */
+export async function pdfToText(bytes: Buffer, run: Run = promisify(execFile) as unknown as Run): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pdf-"));
+  try {
+    const file = join(dir, "in.pdf");
+    await writeFile(file, bytes);
+    const { stdout } = await run("pdftotext", ["-layout", file, "-"], { timeout: 120_000, maxBuffer: 20 * 1024 * 1024 });
+    return stdout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** A PDF's or Office file's text, with no model in the loop. */
+export function documentReader(
+  toPdf: typeof officeToPdf = officeToPdf,
+  toCsv: typeof sheetToCsv = sheetToCsv,
+  toText: (bytes: Buffer) => Promise<string> = pdfToText,
+) {
   return async (fileBase64: string, name: string): Promise<string> => {
     // a spreadsheet's cells are already text: read directly, it is faster and exact where a model would retype every row
     if (SHEET.test(name)) return toCsv(Buffer.from(fileBase64, "base64"), name);
-    const pdfBase64 = OFFICE.test(name) ? (await toPdf(Buffer.from(fileBase64, "base64"), name)).toString("base64") : fileBase64;
-    async function* prompt(): AsyncGenerator<SDKUserMessage> {
-      yield {
-        type: "user",
-        session_id: "",
-        parent_tool_use_id: null,
-        message: { role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } }, { type: "text", text: ASK }] },
-      };
-    }
-    for await (const m of queryFn({ prompt: prompt(), options: { model, cwd, tools: [], allowedTools: [], maxTurns: 1, persistSession: false } })) {
-      if (m.type === "result") {
-        if (m.subtype !== "success") throw new Error(`document read ${m.subtype}`);
-        return m.result;
-      }
-    }
-    throw new Error("document read ended without a result");
+    const pdf = OFFICE.test(name) ? await toPdf(Buffer.from(fileBase64, "base64"), name) : Buffer.from(fileBase64, "base64");
+    return toText(pdf);
   };
 }

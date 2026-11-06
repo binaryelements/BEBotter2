@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { EngineImage, EngineTool, ToolResult } from "./engine.js";
 import type { McpServerConfig } from "./mcp.js";
+import type { McpPool } from "./mcp-pool.js";
 
 /** A tool as the model sees it: the server's name is folded into the tool name, as the SDK does. */
 export type McpTool = EngineTool;
@@ -22,11 +23,12 @@ export const mcpToolName = (server: string, tool: string) => `mcp__${server}__${
  */
 export class McpRegistry {
   private clients = new Map<string, Client>();
+  private poolKeys = new Map<string, string>();
   private tools?: McpTool[];
 
   constructor(
     private readonly servers: Record<string, McpServerConfig>,
-    private readonly opts: { fetch?: typeof fetch } = {},
+    private readonly opts: { fetch?: typeof fetch; key?: string; pool?: McpPool } = {},
   ) {}
 
   async listTools(): Promise<McpTool[]> {
@@ -69,16 +71,32 @@ export class McpRegistry {
   }
 
   async close(): Promise<void> {
-    for (const client of this.clients.values()) {
-      await client.close().catch((err) => console.error("closing an MCP client failed", err instanceof Error ? err.name : "unknown"));
+    for (const [server, client] of this.clients) {
+      const key = this.poolKeys.get(server);
+      if (key) this.opts.pool?.release(key);
+      else await client.close().catch((err) => console.error("closing an MCP client failed", err instanceof Error ? err.name : "unknown"));
     }
     this.clients.clear();
+    this.poolKeys.clear();
     this.tools = undefined;
   }
 
   private async client(server: string, config: McpServerConfig): Promise<Client> {
     const existing = this.clients.get(server);
     if (existing) return existing;
+    if (config.type === "stdio" && this.opts.pool) {
+      const key = this.poolKey(server, config);
+      const client = await this.opts.pool.acquire(key, () => this.connect(config));
+      this.clients.set(server, client);
+      this.poolKeys.set(server, key);
+      return client;
+    }
+    const client = await this.connect(config);
+    this.clients.set(server, client);
+    return client;
+  }
+
+  private async connect(config: McpServerConfig): Promise<Client> {
     const client = new Client({ name: "bebotter", version: "1.0.0" });
     if (config.type === "sdk") {
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -94,7 +112,11 @@ export class McpRegistry {
     } else {
       await client.connect(new StdioClientTransport({ command: config.command, ...(config.args ? { args: config.args } : {}), ...(config.env ? { env: config.env } : {}) }));
     }
-    this.clients.set(server, client);
     return client;
+  }
+
+  private poolKey(server: string, config: Extract<McpServerConfig, { type: "stdio" }>): string {
+    const scope = config.pool === "definition" ? (this.opts.key?.split(":")[1] ?? "definition") : (this.opts.key ?? "chat");
+    return `${scope}:${server}`;
   }
 }

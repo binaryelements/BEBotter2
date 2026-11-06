@@ -31,6 +31,7 @@ import type { Engine, EngineEvent, EngineMessage, EngineProcessOptions, EngineRe
 import { FAILED_TEXT } from "./engine.js";
 import { classify } from "./gate.js";
 import type { McpServerConfig } from "./mcp.js";
+import type { McpPool } from "./mcp-pool.js";
 import { McpRegistry } from "./mcp-registry.js";
 import { contextWindowFor, resolveModel } from "./providers.js";
 import { recordTools, toolRule, toolRulesFor } from "./tool-rules.js";
@@ -55,6 +56,8 @@ export type RunnerDeps = {
   readDocument?: (fileBase64: string, name: string) => Promise<string>;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
+  /** Keeps stdio MCP clients alive between turns; without it every turn starts its own. */
+  mcpPool?: McpPool;
   /** The owner's Graph token for a one-to-one chat, outside their own turn: a bot telling their assistant needs it. */
   personToken?: (chatId: string) => Promise<string | undefined>;
 };
@@ -434,7 +437,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   try {
     turnContexts.set(key, context);
     if (deps.engine.toolMode === "app") {
-      registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn });
+      registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
       tools = await registry.listTools();
     }
     let result: EngineResult | undefined;

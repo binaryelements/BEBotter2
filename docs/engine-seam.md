@@ -90,12 +90,25 @@ Claude can keep its resume token while the new engine replays the neutral transc
 `ENGINE=claude|openai` selects the engine. `DEFAULT_MODEL` is a Claude id for the first and a
 `provider/model` slug for the second; the admin settings page accepts either.
 
+## The last gaps (PR 4)
+
+`read-document.ts` now extracts PDF text with `pdftotext` (poppler-utils in the image) and Office
+files through the existing LibreOffice → PDF pipeline. No model is in the loop, so a document cannot
+instruct anything, and an OpenAI-only deployment reads PDFs without an Anthropic key.
+
+`mcp-pool.ts` keeps stdio MCP clients alive between turns. The browser is keyed per chat, so its
+in-memory profile and cookies never reach another chat; a stateless server can be keyed per bot. The
+pool is closed on SIGTERM.
+
+`assertPublicUrl` in `connections/oauth.ts` requires https and refuses localhost, private, link-local
+and IPv4-mapped addresses before `discover` fetches a model-chosen URL or posts to a server-supplied
+registration endpoint.
+
 ## Not in this branch
 
-- `read-document.ts`, which still uses the SDK for a PDF document block; an OpenAI-only deployment
-  gives PDFs' details only until PR 4
-- MCP child-process pooling for stdio servers such as the browser (PR 4)
-- the `connections.request`/`verify` SSRF fix and the other security items in the handover (PR 4)
+- admin token usage display
+- transcript encryption/retention (the handover's security item 4)
+- the remaining security items (audit redaction, OAuth sign-in scope, attachment host allowlist)
 - removing the SDK and the Claude engine (cutover)
 
 ## Why `runner.ts` is smaller

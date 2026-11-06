@@ -1,44 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
-import type { query } from "@anthropic-ai/claude-agent-sdk";
-import { documentReader } from "./read-document.js";
-
-/** queryFn faked: records the options and the prompt's content, then yields one result. */
-function fake(result: Record<string, unknown>) {
-  const seen: { options?: Record<string, unknown>; content?: unknown } = {};
-  const fn = (({ prompt, options }: { prompt: AsyncIterable<{ message: { content: unknown } }>; options: Record<string, unknown> }) =>
-    (async function* () {
-      seen.options = options;
-      for await (const m of prompt) seen.content = m.message.content;
-      yield { type: "result", ...result };
-    })()) as unknown as typeof query;
-  return { fn, seen };
-}
+import { documentReader, pdfToText } from "./read-document.js";
 
 describe("documentReader", () => {
-  it("sends the PDF as a document to a run with no tools and returns its text", async () => {
-    const f = fake({ subtype: "success", result: "Invoice 777" });
-    expect(await documentReader(f.fn, "m", "/srv/files")("UERG", "inv.pdf")).toBe("Invoice 777");
-    expect(f.seen.options).toMatchObject({ model: "m", tools: [], allowedTools: [], maxTurns: 1, persistSession: false });
-    expect(f.seen.content).toMatchObject([{ type: "document", source: { type: "base64", media_type: "application/pdf", data: "UERG" } }, { type: "text" }]);
+  it("reads a PDF as text with no model in the loop", async () => {
+    const toText = vi.fn(async () => "Invoice 777");
+    expect(await documentReader(undefined, undefined, toText)(Buffer.from("%PDF").toString("base64"), "inv.pdf")).toBe("Invoice 777");
+    expect(toText).toHaveBeenCalledWith(Buffer.from("%PDF"));
   });
 
-  it("an Office file is turned into a PDF first, and the PDF is what the model reads", async () => {
-    const f = fake({ subtype: "success", result: "slide text" });
+  it("turns an Office file into a PDF first, then reads its text", async () => {
     const toPdf = vi.fn(async () => Buffer.from("%PDF-deck"));
-    expect(await documentReader(f.fn, "m", "/", toPdf)(Buffer.from("PK").toString("base64"), "Deck.pptx")).toBe("slide text");
+    const toText = vi.fn(async () => "slide text");
+    expect(await documentReader(toPdf, undefined, toText)(Buffer.from("PK").toString("base64"), "Deck.pptx")).toBe("slide text");
     expect(toPdf).toHaveBeenCalledWith(Buffer.from("PK"), "Deck.pptx");
-    expect(f.seen.content).toMatchObject([{ type: "document", source: { data: Buffer.from("%PDF-deck").toString("base64") } }, { type: "text" }]);
+    expect(toText).toHaveBeenCalledWith(Buffer.from("%PDF-deck"));
   });
 
-  it("a spreadsheet is read as CSV with no model run", async () => {
-    const f = fake({ subtype: "success", result: "not used" });
+  it("reads a spreadsheet as CSV with no PDF step", async () => {
     const toCsv = vi.fn(async () => "## Calls\nDate,Cost");
-    expect(await documentReader(f.fn, "m", "/", undefined, toCsv)(Buffer.from("PK").toString("base64"), "cdr.xlsx")).toBe("## Calls\nDate,Cost");
+    const toText = vi.fn();
+    expect(await documentReader(undefined, toCsv, toText)(Buffer.from("PK").toString("base64"), "cdr.xlsx")).toBe("## Calls\nDate,Cost");
     expect(toCsv).toHaveBeenCalledWith(Buffer.from("PK"), "cdr.xlsx");
-    expect(f.seen.content).toBeUndefined();
+    expect(toText).not.toHaveBeenCalled();
   });
+});
 
-  it("a failed run throws without quoting the document", async () => {
-    await expect(documentReader(fake({ subtype: "error_max_turns" }).fn, "m", "/")("UERG", "inv.pdf")).rejects.toThrow("document read error_max_turns");
+describe("pdfToText", () => {
+  it("runs pdftotext and returns its stdout", async () => {
+    const run = vi.fn(async () => ({ stdout: "hello" }));
+    expect(await pdfToText(Buffer.from("%PDF"), run)).toBe("hello");
+    expect(run).toHaveBeenCalledWith("pdftotext", ["-layout", expect.any(String), "-"], expect.objectContaining({ timeout: 120_000 }));
   });
 });

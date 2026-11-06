@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { connections } from "../db/schema.js";
@@ -17,6 +18,33 @@ export class OAuthError extends Error {}
 const fail = (message: string): never => {
   throw new OAuthError(message);
 };
+
+const privateV4 = (ip: string): boolean => {
+  const p = ip.split(".").map(Number);
+  return p.length === 4 && (p[0] === 0 || p[0] === 10 || p[0] === 127 || (p[0] === 169 && p[1] === 254) || (p[0] === 172 && p[1]! >= 16 && p[1]! <= 31) || (p[0] === 192 && p[1] === 168));
+};
+const privateV6 = (ip: string): boolean => {
+  const lower = ip.toLowerCase();
+  if (lower.startsWith("::ffff:")) return privateV4(lower.slice(7));
+  return lower === "::1" || lower === "::" || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower);
+};
+
+/** A model-chosen URL must be https and must not point at the host's own network. */
+export function assertPublicUrl(raw: string): URL {
+  const url = (() => {
+    try {
+      return new URL(raw);
+    } catch {
+      return fail("The server URL is not valid");
+    }
+  })();
+  if (url.protocol !== "https:") fail("The server URL must be https");
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".local") || host === "0.0.0.0") fail("The server URL must be a public address");
+  if (isIP(host) && (privateV4(host) || privateV6(host))) fail("The server URL must be a public address");
+  return url;
+}
+
 const TIMEOUT_MS = 10_000;
 const SIGN_IN_TTL_MS = 10 * 60_000;
 
@@ -35,16 +63,19 @@ const wellKnown = (issuer: string, name: string) => {
 /** Finds the server's login and registers BE Teammate there: protected-resource metadata names the authorization server, else the server's own origin is tried. */
 /** The server's OAuth setup with BE Teammate registered as a client; undefined when the server publishes no login at all. */
 export async function discover(fetchFn: typeof fetch, mcpUrl: string, redirectUri: string): Promise<(OAuthConfig & { clientSecret?: string }) | undefined> {
+  assertPublicUrl(mcpUrl);
   const resource = (await getJson(fetchFn, wellKnown(mcpUrl, "oauth-protected-resource"))) ?? (await getJson(fetchFn, wellKnown(new URL(mcpUrl).origin, "oauth-protected-resource")));
   const issuers = Array.isArray(resource?.authorization_servers) && resource.authorization_servers.length ? (resource.authorization_servers as string[]) : [new URL(mcpUrl).origin];
   let meta: Record<string, unknown> | undefined;
   for (const issuer of issuers) {
+    assertPublicUrl(issuer);
     meta = (await getJson(fetchFn, wellKnown(issuer, "oauth-authorization-server"))) ?? (await getJson(fetchFn, `${new URL(issuer).origin}/.well-known/openid-configuration`));
     if (typeof meta?.authorization_endpoint === "string" && typeof meta?.token_endpoint === "string") break;
     meta = undefined;
   }
   if (!meta) return undefined;
   if (typeof meta!.registration_endpoint !== "string") fail("The server does not register clients, so BE Teammate can't sign in to it");
+  assertPublicUrl(meta!.registration_endpoint as string);
   const register = (uri: string) => getJson(fetchFn, meta!.registration_endpoint as string, {
     method: "POST",
     headers: { "content-type": "application/json" },

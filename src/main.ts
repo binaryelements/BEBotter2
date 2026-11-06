@@ -14,6 +14,7 @@ import { tenants } from "./db/schema.js";
 import { ClaudeEngine } from "./engine/claude.js";
 import { Confirmations } from "./engine/confirm.js";
 import { LiveSessions } from "./engine/live.js";
+import { McpPool } from "./engine/mcp-pool.js";
 import { OpenAICompatEngine } from "./engine/openai.js";
 import { systemSsh } from "./connections/ssh.js";
 import { agentMailAdmin } from "./mail/agentmail.js";
@@ -37,6 +38,8 @@ const confirmations = new Confirmations();
 const warm = { idleMs: Infinity, max: 20, recentMs: 24 * 60 * 60_000 };
 const live = config.engine === "claude" ? new LiveSessions(query, warm) : undefined;
 const engine = config.engine === "openai" ? new OpenAICompatEngine({ providers: config.providers }) : new ClaudeEngine(query, { live });
+// stdio MCP clients (the browser, the files server) stay warm between turns; the browser is keyed per chat
+const mcpPool = new McpPool({ idleMs: 10 * 60_000, max: 20 });
 const runnerDeps: RunnerDeps = {
   db,
   engine,
@@ -49,8 +52,8 @@ const runnerDeps: RunnerDeps = {
   publicUrl: config.publicUrl,
   agentmailUrl: config.agentmail?.url,
   fetchFn: fetch,
-  // PDFs still go through the Claude document reader; an OpenAI-only deployment gives their details only until PR 4
-  readDocument: config.engine === "claude" ? documentReader(query, config.defaultModel, config.filesDir) : undefined,
+  readDocument: documentReader(),
+  mcpPool,
   // called only during turns, long after `proactive` and `app` below exist
   personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)),
 };
@@ -92,4 +95,4 @@ startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
-  process.once(signal, () => void engine.close?.().finally(() => process.exit(0)));
+  process.once(signal, () => void Promise.all([engine.close?.(), mcpPool.close()]).finally(() => process.exit(0)));
