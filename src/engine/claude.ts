@@ -141,7 +141,7 @@ export class ClaudeEngine implements Engine {
       maxTurns: proc.maxSteps,
       // the model's process gets no service secrets, only what it needs to run
       env: Object.fromEntries(["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"].filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-      mcpServers: proc.mcpServers as unknown as Options["mcpServers"],
+      mcpServers: proc.mcpServers,
       canUseTool,
       hooks: { PostToolUse: [{ hooks: [afterTool] }], PostToolUseFailure: [{ hooks: [afterTool] }] },
       ...(resume ? { resume } : {}),

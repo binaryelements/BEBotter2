@@ -30,6 +30,7 @@ import { browserMcpServer } from "./browser.js";
 import type { Engine, EngineEvent, EngineProcessOptions, EngineResult, EngineRunInput, ToolDecision } from "./engine.js";
 import { FAILED_TEXT } from "./engine.js";
 import { classify } from "./gate.js";
+import type { McpServerConfig } from "./mcp.js";
 import { recordTools, toolRule, toolRulesFor } from "./tool-rules.js";
 
 export type RunnerDeps = {
@@ -50,7 +51,7 @@ export type RunnerDeps = {
   /** A PDF's or Office file's text, for attachments the person's assistant opens; without it they give their details only. */
   readDocument?: (fileBase64: string, name: string) => Promise<string>;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
-  builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, unknown>;
+  builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
   /** The owner's Graph token for a one-to-one chat, outside their own turn: a bot telling their assistant needs it. */
   personToken?: (chatId: string) => Promise<string | undefined>;
 };

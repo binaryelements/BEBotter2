@@ -1,5 +1,5 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle } from "../engine/mcp.js";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { KnowledgeError, listNotes, readNote, searchNotes, writeNote } from "./store.js";
@@ -13,7 +13,7 @@ const fail = (e: unknown) => {
 };
 
 /** readOnly: list, read and search only, for a bot that must store nothing (Personal). */
-export function knowledgeMcpServer(deps: { db: Db; secretsKey: Buffer }, ctx: Ctx, readOnly = false): McpSdkServerConfigWithInstance {
+export function knowledgeMcpServer(deps: { db: Db; secretsKey: Buffer }, ctx: Ctx, readOnly = false): McpServerHandle {
   const { db, secretsKey: key } = deps;
   const { tenantId } = ctx;
   const run = async (f: () => Promise<string>) => {

@@ -1,3 +1,5 @@
+import type { McpServerConfig } from "./mcp.js";
+
 /**
  * The engine contract: one turn in, one turn out. It knows nothing about a provider's request shape,
  * only the app's policy callbacks and the MCP servers it may expose.
@@ -46,7 +48,7 @@ export type EngineProcessOptions = {
   model: string;
   systemPrompt: string;
   /** MCP servers for a runtime that executes tools itself. */
-  mcpServers: Record<string, unknown>;
+  mcpServers: Record<string, McpServerConfig>;
   maxSteps: number;
   cwd: string;
   /** Whether the bot may use the runtime's own web search tools. */

@@ -1,5 +1,5 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle, ToolDefinition } from "../engine/mcp.js";
 import { z } from "zod";
 import type { GraphCapability } from "../db/schema.js";
 import { readBytes, TEXT_NAME, TEXT_TYPE } from "../engine/read-document.js";
@@ -110,7 +110,7 @@ const top = (max: number) => z.number().int().min(1).max(max).optional();
 const times = "ISO 8601 date and time with an offset, e.g. 2026-11-02T09:00:00Z";
 
 /** Microsoft 365 as the person talking, through Graph with their delegated token; only the tools of the given capabilities. */
-export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"]; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpSdkServerConfigWithInstance {
+export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"]; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpServerHandle {
   const g: GraphDeps = { fetchFn: deps.fetchFn, token: () => ctx.graphToken(), ...(deps.sleep ? { sleep: deps.sleep } : {}) };
   const get = async <T>(path: string, headers?: Record<string, string>) => (await graphFetch(g, path, headers ? { headers } : {})).json() as Promise<T>;
   const post = async (path: string, json: unknown) => (await graphFetch(g, path, { method: "POST", json })).body?.cancel();
@@ -135,8 +135,8 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
     }
   };
 
-  // the SDK's own element type for a list of tools with different schemas
-  const tools: [GraphCapability, SdkMcpToolDefinition<any>][] = [
+  // the app's element type for a list of tools with different schemas
+  const tools: [GraphCapability, ToolDefinition<any>][] = [
     ["mail.read", tool("search_mail", "Search the person's mailbox. Results have previews only; read_mail gives a body.", { query: z.string().min(1), top: top(25) }, run(async ({ query, top }) =>
       (await get<{ value: Message[] }>(`/me/messages?${qs({ $search: `"${query.replace(/"/g, "")}"`, $top: top ?? 10, $select: MAIL_FIELDS })}`)).value.map(mail)))],
     ["mail.read", tool("list_mail", "List the newest mail in the person's inbox or sent folder.", { folder: z.enum(["inbox", "sent"]).optional(), top: top(25) }, run(async ({ folder, top }) =>

@@ -82,6 +82,8 @@ async function setup(db: Db, def: Partial<BotDefinitionInput> = {}) {
     ...def,
   });
   const person = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" });
+  // the confirmation tests drive close_ticket; bash runs freely here as an admin could set it
+  await setToolRule(db, definition.id, "mcp__computer__bash", "free");
   return { definition, person };
 }
 
@@ -769,7 +771,7 @@ describe("runTurn", () => {
     await runTurn(deps(db, q.fn), { tenantId: "t1", chatId: "c1", definition, person, text: "a", askConfirmation: ask });
     await runTurn({ ...deps(db, q.fn), agentmailUrl: "https://mail.example.test" }, { tenantId: "t1", chatId: "c1", definition, person, text: "b", askConfirmation: ask });
     expect(String(q.seen[0]!.systemPrompt)).toContain("cannot send or receive email.");
-    expect(String(q.seen[0]!.systemPrompt)).not.toContain("admin");
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain("admin page");
     expect(String(q.seen[1]!.systemPrompt)).toContain("an admin can add one on the admin page");
   });
 

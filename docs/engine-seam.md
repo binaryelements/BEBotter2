@@ -52,17 +52,32 @@ checkpoint, usage, steps and why it stopped.
 Claude Code executes tools itself. Its adapter therefore uses `authoriseTool` before each call and
 `completeTool` from the PostToolUse hooks, and receives the app's MCP servers in `mcpServers`.
 
-A future OpenAI-compatible engine will execute the loop itself. PR 2 adds an app-side MCP registry
-(`listTools` + `callTool`); PR 3 adds `tools` and `callTool` to `EngineRunInput` and lets that engine
-authorise, execute and complete each call through the same gate. The security property is the same in
-both models: no tool call reaches a handler without `authoriseTool` first.
+A future OpenAI-compatible engine will execute the loop itself. The app-side MCP registry
+(`listTools` + `callTool`) is in `mcp-registry.ts`; PR 3 adds `tools` and `callTool` to
+`EngineRunInput` and lets that engine authorise, execute and complete each call through the same gate.
+The security property is the same in both models: no tool call reaches a handler without
+`authoriseTool` first.
+
+## The MCP layer (PR 2)
+
+`src/engine/mcp.ts` is the shim: `tool()` and `createSdkMcpServer()` now build a real
+`@modelcontextprotocol/sdk` `McpServer`, which is the same class the Claude Agent SDK's
+`McpSdkServerConfigWithInstance` carries. The eight server files changed only their import line.
+
+`src/engine/mcp-registry.ts` is the app's client: it connects in-process servers over
+`InMemoryTransport`, configured servers over `StreamableHTTPClientTransport` or
+`StdioClientTransport`, lists tools as `mcp__server__tool`, and maps a call's text and image
+content to the neutral `McpToolResult`. It is created for one turn and closed at the end.
+
+The gate now asks before `bash`, `ssh_read`, `http_read` and `knowledge.write`; an admin can
+still set any of them free per bot.
 
 ## Not in this branch
 
-- `mcp-compat.ts` and the MCP client registry (PR 2)
 - the OpenAI-compatible engine and provider profiles (PR 3)
+- wiring the MCP registry into the engine (PR 3)
 - transcript persistence/compaction (PR 3)
-- the gate reclassification of `bash`, `ssh_read`, `http_read` and `knowledge.write` (PR 2)
+- MCP child-process pooling for stdio servers such as the browser (PR 3/4)
 - `read-document.ts`, which still uses the SDK for a PDF document block (PR 3)
 
 ## Why `runner.ts` is smaller

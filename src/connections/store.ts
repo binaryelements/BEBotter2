@@ -1,5 +1,5 @@
 import { and, eq, isNull, ne, or } from "drizzle-orm";
-import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerConfig } from "../engine/mcp.js";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { connections, definitionConnections, secretLinks } from "../db/schema.js";

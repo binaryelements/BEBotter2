@@ -1,4 +1,4 @@
-import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerConfig } from "../engine/mcp.js";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";

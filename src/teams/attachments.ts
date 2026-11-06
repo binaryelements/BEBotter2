@@ -1,5 +1,5 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle } from "../engine/mcp.js";
 import { and, desc, eq, gt, lt } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
@@ -102,7 +102,7 @@ export async function pruneAttachments(db: Db, tenantId: string, retentionDays: 
 export const chatAttachment = async (db: Db, chatId: string, id: string): Promise<ChatAttachment | undefined> =>
   (await db.select().from(chatAttachments).where(and(eq(chatAttachments.id, id), eq(chatAttachments.chatId, chatId))))[0];
 
-export function attachmentsMcpServer(deps: { db: Db; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: { chatId: string }): McpSdkServerConfigWithInstance {
+export function attachmentsMcpServer(deps: { db: Db; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: { chatId: string }): McpServerHandle {
   return createSdkMcpServer({
     name: "attachments",
     tools: [

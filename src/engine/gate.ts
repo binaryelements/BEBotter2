@@ -6,9 +6,11 @@ export type ToolClass = "read" | "write" | "approve";
 /** An admin's choice for one bot's tool: free runs it as a read, confirm asks as a write. */
 export type ToolRule = "free" | "confirm";
 
+// bash, ssh_read, http_read and knowledge.write are effectful. Leaving them out makes them fall through
+// to "write", so each call asks; an admin may still set one free for a bot that needs it.
 const BUILT_IN: Record<string, ToolClass> = {
-  ...Object.fromEntries(["list", "read", "search", "write"].map((t) => [`mcp__knowledge__${t}`, "read"])),
-  ...Object.fromEntries(["list", "request", "verify", "ssh_read", "http_read", "sql_read"].map((t) => [`mcp__connections__${t}`, "read"])),
+  ...Object.fromEntries(["list", "read", "search"].map((t) => [`mcp__knowledge__${t}`, "read"])),
+  ...Object.fromEntries(["list", "request", "verify", "sql_read"].map((t) => [`mcp__connections__${t}`, "read"])),
   mcp__connections__ssh_change: "write",
   mcp__connections__http_change: "write",
   mcp__connections__sql_change: "write",
@@ -21,7 +23,6 @@ const BUILT_IN: Record<string, ToolClass> = {
   ...Object.fromEntries(["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
   mcp__routine__post: "read",
   mcp__bots__tell_bot: "read", // the told bot's own tools ask their own confirmations
-  mcp__computer__bash: "read",
   mcp__attachments__read_attachment: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
   ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "read_attachment", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),

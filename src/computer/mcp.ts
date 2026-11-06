@@ -1,10 +1,10 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle } from "../engine/mcp.js";
 import { z } from "zod";
 import { runOnComputer } from "./computer.js";
 import type { DockerClient } from "./docker.js";
 
-export function computerMcpServer(docker: DockerClient, containerId: string): McpSdkServerConfigWithInstance {
+export function computerMcpServer(docker: DockerClient, containerId: string): McpServerHandle {
   return createSdkMcpServer({
     name: "computer",
     tools: [

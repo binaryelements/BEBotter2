@@ -15,20 +15,24 @@ describe("classify", () => {
     for (const t of ["navigate", "snapshot", "click", "type", "fill_form", "evaluate", "drag", "drop", "emulate_media", "network_request"]) expect(classify(`mcp__browser__browser_${t}`, def)).toBe("read");
     for (const t of ["run_code_unsafe", "file_upload", "cookie_set"]) expect(classify(`mcp__browser__browser_${t}`, def)).toBe("write");
   });
-  it("treats the computer's bash as read", () => {
-    expect(classify("mcp__computer__bash", def)).toBe("read");
+  it("asks before the computer's bash, unless an admin sets it free", () => {
+    expect(classify("mcp__computer__bash", def)).toBe("write");
+    expect(classify("mcp__computer__bash", def, [], "free")).toBe("read");
   });
   it("built-in tools classify as specified", () => {
     const table: [string, string][] = [
-      ...["list", "read", "search", "write"].map((t) => [`mcp__knowledge__${t}`, "read"] as [string, string]),
-      ...["list", "request", "verify", "ssh_read", "http_read"].map((t) => [`mcp__connections__${t}`, "read"] as [string, string]),
+      ...["list", "read", "search"].map((t) => [`mcp__knowledge__${t}`, "read"] as [string, string]),
+      ["mcp__knowledge__write", "write"],
+      ...["list", "request", "verify", "sql_read"].map((t) => [`mcp__connections__${t}`, "read"] as [string, string]),
+      ["mcp__connections__ssh_read", "write"],
+      ["mcp__connections__http_read", "write"],
       ["mcp__connections__ssh_change", "write"],
       ["mcp__connections__http_change", "write"],
       ["mcp__connections__approve", "approve"],
       ["mcp__routine__remind", "read"],
       ["mcp__routine__post", "read"],
       ...["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read"] as [string, string]),
-      ["mcp__computer__bash", "read"],
+      ["mcp__computer__bash", "write"],
       ["mcp__attachments__read_attachment", "read"],
       ["mcp__mail__send_email", "write"],
       ["mcp__mail__reply_to_email", "write"],
@@ -61,6 +65,8 @@ describe("classify", () => {
     expect(classify("WebSearch", def, [], "confirm")).toBe("write");
     expect(classify("mcp__connections__approve", def, [], "free")).toBe("approve");
     expect(classify("mcp__someone__new_tool", def)).toBe("write");
+    for (const n of ["mcp__computer__bash", "mcp__connections__ssh_read", "mcp__connections__http_read", "mcp__knowledge__write"])
+      expect([n, classify(n, def, [], "free")]).toEqual([n, "read"]);
   });
 
   it("Graph reads run freely; Graph writes ask unless an admin set them free", () => {

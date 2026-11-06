@@ -1,5 +1,5 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle } from "../engine/mcp.js";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
@@ -28,7 +28,7 @@ async function personName(db: Db, tenantId: string, personId: string | null): Pr
 
 const READ_ONLY_RULE = "Read-only use must not change anything on the target.";
 
-export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string }, ctx: Ctx): McpSdkServerConfigWithInstance {
+export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string }, ctx: Ctx): McpServerHandle {
   const { db } = deps;
   const { tenantId, definitionId } = ctx;
   const run = async (f: () => Promise<string>) => {

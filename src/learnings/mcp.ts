@@ -1,5 +1,5 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle } from "../engine/mcp.js";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
@@ -14,7 +14,7 @@ const fail = (e: unknown) => {
 };
 
 /** personal: a Personal assistant, whose learnings belong to the person it works for. */
-export function learningsMcpServer(deps: { db: Db }, ctx: Ctx, personal: boolean): McpSdkServerConfigWithInstance {
+export function learningsMcpServer(deps: { db: Db }, ctx: Ctx, personal: boolean): McpServerHandle {
   const owner = () => (personal ? ctx.personId : null);
   // a chat changes only learnings it can see: on Personal, never another person's
   const visible = async (id: string) => {

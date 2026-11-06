@@ -1,5 +1,5 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle } from "../engine/mcp.js";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { mayUseDefinition } from "../admin/access.js";
@@ -36,7 +36,7 @@ const no = (text: string) => ({ isError: true, content: [{ type: "text" as const
 const MAX_MESSAGE = 4000;
 
 /** `tell_bot`: one bot hands a message to another, which acts on it as the same person and answers back. */
-export function tellMcpServer(deps: { db: Db; run: TellRun; personToken?: (chatId: string) => Promise<string | undefined> }, ctx: TellCtx): McpSdkServerConfigWithInstance {
+export function tellMcpServer(deps: { db: Db; run: TellRun; personToken?: (chatId: string) => Promise<string | undefined> }, ctx: TellCtx): McpServerHandle {
   const { db } = deps;
   const tools = [
     tool(

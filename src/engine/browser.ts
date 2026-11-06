@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerConfig } from "./mcp.js";
 
 const require = createRequire(import.meta.url);
 const CLI = join(dirname(require.resolve("@playwright/mcp/package.json")), "cli.js");

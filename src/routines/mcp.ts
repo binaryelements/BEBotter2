@@ -1,5 +1,5 @@
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool } from "../engine/mcp.js";
+import type { McpServerHandle } from "../engine/mcp.js";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
@@ -17,7 +17,7 @@ const MAX_PENDING = 50;
 const MAX_BACKGROUND = 3;
 const MAX_AHEAD_MS = 366 * 24 * 3600_000;
 
-export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpSdkServerConfigWithInstance {
+export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpServerHandle {
   const pendingHere = async () =>
     (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled && r.schedule === null);
   const tools = [
