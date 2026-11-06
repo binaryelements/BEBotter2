@@ -18,6 +18,9 @@ const CONNECT_TIMEOUT_MS = 20_000;
 const LIST_TIMEOUT_MS = 20_000;
 const CALL_TIMEOUT_MS = 120_000;
 
+// runs code in the browser server's process, which can read this container's files and secrets; the old runtime blocked it
+const BLOCKED = new Set(["mcp__browser__browser_run_code_unsafe"]);
+
 export const mcpToolName = (server: string, tool: string) => `mcp__${server}__${tool}`;
 
 /**
@@ -42,7 +45,9 @@ export class McpRegistry {
       try {
         const client = await this.client(server, config);
         for (const tool of (await client.listTools(undefined, { timeout: LIST_TIMEOUT_MS })).tools) {
-          out.push({ name: mcpToolName(server, tool.name), description: tool.description ?? "", inputSchema: tool.inputSchema as Record<string, unknown> });
+          const name = mcpToolName(server, tool.name);
+          if (BLOCKED.has(name)) continue;
+          out.push({ name, description: tool.description ?? "", inputSchema: tool.inputSchema as Record<string, unknown> });
         }
       } catch (err) {
         // a server that cannot start costs the bot that server, not the reply
@@ -54,6 +59,7 @@ export class McpRegistry {
   }
 
   async call(name: string, args: Record<string, unknown>): Promise<McpToolResult> {
+    if (BLOCKED.has(name)) return { text: "That tool is not available.", isError: true };
     const match = /^mcp__(.+?)__(.+)$/.exec(name);
     if (!match) return { text: `Not an MCP tool: ${name}`, isError: true };
     const server = match[1]!;

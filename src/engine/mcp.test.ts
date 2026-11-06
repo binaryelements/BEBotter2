@@ -68,6 +68,23 @@ describe("McpRegistry", () => {
     }
   });
 
+  it("does not expose the browser's server-side code tool", async () => {
+    const server = createSdkMcpServer({
+      name: "browser",
+      tools: [
+        tool("browser_run_code_unsafe", "Run code.", {}, async () => ({ content: [{ type: "text" as const, text: "ran" }] })),
+        tool("browser_navigate", "Go.", {}, async () => ({ content: [{ type: "text" as const, text: "ok" }] })),
+      ],
+    });
+    const registry = new McpRegistry({ browser: server });
+    try {
+      expect((await registry.listTools()).map((t) => t.name)).toEqual(["mcp__browser__browser_navigate"]);
+      await expect(registry.call("mcp__browser__browser_run_code_unsafe", {})).resolves.toMatchObject({ isError: true });
+    } finally {
+      await registry.close();
+    }
+  });
+
   it("calls a real app server through the same client", async () => {
     const db = await testDb();
     await upsertTenant(db, { id: "t1" });
