@@ -27,7 +27,7 @@ export function html(strings: TemplateStringsArray, ...values: Value[]): SafeHtm
 export const raw = (s: string) => new SafeHtml(s);
 
 /** Per-request facts the shell needs but pages do not pass: set by the router. */
-export type Shell = { theme?: string; path: string; url?: string; company?: string };
+export type Shell = { theme?: string; path: string; url?: string; company?: string; flash?: { kind: "good" | "bad"; text: string } };
 export const shell = new AsyncLocalStorage<Shell>();
 
 export const assetsDir = fileURLToPath(new URL("./assets/", import.meta.url));
@@ -57,6 +57,11 @@ const themeIcons: Record<string, string> = {
   light: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
   dark: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
 };
+
+const toast = (flash: Shell["flash"]) =>
+  flash
+    ? html`<div class="be-toasts" role="status" aria-live="polite"><div class="be-toast ${flash.kind}"><span>${flash.text}</span><button class="be-toast-x" type="button" aria-label="dismiss" onclick="this.parentElement.remove()">×</button></div></div>`
+    : "";
 
 export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csrf?: string }): string {
   const { actor } = opts;
@@ -89,7 +94,7 @@ export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csr
       : ""
   }</div></header>
 <div class="be-body">${menu.length ? html`<nav class="be-nav" aria-label="admin">${menu}</nav>` : ""}<main>${opts.body}</main></div>
-${/[?&]saved=1\b/.test(ctx?.url ?? "") ? html`<div class="be-saved" role="status">saved</div>` : ""}
+${toast(ctx?.flash)}
 ${raw(SHELL_SCRIPT)}
 </body>
 </html>`.value;
@@ -109,7 +114,7 @@ document.querySelectorAll("table.be-table").forEach(function (t) {
 });
 </script>`;
 
-/** In a form marked data-autosave: the redirect after saving carries the "saved" mark. */
+/** In a form marked data-autosave: the save button hides and a change submits it. */
 export const AUTO = html`<input type="hidden" name="autosave" value="1">`;
 
 const chipClass: Record<string, string> = { done: "g", pending: "w", denied: "b", failed: "b", changed: "c" };

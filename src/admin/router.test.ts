@@ -155,6 +155,33 @@ describe("admin router", () => {
     expect(res.status).toBe(403);
   });
 
+  it("shows a success toast after a save and an error toast after a failed save", async () => {
+    const cookie = as(admin);
+    const saved = await post("/admin/settings", { csrf: "csrf-1", botName: "Helper", retentionDays: "30", defaultModel: "", timezone: "UTC" }, cookie);
+    expect(saved.status).toBe(303);
+    const flash = saved.headers.get("set-cookie")!;
+    expect(flash).toContain("bb_flash=good%3Asaved");
+    const page = await get("/admin/settings", `${cookie}; ${flash.split(";")[0]}`);
+    const body = await page.text();
+    expect(body).toContain("be-toast good");
+    expect(body).toContain("saved");
+
+    const failed = await fetch(url + "/admin/settings", {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie, referer: `${url}/admin/settings` },
+      body: new URLSearchParams({ csrf: "csrf-1", botName: "", retentionDays: "0", defaultModel: "", timezone: "UTC" }).toString(),
+    });
+    expect(failed.status).toBe(303);
+    expect(failed.headers.get("location")).toBe("/admin/settings");
+    const bad = failed.headers.get("set-cookie")!;
+    expect(bad).toContain("bb_flash=bad%3A");
+    const back = await get("/admin/settings", `${cookie}; ${bad.split(";")[0]}`);
+    const backBody = await back.text();
+    expect(backBody).toContain("be-toast bad");
+    expect(backBody).toContain("Keep activity must be a whole number of days from 1 to 3650");
+  });
+
   it("a signed-in user who is neither admin nor head is refused", async () => {
     expect((await get("/admin/people", as(user))).status).toBe(403);
     expect((await get("/admin/people", sessionCookie(secretsKey, "tenant-1", "no-such-person"))).status).toBe(403);

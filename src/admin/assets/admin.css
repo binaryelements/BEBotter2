@@ -64,8 +64,14 @@ main form.be-form .be-label { margin: var(--space-12) 0 var(--space-4); }
 main .be-btn.danger, main button.danger { border-color: transparent; background: transparent; color: var(--muted); box-shadow: none; }
 main .be-btn.danger:hover, main .be-btn.danger:focus-visible, main button.danger:hover { color: var(--bad); border-color: var(--bad-edge); background: var(--bad-bg); }
 .js form[data-autosave] .auto { display: none; }
-.be-saved { position: fixed; right: var(--space-16); bottom: var(--space-16); padding: 6px 12px; border: 1px solid var(--sel-edge); border-radius: var(--radius-md); background: var(--sel-bg); color: var(--cyan); font: 500 12px var(--font-mono); box-shadow: var(--shadow-pop); animation: be-fade 4s forwards; }
-@keyframes be-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; visibility: hidden; } }
+.be-toasts { position: fixed; right: var(--space-16); bottom: var(--space-16); z-index: 1000; display: flex; flex-direction: column; gap: var(--space-8); max-width: min(420px, calc(100vw - 32px)); }
+.be-toast { display: flex; align-items: flex-start; gap: var(--space-10); padding: 10px 12px; border: 1px solid var(--line2); border-left: 3px solid var(--cyan); border-radius: var(--radius-md); background: var(--panel); color: var(--ink); font: 13px var(--font-sans); box-shadow: var(--shadow-pop); animation: be-toast-in .18s ease-out; }
+.be-toast.good { border-left-color: var(--cyan); }
+.be-toast.bad { border-left-color: var(--bad); background: var(--bad-bg); }
+.be-toast span { flex: 1; }
+.be-toast-x { border: 0; background: transparent; color: var(--muted); font: 16px var(--font-sans); line-height: 1; padding: 0 2px; cursor: pointer; }
+.be-toast-x:hover { color: var(--bright); }
+@keyframes be-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 /* Phones: each table row becomes a card, every cell led by its column name (set by the shell script). */
 @media (max-width: 720px) {
   .js table.be-table thead { display: none; }

@@ -54,7 +54,7 @@ const many = (req: Request, name: string) => {
 const list = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
 
-export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string; defaultModel: string; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner }): Router {
+export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string; defaultModel: string; models?: string[]; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner }): Router {
   const { db, secretsKey, defaultModel, onSaved, mail } = deps;
   const fetchFn = deps.fetchFn ?? fetch;
   const connDeps = { db, secretsKey, fetchFn, ssh: deps.ssh ?? systemSsh(), ...(deps.sql ? { sql: deps.sql } : {}) };
@@ -72,6 +72,12 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
   // Personal acts as the person: it has no mailbox or connections, and only it has Microsoft 365 capabilities
   const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" && t !== "connections" : t !== "m365"));
   const csrfField = (res: Response, tab?: Tab) => html`<input type="hidden" name="csrf" value="${adminOf(res).csrf}">${tab ? html`<input type="hidden" name="tab" value="${tab}">` : ""}`;
+  // the configured models, plus the current one if it is no longer offered, so a save never silently changes it
+  const modelOptions = (current: string) => {
+    const list = deps.models?.length ? deps.models : [current];
+    const all = list.includes(current) ? list : [current, ...list];
+    return all.map((m) => html`<option value="${m}" ${m === current ? "selected" : ""}>${m}</option>`);
+  };
   // actions return to the tab they were made on
   const back = (req: Request, id: string) => `/admin/bots/${id}${(TABS as readonly string[]).includes(field(req, "tab")) ? `?tab=${field(req, "tab")}` : ""}`;
   const armed = (res: Response, req: Request, title: string, what: string, backHref: string) => armedPage(req, res, { title, button: what, back: backHref });
@@ -269,7 +275,7 @@ ${await botsTable(db, actor.tenantId, defs)}${
             ? html`<details class="be-section" id="add"${t ? html` open` : ""}><summary class="be-btn">add bot…</summary>
 <p class="muted">start from a template: ${PERSONA_TEMPLATES.map((p, i) => html`${i ? " · " : ""}<a href="/admin/bots?template=${p.id}#add">${p.title}</a>`)}</p>
 <form method="post" action="/admin/bots">${csrfField(res)}
-<p><label>name <input name="displayName" maxlength="60" value="${t?.name ?? ""}"></label> <label>handle <input name="name" required value="${t?.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") ?? ""}"></label> <label>label <input name="label" required value="${t?.label ?? ""}"></label> <label>model <input name="model" value="${settings.defaultModel ?? defaultModel}"></label></p>
+<p><label>name <input name="displayName" maxlength="60" value="${t?.name ?? ""}"></label> <label>handle <input name="name" required value="${t?.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") ?? ""}"></label> <label>label <input name="label" required value="${t?.label ?? ""}"></label> <label>model <select class="be-select" name="model">${modelOptions(settings.defaultModel ?? defaultModel)}</select></label></p>
 ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" autocomplete="off"></label> @${domain}</p>` : ""}
 <p><label>persona<textarea name="persona" rows="10">${t?.persona ?? ""}</textarea></label></p><button class="be-btn primary">create</button></form></details>`
             : ""
@@ -426,7 +432,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
             ? html`<div class="fields">
 <label>name<span class="hint">what people call it in chat</span><input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label>
 <label>role<span class="hint">shown after the name</span><input name="label" value="${def.label}" required></label>
-<label>model<span class="hint">a Claude model id</span><input name="model" value="${def.model}" required></label>
+<label>model<span class="hint">the provider/model this bot uses</span><select class="be-select" name="model">${modelOptions(def.model)}</select></label>
 </div>
 <p class="be-label">can use</p><p><label class="be-toggle"><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search and browser</label>${person ? "" : html` <label class="be-toggle"><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> a computer</label>`}</p>
 ${person ? html`<p class="muted">Acts as each person who uses it, in their own chat.</p>` : html`<p class="be-label">who can talk to it <span class="hint">none ticked means everyone in the company</span></p><p>${depts.map((d) => html`<label class="be-toggle"><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</p>`}${hide("persona", def.persona)}`
@@ -535,7 +541,7 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Memory</th><t
 <form class="be-form" method="post" action="/admin/bots/${def.id}/reflection">${csrf}
 <div class="fields">
 <label>mode<select class="be-select" name="reflectionMode">${reflectionModes.map((m) => html`<option value="${m}" ${m === def.reflectionMode ? "selected" : ""}>${m === "off" ? "off" : m === "propose" ? "2 · propose learnings for approval" : "3 · apply and post to the group"}</option>`)}</select></label>
-<label>group<span class="hint">where an auto reflection posts; one of this bot's group chats</span><select class="be-select" name="reflectionChatId"><option value="">none</option>${groups.map((g) => html`<option value="${g.id}" ${g.id === def.reflectionChatId ? "selected" : ""}>${g.label ?? g.id}</option>`)}</select></label>
+<label>group<span class="hint">where an auto reflection posts; one of this bot's group chats. Name a chat on Assignments if it shows an id.</span><select class="be-select" name="reflectionChatId"><option value="">none</option>${groups.map((g) => html`<option value="${g.id}" ${g.id === def.reflectionChatId ? "selected" : ""}>${chatLabel.get(g.id) ?? g.label ?? g.id.slice(-12)}</option>`)}</select></label>
 <label>hour<span class="hint">0-23 in the company time zone</span><input class="be-input" type="number" min="0" max="23" name="reflectionHour" value="${def.reflectionHour}" required></label>
 </div>
 ${groups.length ? "" : html`<p class="hint">Put this bot in a group chat first; an auto reflection needs somewhere to post.</p>`}
