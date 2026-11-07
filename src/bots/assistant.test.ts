@@ -9,6 +9,7 @@ import { setPersonalBot } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { ensurePersonalAssistant, upsertDefinition } from "./definitions.js";
 import { assistantMcpServer } from "./assistant.js";
+import { listTodos } from "../todos/store.js";
 
 type Handler = (args: Record<string, unknown>) => Promise<{ isError?: boolean; content: { text: string }[] }>;
 const toolsOf = (s: ReturnType<typeof assistantMcpServer>) => (s.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
@@ -32,20 +33,34 @@ describe("assistant requests", () => {
     bobPa = (await ensurePersonalAssistant(db, "t1", bob.id, "m")).id;
   });
 
-  it("sends a request to another person's assistant and lists it for the owner", async () => {
+  it("sends a request to another person's assistant, which waits for the owner", async () => {
     const a = server(annPa, ann);
-    const r = await a.ask_assistant.handler({ to: "Bob", request: "Add a to-do: send the report by Friday.", kind: "todo" });
+    const r = await a.ask_assistant.handler({ to: "Bob", request: "Check whether Friday works for the review.", kind: "request" });
     expect(r.isError).toBeUndefined();
     expect(r.content[0].text).toContain("Bob's assistant");
+    expect(r.content[0].text).toContain("ask Bob");
     const [row] = await db.select().from(assistantRequests).where(eq(assistantRequests.tenantId, "t1"));
-    expect(row).toMatchObject({ fromDefinitionId: annPa, toDefinitionId: bobPa, fromPersonId: ann.id, toPersonId: bob.id, kind: "todo", status: "pending" });
+    expect(row).toMatchObject({ fromDefinitionId: annPa, toDefinitionId: bobPa, fromPersonId: ann.id, toPersonId: bob.id, kind: "request", status: "pending" });
     const b = server(bobPa, bob);
     const list = await b.my_requests.handler({});
-    expect(list.content[0].text).toContain("from Ann (todo): Add a to-do");
+    expect(list.content[0].text).toContain("from Ann (request): Check whether Friday works");
     const done = await b.resolve_request.handler({ id: row.id, accept: true });
     expect(done.content[0].text).toContain("Accepted");
     const [after] = await db.select().from(assistantRequests).where(eq(assistantRequests.id, row.id));
     expect(after.status).toBe("accepted");
+  });
+
+  it("auto-accepts a low-risk todo and puts it on the recipient's list", async () => {
+    const a = server(annPa, ann);
+    const r = await a.ask_assistant.handler({ to: "Bob", request: "Send the October report to Priya by Friday.", kind: "todo", dueAt: "2026-11-10" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toContain("Added to Bob's to-dos");
+    const rows = await db.select().from(assistantRequests).where(eq(assistantRequests.tenantId, "t1")).orderBy(assistantRequests.createdAt);
+    const row = rows[rows.length - 1];
+    expect(row).toMatchObject({ fromDefinitionId: annPa, toDefinitionId: bobPa, kind: "todo", status: "accepted" });
+    const { listTodos } = await import("../todos/store.js");
+    const todos = await listTodos(db, "t1", bob.id);
+    expect(todos.map((t) => t.title)).toContain("Send the October report to Priya by Friday.");
   });
 
   it("refuses a person with no assistant, and a service bot", async () => {

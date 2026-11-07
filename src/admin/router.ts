@@ -14,6 +14,7 @@ import { isAdmin, loadActor, mayEnter } from "./access.js";
 import { activityRoutes } from "./activity.js";
 import { assignmentRoutes } from "./assignments.js";
 import { assistantRoutes } from "./assistants.js";
+import { todoRoutes } from "./todos.js";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { botRoutes } from "./bots.js";
 import { adminOf, wrap } from "./http.js";
@@ -145,6 +146,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(overviewRoutes(db));
   router.use(peopleRoutes(db, deps.fetchUsers, deps.defaultModel));
   router.use(assistantRoutes(db, deps.defaultModel));
+  router.use(todoRoutes(db));
   router.use(botRoutes({ db, secretsKey: deps.config.secretsKey, publicUrl: deps.config.publicUrl, defaultModel: deps.defaultModel, models: deps.models, onSaved: deps.onBotSaved, mail: deps.mail, fetchFn: deps.fetchFn, ssh: deps.ssh, sql: deps.sql }));
   router.use(tryRoutes({ db, runTurn: deps.runTurn, confirmations: deps.confirmations }));
   router.use(assignmentRoutes(db));

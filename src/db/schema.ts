@@ -155,6 +155,27 @@ export const assistantRequests = pgTable(
 );
 export type AssistantRequest = typeof assistantRequests.$inferSelect;
 
+/** A personal to-do. The PA can add, list and complete these for its owner. */
+export const todos = pgTable(
+  "todos",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    personId: text("person_id").notNull().references(() => people.id),
+    definitionId: text("definition_id").references(() => botDefinitions.id),
+    requestId: text("request_id").references(() => assistantRequests.id),
+    title: text("title").notNull(),
+    details: text("details"),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    status: text("status").notNull().default("open"), // open | done
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [index("todos_person_idx").on(t.personId, t.status, t.dueAt)],
+);
+export type Todo = typeof todos.$inferSelect;
+
 export const mailboxes = pgTable("mailboxes", {
   definitionId: text("definition_id").primaryKey().references(() => botDefinitions.id),
   tenantId: text("tenant_id").notNull().references(() => tenants.id),

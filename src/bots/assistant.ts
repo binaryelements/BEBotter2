@@ -4,6 +4,8 @@ import { and, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { assistantRequests, botDefinitions, people } from "../db/schema.js";
+import { addTodo } from "../todos/store.js";
+import { DirectoryError } from "../org/directory.js";
 
 export type AssistantCtx = {
   tenantId: string;
@@ -27,9 +29,10 @@ export function assistantMcpServer(deps: { db: Db }, ctx: AssistantCtx): McpServ
       "ask_assistant",
       "Ask another person's personal assistant to do something for its owner, e.g. add a to-do or check a date. " +
         "`to` is the person's name or email. `request` is the whole request; the other assistant does not see this chat or your owner's memory. " +
-        "The other person's assistant asks its owner before acting. Use it only when the request is for that person, not for your own owner.",
-      { to: z.string(), request: z.string(), kind: z.enum(["request", "todo"]).optional() },
-      async ({ to, request, kind }) => {
+        "A `kind: \"todo\"` request is low risk and is added to their list at once; any other request waits for their owner to accept it. " +
+        "Use it only when the request is for that person, not for your own owner.",
+      { to: z.string(), request: z.string(), kind: z.enum(["request", "todo"]).optional(), dueAt: z.string().optional() },
+      async ({ to, request, kind, dueAt }) => {
         try {
           const personId = ctx.personId;
           if (!personId) return no("No message is being answered.");
@@ -48,8 +51,10 @@ export function assistantMcpServer(deps: { db: Db }, ctx: AssistantCtx): McpServ
             .from(botDefinitions)
             .where(and(eq(botDefinitions.tenantId, ctx.tenantId), eq(botDefinitions.ownerPersonId, recipient.id), eq(botDefinitions.identity, "person")));
           if (!target) return no(`${recipient.name} has no personal assistant.`);
+          const id = crypto.randomUUID();
+          const todo = kind === "todo";
           await db.insert(assistantRequests).values({
-            id: crypto.randomUUID(),
+            id,
             tenantId: ctx.tenantId,
             fromDefinitionId: sender.id,
             toDefinitionId: target.id,
@@ -58,6 +63,16 @@ export function assistantMcpServer(deps: { db: Db }, ctx: AssistantCtx): McpServ
             kind: kind ?? "request",
             body: request.trim(),
           });
+          if (todo) {
+            // a to-do is low risk: add it straight away, then record that the request needed no approval
+            try {
+              const t = await addTodo(db, { tenantId: ctx.tenantId, personId: recipient.id, definitionId: target.id, requestId: id, title: request.trim().slice(0, 200), details: request.trim(), dueAt });
+              await db.update(assistantRequests).set({ status: "accepted", resolvedAt: new Date() }).where(eq(assistantRequests.id, id));
+              return ok(`Added to ${recipient.name}'s to-dos as #${t.id}: ${t.title}. ${recipient.name}'s assistant will tell them.`);
+            } catch (e) {
+              return no(`Sent to ${recipient.name}'s assistant, but the to-do could not be added: ${e instanceof DirectoryError ? e.message : "unknown error"}. It will ask ${recipient.name} first.`);
+            }
+          }
           return ok(`Sent to ${recipient.name}'s assistant. It will ask ${recipient.name} before acting.`);
         } catch (e) {
           console.error("ask_assistant failed", e instanceof Error ? e.message : e);

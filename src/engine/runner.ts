@@ -6,6 +6,7 @@ import { auditInput, beginAction, completeAction, recordAuthority, summarise } f
 import { mcpServerConfigs } from "../bots/definitions.js";
 import { tellMcpServer } from "../bots/tell.js";
 import { assistantMcpServer } from "../bots/assistant.js";
+import { todoMcpServer } from "../todos/mcp.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
@@ -186,6 +187,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
       bots: tellMcpServer({ db, run: (t) => runTurn(deps, t as RunTurnInput), ...(deps.personToken ? { personToken: deps.personToken } : {}) }, ctx),
       ...(definition.identity === "person" ? { assistant: assistantMcpServer({ db }, ctx) } : {}),
+      ...(definition.identity === "person" ? { todos: todoMcpServer({ db }, ctx) } : {}),
       ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
       ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
       ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
