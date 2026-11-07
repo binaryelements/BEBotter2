@@ -157,7 +157,8 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
   const processOptions: EngineProcessOptions = {
     model: definition.model,
     systemPrompt,
-    maxSteps: 25,
+    // a chat turn gets 50 model calls: enough for a deep diagnosis with retries, still a guard against loops
+    maxSteps: 50,
     cwd: deps.filesDir,
     webSearch: definition.webSearch,
     mcpServers: {
