@@ -368,6 +368,7 @@ main h2, main h3 {
   letter-spacing: -.02em;
   color: var(--ui-ink);
 }
+.be-tile .v.sm { font-size: 16px; margin-top: 10px; line-height: 1.3; overflow-wrap: anywhere; }
 .be-tile .s { margin-top: 6px; color: var(--ui-muted); font-size: 12px; }
 .be-tile.ok { border-left-color: var(--ui-good); }
 .be-tile.warn {
@@ -407,6 +408,19 @@ main h2, main h3 {
   text-transform: uppercase;
   color: var(--ui-muted);
 }
+.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.card-head h2 { margin: 0; }
+.card-head .be-btn { margin-left: auto; }
+.card-head .be-chip { margin-left: auto; }
+.card-head .be-chip + .be-btn { margin-left: 0; }
+.persona { margin: 0; color: var(--ui-ink); font-size: 13.5px; line-height: 1.65; }
+.small { font-size: 12.5px; }
+.list { display: flex; flex-direction: column; }
+.list-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--ui-line); }
+.list-row:first-child { border-top: 0; }
+.list-row .grow { flex: 1; min-width: 0; }
+.list-row .name { font-weight: 500; font-size: 12.5px; color: var(--ui-ink); }
+.list-row .meta { color: var(--ui-muted); font-size: 12px; }
 .be-box {
   border: 1px solid var(--ui-line);
   background: var(--ui-panel-2);

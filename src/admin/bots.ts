@@ -6,7 +6,7 @@ import {
   addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setGraph, setPersona,
   setReflectionSettings, updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
-import { and, count, eq, inArray, max } from "drizzle-orm";
+import { and, count, eq, gte, inArray, max, sql } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
 import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setDescription, setLinked } from "../connections/store.js";
@@ -21,7 +21,7 @@ import { defaultClass } from "../engine/gate.js";
 import type { ToolRule } from "../engine/gate.js";
 import { knownTools, recordTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
 import { decrypt } from "../secrets/cipher.js";
-import { beginAction, completeAction } from "../audit/audit.js";
+import { beginAction, completeAction, listActions } from "../audit/audit.js";
 import { GRAPH_CAPABILITIES, auditEvents, botDefinitions, chatAssignments, chats, connections, definitionConnections, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
 import { ensureMailbox, MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
@@ -33,7 +33,7 @@ import { addLearning, deleteLearning, listLearnings, updateLearning } from "../l
 import { deleteMemory, getMemory, listAllMemory, MEMORY_KINDS, rememberMemory, updateMemory } from "../memory/store.js";
 import { decideProposal, listProposals, listReflections, reflectionModes } from "../reflections/store.js";
 import { isAdmin, mayEditPersona, mayEnter } from "./access.js";
-import { AUTO, html, layout, raw, scroll } from "./html.js";
+import { AUTO, chip, html, layout, raw, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
@@ -435,7 +435,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const admin = isAdmin(actor);
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
-      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn sm" href="/admin/bots/${def.id}/try">try it</a></div></header>${
+      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn sm" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn sm primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
       const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
@@ -472,7 +472,37 @@ ${person ? html`<p class="muted">Acts as each person who uses it, in their own c
         }<p><button class="be-btn primary">save</button></p></form>`;
         let section: SafeHtml;
         if (tab === "overview") {
-          section = settings("overview");
+          const now = new Date();
+          const week = new Date(now.getTime() - 7 * 86_400_000);
+          const month = new Date(now.getFullYear(), now.getMonth(), 1);
+          const [recent, learnings, memory, reflections, spend7, spendMonth] = await Promise.all([
+            listActions(db, { tenantId: actor.tenantId, definitionId: def.id, limit: 6 }),
+            listLearnings(db, actor.tenantId, def.id),
+            listAllMemory(db, actor.tenantId, def.id, "", 6),
+            listReflections(db, actor.tenantId, def.id, 1),
+            db.select({ total: sql<string>`coalesce(sum(${auditEvents.costUsd}), 0)` }).from(auditEvents).where(and(eq(auditEvents.tenantId, actor.tenantId), eq(auditEvents.definitionId, def.id), gte(auditEvents.startedAt, week))),
+            db.select({ total: sql<string>`coalesce(sum(${auditEvents.costUsd}), 0)` }).from(auditEvents).where(and(eq(auditEvents.tenantId, actor.tenantId), eq(auditEvents.definitionId, def.id), gte(auditEvents.startedAt, month))),
+          ]);
+          const when = await whenFor(db, actor.tenantId);
+          const last = recent[0];
+          const lastWho = last?.personId ? personName.get(last.personId) : undefined;
+          const lastChat = last?.chatId ? chatLabel.get(last.chatId) : undefined;
+          const reflection = reflections[0];
+          const modeWords = def.reflectionMode === "auto" ? "Apply and post to the group" : def.reflectionMode === "propose" ? "Propose learnings for approval" : "Off";
+          const tile = (label: string, value: string, sub: string, valueClass = "") => html`<div class="be-tile"><div class="be-eyebrow">${label}</div><div class="v ${valueClass}">${value}</div><div class="s">${sub}</div></div>`;
+          const tools = [def.webSearch ? "web search" : "", def.computer ? "computer" : "", def.mcpServers.length ? `${def.mcpServers.length} connection${def.mcpServers.length === 1 ? "" : "s"}` : "", mb?.address ? "mail" : ""].filter(Boolean);
+          const listRow = (title: string, meta: string) => html`<div class="list-row"><div class="grow"><div class="name">${title}</div><div class="meta">${meta}</div></div></div>`;
+          section = html`<div class="be-tiles" style="margin-bottom:16px">${tile("Model", def.model, "the provider/model this bot uses", "sm")}${tile("Chats", String(chatCount.n), `${assigned.filter((c) => c.conversationType === "groupChat").length} group · ${assigned.filter((c) => c.conversationType === "channel").length} channel`)}${tile("Last active", last ? when(last.startedAt) : "never", lastWho ? `${lastWho}${lastChat ? ` · ${lastChat}` : ""}` : "no messages yet", "sm")}${tile("Spend, 7 days", `$${Number(spend7[0]?.total ?? 0).toFixed(2)}`, `$${Number(spendMonth[0]?.total ?? 0).toFixed(2)} this month`)}</div>
+<div class="dash-cols">
+<section class="be-card"><div class="card-head"><h2>Persona</h2><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=persona">Edit</a></div><p class="persona">${def.persona}</p><div class="bot-chips">${tools.map((t) => html`<span class="be-chip">${t}</span>`)}</div></section>
+<section class="be-card"><div class="card-head"><h2>Daily reflection</h2><span class="be-chip ${def.reflectionMode === "off" ? "" : "g"}">${def.reflectionMode === "off" ? "off" : "auto"}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=reflections">Edit</a></div><dl class="be-kv"><dt>Mode</dt><dd>${modeWords}</dd><dt>Group</dt><dd>${def.reflectionChatId ? (chatLabel.get(def.reflectionChatId) ?? "a chat") : "not set"}</dd><dt>Hour</dt><dd>${String(def.reflectionHour).padStart(2, "0")}:00</dd><dt>Last run</dt><dd>${reflection ? reflection.day : "not yet"}</dd></dl>${reflection ? html`<div class="be-notice good" style="margin-top:14px"><div class="grow"><b>${reflection.day}</b><div class="meta">${reflection.summary || reflection.willDo || "Reflection saved."}</div></div><a class="be-btn sm" href="/admin/bots/${def.id}?tab=reflections">Read</a></div>` : html`<p class="muted small" style="margin-top:14px">No reflection yet. It runs daily at ${String(def.reflectionHour).padStart(2, "0")}:00 in the company time zone.</p>`}</section>
+</div>
+<div class="bot-grid" style="margin-top:16px">
+<section class="be-card"><div class="card-head"><h2>Learnings</h2><span class="be-chip">${learnings.length}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=learnings">Open</a></div><p class="muted small">Short rules that are in every reply.</p><div class="list">${learnings.slice(0, 3).map((l) => listRow(l.text, l.source === "reflection" ? "daily reflection" : "taught by an admin"))}${learnings.length ? "" : html`<div class="be-empty">Nothing learnt yet.</div>`}</div></section>
+<section class="be-card"><div class="card-head"><h2>Memory</h2><span class="be-chip">${memory.length}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=memory">Search</a></div><p class="muted small">The long tail. Retrieved when relevant, never all at once.</p><div class="list">${memory.slice(0, 3).map((m) => listRow(m.text, `${m.kind} · importance ${m.importance}`))}${memory.length ? "" : html`<div class="be-empty">Nothing remembered yet.</div>`}</div></section>
+<section class="be-card"><div class="card-head"><h2>Recent activity</h2><a class="be-btn sm quiet" href="/admin/activity?bot=${def.id}">All</a></div><div class="list">${recent.slice(0, 4).map((r) => html`<div class="list-row"><div class="grow"><div class="name">${r.summary}</div><div class="meta">${r.personId ? (personName.get(r.personId) ?? "someone") : "routine"} · ${when(r.startedAt)}</div></div>${chip(r.status)}</div>`)}${recent.length ? "" : html`<div class="be-empty">Nothing yet.</div>`}</div></section>
+</div>
+<details class="be-section" id="bot-settings"><summary class="be-btn">Edit settings</summary>${settings("overview")}</details>`;
         } else if (tab === "m365") {
           section = html`<p class="muted">What each person's assistant may do in their Microsoft 365, as them. Sending and changing still ask in the chat unless an admin sets the action free on the Actions tab.</p>
 <form method="post" action="/admin/bots/${def.id}/m365">${csrf}<p>${GRAPH_CAPABILITIES.map((c) => html`<label class="be-toggle"><input type="checkbox" name="graph" value="${c}" ${def.graph.includes(c) ? "checked" : ""}> ${capabilityWords(c)}</label> `)}</p><p><button class="be-btn primary">save</button></p></form>`;
