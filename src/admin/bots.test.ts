@@ -11,7 +11,7 @@ import { listConnectionsFor } from "../connections/store.js";
 import { fakeSsh } from "../connections/ssh.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
 import { addLearning, listLearnings } from "../learnings/store.js";
-import { createProposal, listProposals } from "../reflections/store.js";
+import { createProposal, listProposals, saveReflection } from "../reflections/store.js";
 import { eq } from "drizzle-orm";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { MailError } from "../mail/agentmail.js";
@@ -349,6 +349,15 @@ describe("bots screen", () => {
       await post(`/admin/bots/${d.id}/proposals/${reject.id}/reject`, "Ann", []);
       expect((await listLearnings(db, T, d.id)).map((l) => l.text)).not.toContain("Never do this");
       expect((await listProposals(db, T, d.id, "rejected")).map((p) => p.id)).toContain(reject.id);
+    });
+    it("the reflections tab shows the daily summaries", async () => {
+      const d = await def("helper");
+      await saveReflection(db, { tenantId: T, definitionId: d.id, day: "2026-11-07", summary: "A quiet day with one Voice issue.", wentWrong: "Restarted the SBC.", willDo: "Check the trunk first.", model: "deepseek/deepseek-flash", costUsd: 0.001 });
+      const page = await (await get(`/admin/bots/${d.id}?tab=reflections`, "Ann")).text();
+      expect(page).toContain("Daily reflections");
+      expect(page).toContain("A quiet day with one Voice issue.");
+      expect(page).toContain("Restarted the SBC.");
+      expect(page).toContain("Check the trunk first.");
     });
     it("lists what is waiting or repeating, and folds one-offs that already ran away", async () => {
       const d = await def("helper");

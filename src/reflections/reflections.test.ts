@@ -85,6 +85,11 @@ describe("reflection store", () => {
     expect(await listLearnings(db, T, botId)).toEqual([]);
   });
 
+  it("refuses a learning that looks like a secret", async () => {
+    await expect(addLearning(db, T, { definitionId: botId, text: "password: hunter2", taughtByPersonId: admin })).rejects.toThrow("password");
+    await expect(addLearning(db, T, { definitionId: botId, text: "-----BEGIN OPENSSH PRIVATE KEY-----\nabc", taughtByPersonId: admin })).rejects.toThrow("private key");
+  });
+
   it("refuses a learning that belongs to another owner or bot", async () => {
     const other = await upsertDefinition(db, secretsKey, T, { name: "other", label: "Other", persona: "x", model: MODEL, mcpServers: [] });
     const l = await addLearning(db, T, { definitionId: other.id, text: "Other bot's rule", taughtByPersonId: admin });
