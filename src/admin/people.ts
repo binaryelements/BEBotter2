@@ -126,7 +126,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
       render(
         res,
         "Departments",
-        html`${pageHead("Departments")}${
+        html`${pageHead("Departments", admin ? html`<a class="be-btn primary" href="#new-department" onclick="var i=document.getElementById('new-department'); if(i) i.focus();">New department</a>` : undefined)}${
           depts.length
             ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Members</th><th></th></tr></thead><tbody>${depts.map(
           (d) => html`<tr><td>${
@@ -141,7 +141,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
             : html`<div class="be-empty">No departments yet.</div>`
         }${
           admin
-            ? html`<form class="row" method="post" action="/admin/departments">${csrf}<input class="be-input" name="name" aria-label="Name" placeholder="department name" required> <button class="be-btn primary">create</button></form>`
+            ? html`<form class="row" method="post" action="/admin/departments">${csrf}<input class="be-input" id="new-department" name="name" aria-label="Name" placeholder="department name" required> <button class="be-btn primary">create</button></form>`
             : ""
         }`,
       );

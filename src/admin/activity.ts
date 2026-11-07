@@ -145,7 +145,7 @@ export function activityRoutes(db: Db): Router {
           title: "Activity",
           body: html`${pageHead("Activity", html`<a class="be-btn" href="/admin/activity.csv${csv ? `?${csv}` : ""}">export csv</a>`)}
 <form class="row" method="get" action="/admin/activity"><input class="be-input" type="search" name="q" value="${q(req, "q") ?? ""}" placeholder="search summaries…" aria-label="Search"> ${pick("bot", "bot", n.bot, sel.bot)} ${pick("person", "person", n.person, sel.person)} ${pick("chat", "chat", n.chat, sel.chat)} <select class="be-select" name="status" aria-label="Status"><option value="">any status</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
-${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Chat</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
+${tr.length ? scroll(html`<table class="be-table activity"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Chat</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
 ${older ? html`<p><a href="/admin/activity?${older}">older</a></p>` : ""}`,
           actor,
           csrf,

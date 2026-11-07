@@ -32,10 +32,12 @@ export function knowledgeRoutes(db: Db, key: Buffer): Router {
       res.type("html").send(
         layout({
           title: "Shared notes",
-          body: html`${pageHead("Shared notes")}
-<form class="row" method="get" action="/admin/knowledge"><input class="be-input" name="q" value="${query}" aria-label="Search" placeholder="search notes"> <button class="be-btn">search</button></form>
-${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Note</th><th>Version</th><th>Updated</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">No notes yet.</div>`}
-${isAdmin(actor) ? html`<form class="row" method="get" action="/admin/knowledge/note"><input class="be-input" name="path" placeholder="new note path" aria-label="New note path"> <button class="be-btn primary">add note</button></form>` : ""}`,
+          body: html`${pageHead("Shared notes", isAdmin(actor) ? html`<a class="be-btn primary" href="#new-note">New note</a>` : undefined)}
+<div class="toolbar"><form class="search-form" method="get" action="/admin/knowledge"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input class="be-input" name="q" value="${query}" aria-label="Search" placeholder="Search notes…"><button class="be-btn">Search</button></form><div class="spacer"></div><span class="be-chip">${rows.length} ${rows.length === 1 ? "note" : "notes"}</span></div>
+<section class="be-card">
+${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Note</th><th>Version</th><th>Updated</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty"><b>No notes yet</b>Shared notes are the knowledge base the bots search during a turn.${isAdmin(actor) ? html`<div style="margin-top:14px"><a class="be-btn primary" href="#new-note">Create the first note</a></div>` : ""}</div>`}
+</section>
+${isAdmin(actor) ? html`<section class="be-card" id="new-note"><div class="card-head"><h2>New note</h2></div><form class="new-note-form" method="get" action="/admin/knowledge/note"><div class="field"><label for="new-note-path">Path</label><input class="be-input" id="new-note-path" name="path" placeholder="troubleshooting/be-voice.md" aria-label="New note path"><div class="hint">Use a folder and a .md name, e.g. troubleshooting/be-voice.md.</div></div><button class="be-btn primary">Create note</button></form></section>` : ""}`,
           actor,
           csrf,
         }),
@@ -74,13 +76,13 @@ ${isAdmin(actor) ? html`<form class="row" method="get" action="/admin/knowledge/
       res.type("html").send(
         layout({
           title: path,
-          body: html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/knowledge">shared notes</a> / <span aria-current="page">${path}</span></nav><h1>${path}</h1></div></header>
-${note && !admin ? html`<pre>${note.body}</pre>` : ""}
+          body: html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/knowledge">shared notes</a> / <span aria-current="page">${path}</span></nav><h1>${path}</h1><p class="meta">${note ? `version ${note.version}${history[0] ? ` · updated ${when(history[0].createdAt)}` : ""}` : "new note"}</p></div><div class="act"><a class="be-btn" href="/admin/knowledge">All notes</a></div></header>
+${note && !admin ? html`<section class="be-card"><pre>${note.body}</pre></section>` : ""}
 ${admin
-  ? html`<form method="post" action="/admin/knowledge/note"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<textarea class="be-textarea" name="body" rows="16" aria-label="Note">${note?.body ?? ""}</textarea><p><button class="be-btn primary">save</button></p></form>
-${note ? html`<form method="post" action="/admin/knowledge/delete"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<button class="be-btn danger">delete</button></form>` : ""}`
+  ? html`<section class="be-card"><form method="post" action="/admin/knowledge/note"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<textarea class="be-textarea" name="body" rows="18" aria-label="Note">${note?.body ?? ""}</textarea><div class="savebar"><span class="muted small">Every save keeps a version in the history below.</span><div class="spacer"></div><button class="be-btn primary">Save note</button></div></form>
+${note ? html`<form method="post" action="/admin/knowledge/delete" style="margin-top:12px"><input type="hidden" name="csrf" value="${csrf}">${field("path", path)}<button class="be-btn danger">Delete note</button></form>` : ""}</section>`
   : ""}
-${scroll(html`<table class="be-table"><thead><tr><th>Version</th><th>Author</th><th>Chat</th><th>Time</th><th></th></tr></thead><tbody>${tr}</tbody></table>`)}`,
+<section class="be-card"><div class="card-head"><h2>History</h2><span class="be-chip">${history.length}</span></div>${scroll(html`<table class="be-table"><thead><tr><th>Version</th><th>Author</th><th>Chat</th><th>Time</th><th></th></tr></thead><tbody>${tr}</tbody></table>`)}</section>`,
           actor,
           csrf,
         }),

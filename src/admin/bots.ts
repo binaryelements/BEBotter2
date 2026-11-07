@@ -177,9 +177,9 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
 <td>${c.status === "revoked" ? "" : c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm" title="forgets the pinned host key; only after you have checked the machine really changed it">reset host key</button></form>` : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`}</td>
 <td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
       });
-      render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1></div></header>
+      render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1><p class="meta">The systems the bots can reach, and what they may do there.</p></div><div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;">Add a connection</a></div></header>
 ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>Used by</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
-<details class="add" id="add"><summary>add a connection…</summary>
+<details class="add" id="add"><summary class="be-btn">add a connection…</summary>
 <form method="post" action="/admin/connections">${csrf}
 <div class="fields">
 <label>name<span class="hint">lowercase, digits and dashes</span><input name="name" required></label>
@@ -435,7 +435,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const admin = isAdmin(actor);
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
-      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn sm" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn sm primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
+      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
       const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
