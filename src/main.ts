@@ -20,6 +20,7 @@ import { mountMailInbound } from "./mail/inbound.js";
 import { ensureAllMailboxes, ensureMailbox } from "./mail/mailboxes.js";
 import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
+import { startReflectionScheduler } from "./reflections/scheduler.js";
 import { startScheduler } from "./routines/scheduler.js";
 import { createTeamsApp, graphToken } from "./teams/app.js";
 import { personToken, sendToChat } from "./teams/proactive.js";
@@ -87,6 +88,7 @@ if (mail) void ensureAllMailboxes(mail);
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
+startReflectionScheduler({ db, engine, send: (chatId, text) => sendToChat(proactive, chatId, text) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
   process.once(signal, () => void mcpPool.close().finally(() => process.exit(0)));

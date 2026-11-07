@@ -637,7 +637,7 @@ describe("runTurn", () => {
   it("every message starts with the time now in the company's time zone and its default place", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
-    await setTenantSettings(db, "t1", { botName: null, retentionDays: 90, defaultModel: null, timezone: "Australia/Melbourne", location: "Melbourne", country: "Australia" });
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 90, defaultModel: null, timezone: "Australia/Melbourne", location: "Melbourne", country: "Australia", reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 });
     const q = fakeEngine({ calls: [] });
     await runTurn(deps(db, q.engine), { tenantId: "t1", chatId: "c1", definition, person, text: "when is lunch?", askConfirmation: async () => {}, receivedAt: new Date("2026-11-02T13:30:00Z") });
     expect(q.prompts[0]).toBe("[defaults: now Tuesday, 3 November 2026 at 12:30 am (Australia/Melbourne); location Melbourne, Australia]\n\nwhen is lunch?");

@@ -1,0 +1,1 @@
+ALTER TABLE "learnings" ADD COLUMN "source" text DEFAULT 'taught' NOT NULL;

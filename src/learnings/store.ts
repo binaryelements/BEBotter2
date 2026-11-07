@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { learnings, type Learning } from "../db/schema.js";
+import { findSecret } from "../knowledge/secrets-scan.js";
 import { DirectoryError } from "../org/directory.js";
 
 export const MAX_LEARNINGS = 100;
@@ -10,6 +11,8 @@ const checkText = (text: string) => {
   const t = text.trim();
   if (!t) throw new DirectoryError("A learning needs some text");
   if (t.length > MAX_TEXT) throw new DirectoryError(`A learning is at most ${MAX_TEXT} characters; keep it to one short instruction`);
+  const secret = findSecret(t);
+  if (secret) throw new DirectoryError(`A learning cannot contain a ${secret}`);
   return t;
 };
 
@@ -26,14 +29,14 @@ export async function listLearnings(db: Db, tenantId: string, definitionId: stri
 export async function addLearning(
   db: Db,
   tenantId: string,
-  input: { definitionId: string; text: string; taughtByPersonId: string; chatId?: string | null; ownerPersonId?: string | null },
+  input: { definitionId: string; text: string; taughtByPersonId: string; chatId?: string | null; ownerPersonId?: string | null; source?: "taught" | "reflection" },
 ): Promise<Learning> {
   const text = checkText(input.text);
   if ((await listLearnings(db, tenantId, input.definitionId)).length >= MAX_LEARNINGS)
     throw new DirectoryError(`This bot already has ${MAX_LEARNINGS} learnings; change or remove some first`);
   const [row] = await db
     .insert(learnings)
-    .values({ id: crypto.randomUUID(), tenantId, definitionId: input.definitionId, text, taughtByPersonId: input.taughtByPersonId, chatId: input.chatId ?? null, ownerPersonId: input.ownerPersonId ?? null })
+    .values({ id: crypto.randomUUID(), tenantId, definitionId: input.definitionId, text, source: input.source ?? "taught", taughtByPersonId: input.taughtByPersonId, chatId: input.chatId ?? null, ownerPersonId: input.ownerPersonId ?? null })
     .returning();
   return row!;
 }

@@ -30,6 +30,7 @@ import { DirectoryError, listDepartments } from "../org/directory.js";
 import { getTenantSettings } from "../org/org.js";
 import { createRoutine, deleteRoutine, listRoutines, updateRoutine } from "../routines/store.js";
 import { addLearning, deleteLearning, listLearnings, updateLearning } from "../learnings/store.js";
+import { decideProposal, listProposals, listReflections } from "../reflections/store.js";
 import { isAdmin, mayEditPersona, mayEnter } from "./access.js";
 import { AUTO, html, layout, raw, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
@@ -65,7 +66,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
     const { actor, csrf } = adminOf(res);
     res.type("html").send(layout({ title, body, actor, csrf }));
   };
-  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "learnings", "chats", "m365"] as const;
+  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "learnings", "reflections", "chats", "m365"] as const;
   type Tab = (typeof TABS)[number];
   // Personal acts as the person: it has no mailbox or connections, and only it has Microsoft 365 capabilities
   const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" && t !== "connections" : t !== "m365"));
@@ -494,17 +495,27 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
 <p><label class="be-label">prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn primary">add routine</button></form>`;
         } else if (tab === "learnings") {
           const rows = await listLearnings(db, actor.tenantId, def.id);
+          const proposals = await listProposals(db, actor.tenantId, def.id, "pending");
           const day = await whenFor(db, actor.tenantId);
           // each row is its own form, so an admin rewords one teaching in place
           const row = (l: (typeof rows)[number]) => html`<tr><td><form method="post" action="/admin/bots/${def.id}/learnings/${l.id}">${csrf}<textarea name="text" rows="2" required>${l.text}</textarea><button class="be-btn sm">save</button></form></td>
 <td>${personName.get(l.taughtByPersonId) ?? "—"}</td><td>${l.chatId ? (chatLabel.get(l.chatId) ?? l.chatId.slice(-12)) : "admin site"}</td><td>${l.ownerPersonId ? `only ${personName.get(l.ownerPersonId) ?? "one person"}` : "everyone"}</td><td>${day(l.updatedAt)}</td>
 <td><form method="post" action="/admin/bots/${def.id}/learnings/${l.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form></td></tr>`;
+          const proposal = (p: (typeof proposals)[number]) => {
+            const target = p.learningId ? rows.find((l) => l.id === p.learningId) : undefined;
+            const text = p.action === "remove" ? (target?.text ?? p.learningId ?? "") : (p.text ?? "");
+            return html`<tr><td>${p.action}</td><td>${text}</td><td>${p.ownerPersonId ? `only ${personName.get(p.ownerPersonId) ?? "one person"}` : "everyone"}</td><td>${p.reason ?? ""}</td><td><form method="post" action="/admin/bots/${def.id}/proposals/${p.id}/approve">${csrf}<button class="be-btn sm primary">approve</button></form> <form method="post" action="/admin/bots/${def.id}/proposals/${p.id}/reject">${csrf}<button class="be-btn sm">reject</button></form></td></tr>`;
+          };
           section = html`<h2>Learnings</h2>
 <p class="hint">What people have taught this bot in chats. Each one is in the bot's instructions from the next message on.</p>
+${proposals.length ? html`<h3>Proposed by the daily reflection</h3><p class="hint">Approve to apply the change to the bot's memory, or reject to leave it as it is.</p>${scroll(html`<table class="be-table"><thead><tr><th>Change</th><th>Learning</th><th>Applies to</th><th>Why</th><th></th></tr></thead><tbody>${proposals.map(proposal)}</tbody></table>`)}` : ""}
 ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th><th>Taught by</th><th>Where</th><th>Applies to</th><th>Changed</th><th></th></tr></thead><tbody>${rows.map(row)}</tbody></table>`) : html`<div class="be-empty">Nothing learnt yet.</div>`}
 <form method="post" action="/admin/bots/${def.id}/learnings">${csrf}<p><label>new learning<textarea name="text" required placeholder="Call scheduled runs reminders"></textarea></label></p><button class="be-btn">add learning</button></form>`;
+        } else if (tab === "reflections") {
+          const rows = await listReflections(db, actor.tenantId, def.id);
+          const block = (r: (typeof rows)[number]) => html`<section class="be-card"><h3>${r.day}</h3><p class="meta">${r.ownerPersonId ? `only ${personName.get(r.ownerPersonId) ?? "one person"} · ` : ""}${r.model ?? ""}${r.costUsd ? ` · $${Number(r.costUsd).toFixed(4)}` : ""}</p><p>${r.summary}</p>${r.wentWell ? html`<p><b>Went well.</b> ${r.wentWell}</p>` : ""}${r.wentWrong ? html`<p><b>Went wrong.</b> ${r.wentWrong}</p>` : ""}${r.corrections ? html`<p><b>Corrected.</b> ${r.corrections}</p>` : ""}${r.willDo ? html`<p><b>Will do.</b> ${r.willDo}</p>` : ""}</section>`;
+          section = html`<h2>Daily reflections</h2><p class="hint">What the bot reviewed at the end of each day. Turn it on in <a href="/admin/settings">Settings</a>.</p>${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.</div>`}`;
         } else {
-          // the chats this bot answers in; who and when come from the same place Assignments shows them
           const seen = await whenFor(db, actor.tenantId);
           section = assigned.length
             ? html`${scroll(html`<table class="be-table"><thead><tr><th>Chat</th><th>Type</th><th>Last message</th><th></th></tr></thead><tbody>${assigned.map(
@@ -755,6 +766,26 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th>
       if (!(await listLearnings(db, actor.tenantId, req.params.id)).some((l) => l.id === req.params.lid)) throw new DirectoryError("No such learning");
       if (!isArmed(req)) return armed(res, req, "Delete learning?", "confirm delete?", back(req, req.params.id));
       await deleteLearning(db, actor.tenantId, req.params.id, req.params.lid);
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/proposals/:pid/approve",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await decideProposal(db, actor.tenantId, req.params.id, req.params.pid, "approved", actor.personId);
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/proposals/:pid/reject",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await decideProposal(db, actor.tenantId, req.params.id, req.params.pid, "rejected", actor.personId);
       res.redirect(303, back(req, req.params.id));
     }),
   );

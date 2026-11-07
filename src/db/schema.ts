@@ -36,6 +36,12 @@ export const tenants = pgTable("tenants", {
   timezone: text("timezone").notNull().default("UTC"),
   location: text("location"),
   country: text("country"),
+  /** Daily self-reflection: off, propose learnings for approval, or apply them and post to the default group. */
+  reflectionMode: text("reflection_mode").notNull().default("off"), // off | propose | auto
+  /** The group chat an auto reflection posts to; validated against the tenant's chats when saved. */
+  reflectionChatId: text("reflection_chat_id"),
+  /** Local hour (0-23) in the tenant zone when the daily reflection runs. */
+  reflectionHour: integer("reflection_hour").notNull().default(18),
   createdAt: createdAt(),
 });
 
@@ -342,6 +348,8 @@ export const learnings = pgTable("learnings", {
   tenantId: text("tenant_id").notNull().references(() => tenants.id),
   definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
   text: text("text").notNull(),
+  /** taught: a person said it in a chat or an admin added it; reflection: the daily self-review proposed or applied it. */
+  source: text("source").notNull().default("taught"), // taught | reflection
   /** set on a Personal assistant's learnings: they apply to that person's chats only, since Personal is one bot shared by everyone */
   ownerPersonId: text("owner_person_id").references(() => people.id),
   taughtByPersonId: text("taught_by_person_id").notNull().references(() => people.id),
@@ -351,6 +359,45 @@ export const learnings = pgTable("learnings", {
 });
 
 export type Learning = typeof learnings.$inferSelect;
+
+/** One bot's daily self-review: what happened, what went wrong, what was corrected, and what it will do differently. */
+export const reflections = pgTable("reflections", {
+  id: text("id").primaryKey(),
+  /** tenant:definition:owner:day, so a day is reflected on once even if the scheduler ticks twice. */
+  key: text("key").notNull().unique(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+  ownerPersonId: text("owner_person_id").references(() => people.id),
+  day: text("day").notNull(), // YYYY-MM-DD in the tenant zone
+  summary: text("summary").notNull(),
+  wentWell: text("went_well"),
+  wentWrong: text("went_wrong"),
+  corrections: text("corrections"),
+  willDo: text("will_do"),
+  model: text("model"),
+  costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
+  createdAt: createdAt(),
+});
+
+/** A learning the daily reflection wants to add, change or remove; mode 2 waits for an admin, mode 3 applies it. */
+export const learningProposals = pgTable("learning_proposals", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+  ownerPersonId: text("owner_person_id").references(() => people.id),
+  reflectionId: text("reflection_id"),
+  action: text("action").notNull(), // add | update | remove
+  learningId: text("learning_id").references(() => learnings.id, { onDelete: "set null" }),
+  text: text("text"),
+  reason: text("reason"),
+  status: text("status").notNull().default("pending"), // pending | approved | rejected
+  decidedByPersonId: text("decided_by_person_id").references(() => people.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  createdAt: createdAt(),
+});
+
+export type Reflection = typeof reflections.$inferSelect;
+export type LearningProposal = typeof learningProposals.$inferSelect;
 export type Tenant = typeof tenants.$inferSelect;
 export type Person = typeof people.$inferSelect;
 export type Department = typeof departments.$inferSelect;

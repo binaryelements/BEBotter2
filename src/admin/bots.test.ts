@@ -11,6 +11,7 @@ import { listConnectionsFor } from "../connections/store.js";
 import { fakeSsh } from "../connections/ssh.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
 import { addLearning, listLearnings } from "../learnings/store.js";
+import { createProposal, listProposals } from "../reflections/store.js";
 import { eq } from "drizzle-orm";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { MailError } from "../mail/agentmail.js";
@@ -333,6 +334,21 @@ describe("bots screen", () => {
       expect(await listLearnings(db, T, d.id)).toHaveLength(2);
       await post(`/admin/bots/${d.id}/learnings/${l.id}/delete`, "Ann", [["confirm", "yes"]]);
       expect((await listLearnings(db, T, d.id)).map((x) => x.text)).toEqual(["Sign off with Cheers"]);
+    });
+    it("the learnings tab shows reflection proposals and an admin approves or rejects them", async () => {
+      const d = await def("helper");
+      const add = await createProposal(db, { tenantId: T, definitionId: d.id, action: "add", text: "Check the SBC before the trunk" });
+      const page = await (await get(`/admin/bots/${d.id}?tab=learnings`, "Ann")).text();
+      expect(page).toContain("Proposed by the daily reflection");
+      expect(page).toContain("Check the SBC before the trunk");
+      expect((await post(`/admin/bots/${d.id}/proposals/${add.id}/approve`, "Hal", [])).status).toBe(403);
+      await post(`/admin/bots/${d.id}/proposals/${add.id}/approve`, "Ann", []);
+      expect((await listLearnings(db, T, d.id)).map((l) => l.text)).toContain("Check the SBC before the trunk");
+      expect((await listProposals(db, T, d.id, "pending")).length).toBe(0);
+      const reject = await createProposal(db, { tenantId: T, definitionId: d.id, action: "add", text: "Never do this" });
+      await post(`/admin/bots/${d.id}/proposals/${reject.id}/reject`, "Ann", []);
+      expect((await listLearnings(db, T, d.id)).map((l) => l.text)).not.toContain("Never do this");
+      expect((await listProposals(db, T, d.id, "rejected")).map((p) => p.id)).toContain(reject.id);
     });
     it("lists what is waiting or repeating, and folds one-offs that already ran away", async () => {
       const d = await def("helper");

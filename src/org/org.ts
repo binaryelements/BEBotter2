@@ -62,14 +62,37 @@ export async function findPersonId(db: Db, tenantId: string, aadObjectId: string
 }
 
 /** timezone, location and country: the defaults every bot is told on every message, unless a chat says otherwise. */
-export type TenantSettings = { botName: string | null; retentionDays: number; defaultModel: string | null; timezone: string; location: string | null; country: string | null };
+export type TenantSettings = {
+  botName: string | null;
+  retentionDays: number;
+  defaultModel: string | null;
+  timezone: string;
+  location: string | null;
+  country: string | null;
+  /** off | propose | auto: the daily self-reflection. */
+  reflectionMode: string;
+  /** The group chat an auto reflection posts to. */
+  reflectionChatId: string | null;
+  /** Local hour (0-23) in the tenant zone. */
+  reflectionHour: number;
+};
 
 export async function getTenantSettings(db: Db, tenantId: string): Promise<TenantSettings> {
   const [row] = await db
-    .select({ botName: tenants.botName, retentionDays: tenants.retentionDays, defaultModel: tenants.defaultModel, timezone: tenants.timezone, location: tenants.location, country: tenants.country })
+    .select({
+      botName: tenants.botName,
+      retentionDays: tenants.retentionDays,
+      defaultModel: tenants.defaultModel,
+      timezone: tenants.timezone,
+      location: tenants.location,
+      country: tenants.country,
+      reflectionMode: tenants.reflectionMode,
+      reflectionChatId: tenants.reflectionChatId,
+      reflectionHour: tenants.reflectionHour,
+    })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
-  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null };
+  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null, reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 };
 }
 
 export async function setTenantSettings(db: Db, tenantId: string, settings: TenantSettings): Promise<void> {
