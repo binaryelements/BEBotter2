@@ -103,7 +103,7 @@ describe("startAuditPruning", () => {
   it("prunes every tenant by its retention at once and on each tick, and logs", async () => {
     const db = await testDb();
     const ids = await setup(db);
-    await setTenantSettings(db, "t1", { botName: null, retentionDays: 1, defaultModel: null, timezone: "UTC", location: null, country: null, reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 });
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 1, defaultModel: null, timezone: "UTC", location: null, country: null });
     const old = async () => {
       const id = await beginAction(db, { tenantId: "t1", ...ids, kind: "message", summary: "x" });
       await completeAction(db, id, { status: "done" });

@@ -4,10 +4,11 @@ import { upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { listAllMemory } from "../memory/store.js";
 import { learningsMcpServer } from "./mcp.js";
 import { MAX_LEARNINGS, addLearning, learningsNote, listLearnings } from "./store.js";
 
-type Handler = (args: Record<string, string>) => Promise<{ isError?: boolean; content: { text: string }[] }>;
+type Handler = (args: Record<string, unknown>) => Promise<{ isError?: boolean; content: { text: string }[] }>;
 const toolsOf = (s: ReturnType<typeof learningsMcpServer>) => (s.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
 
 describe("learnings", () => {
@@ -54,6 +55,18 @@ describe("learnings", () => {
     expect(learningsNote(await listLearnings(db, "t1", definitionId, ann))).toMatch(/- My wife is Jo\n- Sign off with Cheers$/);
     expect(learningsNote([])).toBe("");
     expect(shared.ownerPersonId).toBeNull();
+  });
+
+  it("remembers detail in long-term memory and recalls it on demand", async () => {
+    const definitionId = (await upsertDefinition(db, randomBytes(32), "t1", { name: "recall", label: "Recall", persona: "p" })).id;
+    const t = toolsOf(learningsMcpServer({ db }, { tenantId: "t1", definitionId, chatId: "c1", personId: ann }, false));
+    const remembered = await t.remember!.handler({ text: "BE Voice: check the SIP trunk registration first", kind: "procedure", importance: 5 });
+    expect(remembered.isError).toBeUndefined();
+    expect(remembered.content[0]!.text).toMatch(/^Remembered as /);
+    const recalled = await t.recall!.handler({ query: "SIP trunk" });
+    expect(recalled.content[0]!.text).toContain("SIP trunk registration");
+    const [memory] = await listAllMemory(db, "t1", definitionId);
+    expect(memory!.useCount).toBeGreaterThan(0);
   });
 
   it(`stops at ${MAX_LEARNINGS} learnings per bot`, async () => {

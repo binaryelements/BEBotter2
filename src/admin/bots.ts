@@ -4,7 +4,7 @@ import express from "express";
 import type { Request, Response, Router } from "express";
 import {
   addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setGraph, setPersona,
-  updateDefinitionFields, upsertDefinition,
+  setReflectionSettings, updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
 import { and, count, eq } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
@@ -30,7 +30,8 @@ import { DirectoryError, listDepartments } from "../org/directory.js";
 import { getTenantSettings } from "../org/org.js";
 import { createRoutine, deleteRoutine, listRoutines, updateRoutine } from "../routines/store.js";
 import { addLearning, deleteLearning, listLearnings, updateLearning } from "../learnings/store.js";
-import { decideProposal, listProposals, listReflections } from "../reflections/store.js";
+import { deleteMemory, getMemory, listAllMemory, MEMORY_KINDS, rememberMemory, updateMemory } from "../memory/store.js";
+import { decideProposal, listProposals, listReflections, reflectionModes } from "../reflections/store.js";
 import { isAdmin, mayEditPersona, mayEnter } from "./access.js";
 import { AUTO, html, layout, raw, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
@@ -66,7 +67,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
     const { actor, csrf } = adminOf(res);
     res.type("html").send(layout({ title, body, actor, csrf }));
   };
-  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "learnings", "reflections", "chats", "m365"] as const;
+  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "learnings", "memory", "reflections", "chats", "m365"] as const;
   type Tab = (typeof TABS)[number];
   // Personal acts as the person: it has no mailbox or connections, and only it has Microsoft 365 capabilities
   const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" && t !== "connections" : t !== "m365"));
@@ -511,10 +512,36 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
 ${proposals.length ? html`<h3>Proposed by the daily reflection</h3><p class="hint">Approve to apply the change to the bot's memory, or reject to leave it as it is.</p>${scroll(html`<table class="be-table"><thead><tr><th>Change</th><th>Learning</th><th>Applies to</th><th>Why</th><th></th></tr></thead><tbody>${proposals.map(proposal)}</tbody></table>`)}` : ""}
 ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th><th>Taught by</th><th>Where</th><th>Applies to</th><th>Changed</th><th></th></tr></thead><tbody>${rows.map(row)}</tbody></table>`) : html`<div class="be-empty">Nothing learnt yet.</div>`}
 <form method="post" action="/admin/bots/${def.id}/learnings">${csrf}<p><label>new learning<textarea name="text" required placeholder="Call scheduled runs reminders"></textarea></label></p><button class="be-btn">add learning</button></form>`;
+        } else if (tab === "memory") {
+          const q = typeof req.query.q === "string" ? req.query.q : "";
+          const rows = await listAllMemory(db, actor.tenantId, def.id, q);
+          const seen = await whenFor(db, actor.tenantId);
+          const row = (m: (typeof rows)[number]) => html`<tr>
+<td><form method="post" action="/admin/bots/${def.id}/memory/${m.id}">${csrf}<textarea name="text" rows="2" required>${m.text}</textarea><button class="be-btn sm">save</button></form></td>
+<td>${m.kind}</td><td>${m.importance}</td><td>${m.source}</td><td>${m.ownerPersonId ? `only ${personName.get(m.ownerPersonId) ?? "one person"}` : "everyone"}</td><td>${m.lastUsedAt ? seen(m.lastUsedAt) : "never"}</td>
+<td><form method="post" action="/admin/bots/${def.id}/memory/${m.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form></td></tr>`;
+          section = html`<h2>Long-term memory</h2>
+<p class="hint">Detailed facts, procedures and preferences. The bot retrieves the few relevant to a message; it never puts this whole table in the prompt.</p>
+<form class="row" method="get" action="/admin/bots/${def.id}"><input type="hidden" name="tab" value="memory"><input class="be-input" name="q" value="${q}" placeholder="search memory"> <button class="be-btn">search</button></form>
+${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Memory</th><th>Kind</th><th>Importance</th><th>Source</th><th>Applies to</th><th>Last used</th><th></th></tr></thead><tbody>${rows.map(row)}</tbody></table>`) : html`<div class="be-empty">No memory yet.</div>`}
+<h3>Add a memory</h3>
+<form class="be-form" method="post" action="/admin/bots/${def.id}/memory">${csrf}<div class="fields"><label>text<textarea name="text" rows="3" required maxlength="2000"></textarea></label><label>kind<select class="be-select" name="kind">${MEMORY_KINDS.map((k) => html`<option value="${k}">${k}</option>`)}</select></label><label>importance<input class="be-input" type="number" name="importance" min="1" max="5" value="3"></label></div><button class="be-btn primary">add memory</button></form>`;
         } else if (tab === "reflections") {
           const rows = await listReflections(db, actor.tenantId, def.id);
+          const groups = assigned.filter((c) => c.conversationType !== "personal");
           const block = (r: (typeof rows)[number]) => html`<section class="be-card"><h3>${r.day}</h3><p class="meta">${r.ownerPersonId ? `only ${personName.get(r.ownerPersonId) ?? "one person"} · ` : ""}${r.model ?? ""}${r.costUsd ? ` · $${Number(r.costUsd).toFixed(4)}` : ""}</p><p>${r.summary}</p>${r.wentWell ? html`<p><b>Went well.</b> ${r.wentWell}</p>` : ""}${r.wentWrong ? html`<p><b>Went wrong.</b> ${r.wentWrong}</p>` : ""}${r.corrections ? html`<p><b>Corrected.</b> ${r.corrections}</p>` : ""}${r.willDo ? html`<p><b>Will do.</b> ${r.willDo}</p>` : ""}</section>`;
-          section = html`<h2>Daily reflections</h2><p class="hint">What the bot reviewed at the end of each day. Turn it on in <a href="/admin/settings">Settings</a>.</p>${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.</div>`}`;
+          section = html`<h2>Daily reflection</h2>
+<p class="hint">This bot reviews its own day at the chosen hour. Propose: learnings wait for an admin. Auto: learnings apply and the bot posts what it learnt to the group.</p>
+<form class="be-form" method="post" action="/admin/bots/${def.id}/reflection">${csrf}
+<div class="fields">
+<label>mode<select class="be-select" name="reflectionMode">${reflectionModes.map((m) => html`<option value="${m}" ${m === def.reflectionMode ? "selected" : ""}>${m === "off" ? "off" : m === "propose" ? "2 · propose learnings for approval" : "3 · apply and post to the group"}</option>`)}</select></label>
+<label>group<span class="hint">where an auto reflection posts; one of this bot's group chats</span><select class="be-select" name="reflectionChatId"><option value="">none</option>${groups.map((g) => html`<option value="${g.id}" ${g.id === def.reflectionChatId ? "selected" : ""}>${g.label ?? g.id}</option>`)}</select></label>
+<label>hour<span class="hint">0-23 in the company time zone</span><input class="be-input" type="number" min="0" max="23" name="reflectionHour" value="${def.reflectionHour}" required></label>
+</div>
+${groups.length ? "" : html`<p class="hint">Put this bot in a group chat first; an auto reflection needs somewhere to post.</p>`}
+<button class="be-btn primary">save</button></form>
+<h2>Past reflections</h2>
+${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.</div>`}`;
         } else {
           const seen = await whenFor(db, actor.tenantId);
           section = assigned.length
@@ -771,6 +798,48 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th>
   );
 
   router.post(
+    "/bots/:id/memory",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      if (!(await getDefinition(db, actor.tenantId, req.params.id))) throw new DirectoryError("No such bot");
+      const kind = field(req, "kind") || "fact";
+      if (!(MEMORY_KINDS as readonly string[]).includes(kind)) throw new DirectoryError("Unknown memory kind");
+      await rememberMemory(db, {
+        tenantId: actor.tenantId,
+        definitionId: req.params.id,
+        text: field(req, "text"),
+        kind: kind as (typeof MEMORY_KINDS)[number],
+        importance: Number(field(req, "importance") || 3),
+        source: "taught",
+      });
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/memory/:mid",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await updateMemory(db, actor.tenantId, req.params.id, req.params.mid, { text: field(req, "text") });
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/memory/:mid/delete",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      if (!(await getMemory(db, actor.tenantId, req.params.id, req.params.mid))) throw new DirectoryError("No such memory");
+      if (!isArmed(req)) return armed(res, req, "Delete memory?", "confirm delete?", back(req, req.params.id));
+      await deleteMemory(db, actor.tenantId, req.params.id, req.params.mid);
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
     "/bots/:id/proposals/:pid/approve",
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
@@ -786,6 +855,31 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Learning</th>
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       await decideProposal(db, actor.tenantId, req.params.id, req.params.pid, "rejected", actor.personId);
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/reflection",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const mode = field(req, "reflectionMode") || "off";
+      if (!(reflectionModes as readonly string[]).includes(mode)) throw new DirectoryError("Unknown reflection mode");
+      const hour = Number(field(req, "reflectionHour"));
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new DirectoryError("Reflection hour must be a whole number from 0 to 23");
+      const chatId = field(req, "reflectionChatId") || null;
+      if (chatId) {
+        const [chat] = await db
+          .select({ type: chats.conversationType })
+          .from(chatAssignments)
+          .innerJoin(chats, eq(chats.id, chatAssignments.chatId))
+          .where(and(eq(chatAssignments.definitionId, req.params.id), eq(chatAssignments.chatId, chatId), eq(chats.tenantId, actor.tenantId)));
+        if (!chat) throw new DirectoryError("The reflection group must be one of this bot's chats");
+        if (chat.type === "personal") throw new DirectoryError("The reflection group must be a group chat or channel");
+      }
+      if (mode === "auto" && !chatId) throw new DirectoryError("Choose a group chat for auto mode, or use propose mode");
+      await setReflectionSettings(db, actor.tenantId, req.params.id, { mode: mode as "off" | "propose" | "auto", chatId, hour });
       res.redirect(303, back(req, req.params.id));
     }),
   );

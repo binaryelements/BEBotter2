@@ -16,6 +16,7 @@ import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import { botDefinitions, chats, connections, mailboxes, sessions } from "../db/schema.js";
 import { addLearning } from "../learnings/store.js";
+import { rememberMemory } from "../memory/store.js";
 import { requestConnection } from "../connections/store.js";
 import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
@@ -634,10 +635,25 @@ describe("runTurn", () => {
     expect(String(q.seen[1]!.systemPrompt)).toContain("an admin can add one on the admin page");
   });
 
+  it("puts only the relevant long-term memory in the system prompt", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    for (let i = 0; i < 15; i++) await rememberMemory(db, { tenantId: "t1", definitionId: definition.id, text: `unrelated memory ${i}`, importance: 2 });
+    await rememberMemory(db, { tenantId: "t1", definitionId: definition.id, text: "BE Voice: check the SIP trunk registration first", kind: "procedure", importance: 5 });
+    const q = fakeEngine({ calls: [] });
+    await runTurn(deps(db, q.engine), { tenantId: "t1", chatId: "c1", definition, person, text: "The BE Voice trunk is down", askConfirmation: async () => {} });
+    const prompt = String(q.seen[0]!.systemPrompt);
+    expect(prompt).toContain("Relevant long-term memory");
+    expect(prompt).toContain("check the SIP trunk registration first");
+    // 16 items exist, but the prompt gets the capped selection, not the table
+    expect(prompt).not.toContain("unrelated memory 0");
+    expect(prompt.split("\n").filter((l) => l.startsWith("- [")).length).toBeLessThanOrEqual(12);
+  });
+
   it("every message starts with the time now in the company's time zone and its default place", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
-    await setTenantSettings(db, "t1", { botName: null, retentionDays: 90, defaultModel: null, timezone: "Australia/Melbourne", location: "Melbourne", country: "Australia", reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 });
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 90, defaultModel: null, timezone: "Australia/Melbourne", location: "Melbourne", country: "Australia" });
     const q = fakeEngine({ calls: [] });
     await runTurn(deps(db, q.engine), { tenantId: "t1", chatId: "c1", definition, person, text: "when is lunch?", askConfirmation: async () => {}, receivedAt: new Date("2026-11-02T13:30:00Z") });
     expect(q.prompts[0]).toBe("[defaults: now Tuesday, 3 November 2026 at 12:30 am (Australia/Melbourne); location Melbourne, Australia]\n\nwhen is lunch?");

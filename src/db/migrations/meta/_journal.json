@@ -155,6 +155,20 @@
       "when": 1794022089628,
       "tag": "0021_reflection-links",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794024002030,
+      "tag": "0022_per-bot-reflection",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794024248702,
+      "tag": "0023_memory-items",
+      "breakpoints": true
     }
   ]
 }

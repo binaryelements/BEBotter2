@@ -4,7 +4,7 @@ import { upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
-import { getTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { getTenantSettings, upsertPerson, upsertTenant } from "../org/org.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -31,7 +31,7 @@ describe("settings screen", () => {
   afterAll(() => close());
 
   const get = (who: string) => fetch(url + "/admin/settings", { redirect: "manual", headers: { cookie: sessionCookie(secretsKey, T, id[who]) } });
-  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string; timezone?: string; location?: string; country?: string; reflectionMode?: string; reflectionChatId?: string; reflectionHour?: string }) =>
+  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string; timezone?: string; location?: string; country?: string }) =>
     fetch(url + "/admin/settings", {
       method: "POST",
       redirect: "manual",
@@ -40,19 +40,19 @@ describe("settings screen", () => {
     });
 
   it("defaults for a missing tenant", async () => {
-    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null, reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 });
+    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null });
   });
 
   it("saves, trims, and stores an empty bot name as null", async () => {
     const r = await post("Ann", { botName: "  Helper  ", retentionDays: "30", defaultModel: " deepseek/deepseek-flash " });
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/admin/settings");
-    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "deepseek/deepseek-flash", timezone: "UTC", location: null, country: null, reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "deepseek/deepseek-flash", timezone: "UTC", location: null, country: null });
     const page = await (await get("Ann")).text();
     expect(page).toContain('value="Helper"');
     expect(page).toContain('value="30"');
     await post("Ann", { botName: "  ", retentionDays: "30" });
-    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null, timezone: "UTC", location: null, country: null, reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null, timezone: "UTC", location: null, country: null });
   });
 
   it("rejects bad values and keeps the old ones", async () => {
@@ -77,21 +77,6 @@ describe("settings screen", () => {
     expect((await post("Ann", { retentionDays: "30", location: "x".repeat(81) })).status).toBe(400);
     expect((await post("Ann", { retentionDays: "30", location: "", country: "" })).status).toBe(303);
     expect(await getTenantSettings(db, T)).toMatchObject({ location: null, country: null });
-  });
-
-  it("saves the daily reflection mode, group and hour, and refuses an unsafe combination", async () => {
-    const group = (await upsertChat(db, { id: "group-1", tenantId: T, conversationType: "groupChat", name: "IT room" })).id;
-    const personal = (await upsertChat(db, { id: "personal-1", tenantId: T, conversationType: "personal" })).id;
-    expect((await post("Ann", { retentionDays: "30", reflectionMode: "propose", reflectionHour: "7" })).status).toBe(303);
-    expect(await getTenantSettings(db, T)).toMatchObject({ reflectionMode: "propose", reflectionChatId: null, reflectionHour: 7 });
-    expect((await post("Ann", { retentionDays: "30", reflectionMode: "auto", reflectionHour: "7" })).status).toBe(400);
-    expect((await post("Ann", { retentionDays: "30", reflectionMode: "auto", reflectionChatId: personal, reflectionHour: "7" })).status).toBe(400);
-    expect((await post("Ann", { retentionDays: "30", reflectionMode: "auto", reflectionChatId: group, reflectionHour: "7" })).status).toBe(303);
-    expect(await getTenantSettings(db, T)).toMatchObject({ reflectionMode: "auto", reflectionChatId: group, reflectionHour: 7 });
-    expect((await post("Ann", { retentionDays: "30", reflectionMode: "auto", reflectionChatId: group, reflectionHour: "25" })).status).toBe(400);
-    expect((await post("Ann", { retentionDays: "30", reflectionMode: "nope", reflectionChatId: group, reflectionHour: "7" })).status).toBe(400);
-    expect((await post("Ann", { retentionDays: "30", reflectionMode: "off", reflectionChatId: "", reflectionHour: "7" })).status).toBe(303);
-    expect(await getTenantSettings(db, T)).toMatchObject({ reflectionMode: "off", reflectionChatId: null, reflectionHour: 7 });
   });
 
   it("a head gets 403", async () => {

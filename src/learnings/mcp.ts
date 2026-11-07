@@ -1,7 +1,10 @@
+import { eq } from "drizzle-orm";
 import { createSdkMcpServer, tool } from "../engine/mcp.js";
 import type { McpServerHandle } from "../engine/mcp.js";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
+import { departmentMembers } from "../db/schema.js";
+import { rememberMemory, searchMemory, touchMemory } from "../memory/store.js";
 import { DirectoryError } from "../org/directory.js";
 import { addLearning, deleteLearning, listLearnings, updateLearning } from "./store.js";
 
@@ -32,6 +35,42 @@ export function learningsMcpServer(deps: { db: Db }, ctx: Ctx, personal: boolean
           try {
             const l = await addLearning(deps.db, ctx.tenantId, { definitionId: ctx.definitionId, text, taughtByPersonId: ctx.personId, chatId: ctx.chatId, ownerPersonId: owner() });
             return ok(`Saved as ${l.id}`);
+          } catch (e) {
+            return fail(e);
+          }
+        },
+      ),
+      tool(
+        "remember",
+        "Save a detailed fact, procedure or preference to long-term memory. It is retrieved when relevant, so it does not crowd every message. Use `learn` only for a short rule that must always apply.",
+        { text: z.string(), kind: z.enum(["fact", "rule", "procedure", "preference"]).optional(), importance: z.number().int().min(1).max(5).optional() },
+        async ({ text, kind, importance }) => {
+          try {
+            const m = await rememberMemory(deps.db, { tenantId: ctx.tenantId, definitionId: ctx.definitionId, ownerPersonId: owner(), text, kind, importance, source: "taught" });
+            return ok(`Remembered as ${m.id}`);
+          } catch (e) {
+            return fail(e);
+          }
+        },
+      ),
+      tool(
+        "recall",
+        "Search long-term memory for facts, procedures or preferences relevant to a question. Use it when you need something you were not given automatically.",
+        { query: z.string(), limit: z.number().int().min(1).max(20).optional() },
+        async ({ query, limit }) => {
+          try {
+            const departments = (
+              await deps.db.select({ id: departmentMembers.departmentId }).from(departmentMembers).where(eq(departmentMembers.personId, ctx.personId))
+            ).map((r) => r.id);
+            const rows = await searchMemory(
+              deps.db,
+              { tenantId: ctx.tenantId, definitionId: ctx.definitionId, ownerPersonId: owner(), departmentIds: departments, chatId: ctx.chatId },
+              query,
+              limit ?? 10,
+            );
+            if (!rows.length) return ok("Nothing relevant in long-term memory.");
+            await touchMemory(deps.db, rows.map((r) => r.id));
+            return ok(rows.map((r) => `${r.id} | ${r.kind} | importance ${r.importance} | ${r.text}`).join("\n"));
           } catch (e) {
             return fail(e);
           }

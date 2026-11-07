@@ -189,6 +189,21 @@ export async function updateDefinitionFields(
   await db.update(botDefinitions).set({ ...rest, ...(displayName === undefined ? {} : { displayName: displayName.trim() || null }), updatedAt: new Date() }).where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)));
 }
 
+/** Per-bot daily reflection; the group is checked against the bot's chats by the admin route. */
+export async function setReflectionSettings(
+  db: Db,
+  tenantId: string,
+  id: string,
+  f: { mode: "off" | "propose" | "auto"; chatId: string | null; hour: number },
+): Promise<void> {
+  const [row] = await db
+    .update(botDefinitions)
+    .set({ reflectionMode: f.mode, reflectionChatId: f.chatId, reflectionHour: f.hour, updatedAt: new Date() })
+    .where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, tenantId)))
+    .returning({ id: botDefinitions.id });
+  if (!row) throw new DirectoryError("Bot not found");
+}
+
 /** Saves a Personal assistant's Microsoft 365 capabilities; unknown names are dropped and identity is never touched. */
 export async function setGraph(db: Db, tenantId: string, id: string, graph: string[]): Promise<void> {
   const rows = await db

@@ -6,6 +6,7 @@ import type { EngineMessage } from "../engine/engine.js";
 import { createSdkMcpServer, tool } from "../engine/mcp.js";
 import type { McpServerHandle } from "../engine/mcp.js";
 import { listLearnings } from "../learnings/store.js";
+import { deleteMemory, getMemory, rememberMemory, searchMemory, updateMemory } from "../memory/store.js";
 import { DirectoryError } from "../org/directory.js";
 import { applyLearningAction, createProposal, dayInZone } from "./store.js";
 import type { LearningAction, ReflectionMode } from "./store.js";
@@ -91,6 +92,12 @@ export function reflectionMcpServer(deps: { db: Db }, ctx: ReflectionCtx): McpSe
       personId: ctx.authorPersonId,
     });
     return "Applied.";
+  };
+
+  const ownedMemory = async (id: string) => {
+    const row = await getMemory(deps.db, ctx.tenantId, ctx.definitionId, id);
+    if (!row || (owner ? row.ownerPersonId !== owner : row.ownerPersonId !== null)) throw new DirectoryError("No such memory");
+    return row;
   };
 
   const tools = [
@@ -180,6 +187,50 @@ export function reflectionMcpServer(deps: { db: Db }, ctx: ReflectionCtx): McpSe
       try {
         const rows = await visible();
         return ok(rows.length ? rows.map((l) => `${l.id} | ${l.text}`).join("\n") : "Nothing learnt yet.");
+      } catch (e) {
+        return fail(e);
+      }
+    }),
+    tool(
+      "memory",
+      "Search the bot's long-term memory for facts, procedures and preferences, with ids. Omit the query to see the most important items.",
+      { query: z.string().optional(), limit: z.number().int().min(1).max(30).optional() },
+      async ({ query, limit }) => {
+        try {
+          const rows = await searchMemory(deps.db, { tenantId: ctx.tenantId, definitionId: ctx.definitionId, ownerPersonId: owner }, query ?? "", limit ?? 20);
+          return ok(rows.length ? rows.map((m) => `${m.id} | ${m.kind} | importance ${m.importance} | ${m.text}`).join("\n") : "No long-term memory yet.");
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    ),
+    tool(
+      "remember",
+      "Save a detailed fact, procedure or preference to the long-term memory. It is retrieved when relevant, not every turn. Use `learn` only for a short rule that must always apply.",
+      { text: z.string(), kind: z.enum(["fact", "rule", "procedure", "preference"]).optional(), importance: z.number().int().min(1).max(5).optional() },
+      async ({ text, kind, importance }) => {
+        try {
+          const m = await rememberMemory(deps.db, { tenantId: ctx.tenantId, definitionId: ctx.definitionId, ownerPersonId: owner, text, kind, importance, source: "reflection" });
+          return ok(`Remembered as ${m.id}`);
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    ),
+    tool("update_memory", "Reword a long-term memory, by an id `memory` lists, when it was wrong or incomplete.", { id: z.string(), text: z.string() }, async ({ id, text }) => {
+      try {
+        await ownedMemory(id);
+        await updateMemory(deps.db, ctx.tenantId, ctx.definitionId, id, { text });
+        return ok("Updated.");
+      } catch (e) {
+        return fail(e);
+      }
+    }),
+    tool("forget_memory", "Remove a long-term memory, by an id `memory` lists, when it is wrong or no longer applies.", { id: z.string() }, async ({ id }) => {
+      try {
+        await ownedMemory(id);
+        await deleteMemory(deps.db, ctx.tenantId, ctx.definitionId, id);
+        return ok("Forgotten.");
       } catch (e) {
         return fail(e);
       }

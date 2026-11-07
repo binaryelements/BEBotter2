@@ -43,11 +43,11 @@ async function hasActivity(db: Db, tenantId: string, definitionId: string, day: 
 export async function runReflectionTick(deps: ReflectionSchedulerDeps, at = (deps.now ?? (() => new Date()))()): Promise<void> {
   for (const t of await deps.db.select({ id: tenants.id }).from(tenants)) {
     const settings = await getTenantSettings(deps.db, t.id);
-    if (settings.reflectionMode !== "propose" && settings.reflectionMode !== "auto") continue;
-    if (hourInZone(at, settings.timezone) !== settings.reflectionHour) continue;
-    const mode = settings.reflectionMode === "auto" ? "auto" : "propose";
     const day = dayInZone(at, settings.timezone);
     for (const definition of await listDefinitions(deps.db, t.id)) {
+      if (definition.reflectionMode !== "propose" && definition.reflectionMode !== "auto") continue;
+      if (hourInZone(at, settings.timezone) !== definition.reflectionHour) continue;
+      const mode = definition.reflectionMode === "auto" ? "auto" : "propose";
       if (definition.identity === "person") {
         for (const owner of await ownersWithActivity(deps.db, t.id, definition.id, day, settings.timezone, at)) {
           if (await getReflection(deps.db, reflectionKey(t.id, definition.id, owner, day))) continue;
@@ -58,7 +58,7 @@ export async function runReflectionTick(deps: ReflectionSchedulerDeps, at = (dep
             day,
             timeZone: settings.timezone,
             mode,
-            defaultChatId: settings.reflectionChatId,
+            defaultChatId: definition.reflectionChatId,
             now: at,
           }).catch((err) => console.error(`reflection ${definition.id}/${owner} failed`, err));
         }
@@ -73,7 +73,7 @@ export async function runReflectionTick(deps: ReflectionSchedulerDeps, at = (dep
         day,
         timeZone: settings.timezone,
         mode,
-        defaultChatId: settings.reflectionChatId,
+        defaultChatId: definition.reflectionChatId,
         now: at,
       }).catch((err) => console.error(`reflection ${definition.id} failed`, err));
     }

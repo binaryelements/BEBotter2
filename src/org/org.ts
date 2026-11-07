@@ -69,12 +69,6 @@ export type TenantSettings = {
   timezone: string;
   location: string | null;
   country: string | null;
-  /** off | propose | auto: the daily self-reflection. */
-  reflectionMode: string;
-  /** The group chat an auto reflection posts to. */
-  reflectionChatId: string | null;
-  /** Local hour (0-23) in the tenant zone. */
-  reflectionHour: number;
 };
 
 export async function getTenantSettings(db: Db, tenantId: string): Promise<TenantSettings> {
@@ -86,13 +80,10 @@ export async function getTenantSettings(db: Db, tenantId: string): Promise<Tenan
       timezone: tenants.timezone,
       location: tenants.location,
       country: tenants.country,
-      reflectionMode: tenants.reflectionMode,
-      reflectionChatId: tenants.reflectionChatId,
-      reflectionHour: tenants.reflectionHour,
     })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
-  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null, reflectionMode: "off", reflectionChatId: null, reflectionHour: 18 };
+  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null };
 }
 
 export async function setTenantSettings(db: Db, tenantId: string, settings: TenantSettings): Promise<void> {

@@ -1,4 +1,5 @@
 import { boolean, customType, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { EngineMessage } from "../engine/engine.js";
 
 export type McpServerRecord = {
@@ -36,12 +37,6 @@ export const tenants = pgTable("tenants", {
   timezone: text("timezone").notNull().default("UTC"),
   location: text("location"),
   country: text("country"),
-  /** Daily self-reflection: off, propose learnings for approval, or apply them and post to the default group. */
-  reflectionMode: text("reflection_mode").notNull().default("off"), // off | propose | auto
-  /** The group chat an auto reflection posts to; validated against the tenant's chats when saved. */
-  reflectionChatId: text("reflection_chat_id"),
-  /** Local hour (0-23) in the tenant zone when the daily reflection runs. */
-  reflectionHour: integer("reflection_hour").notNull().default(18),
   createdAt: createdAt(),
 });
 
@@ -126,6 +121,12 @@ export const botDefinitions = pgTable(
     identity: text("identity").$type<"service" | "person">().notNull().default("service"), // person: acts as whoever is talking, through Graph
     graph: jsonb("graph").$type<GraphCapability[]>().notNull().default([]),
     mcpServers: jsonb("mcp_servers").$type<McpServerRecord[]>().notNull(),
+    /** Daily self-reflection for this bot: off, propose learnings for approval, or apply them and post to its group. */
+    reflectionMode: text("reflection_mode").notNull().default("off"), // off | propose | auto
+    /** The group chat this bot's auto reflection posts to; it must be one of the bot's chats. */
+    reflectionChatId: text("reflection_chat_id"),
+    /** Local hour (0-23) in the tenant zone when this bot's reflection runs. */
+    reflectionHour: integer("reflection_hour").notNull().default(18),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -398,6 +399,44 @@ export const learningProposals = pgTable("learning_proposals", {
 
 export type Reflection = typeof reflections.$inferSelect;
 export type LearningProposal = typeof learningProposals.$inferSelect;
+
+/**
+ * The long tail of what a bot has learnt. Unlike `learnings` (the small always-on core), these are never all
+ * injected: the turn retrieves the few relevant to the message, and the bot can search them with `recall`.
+ */
+export const memoryItems = pgTable(
+  "memory_items",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    /** set when the memory belongs to one person (a Personal assistant's owner). */
+    ownerPersonId: text("owner_person_id").references(() => people.id),
+    /** set when the memory is only for one department; null means everyone. */
+    departmentId: text("department_id").references(() => departments.id),
+    /** set when the memory is only for one chat; null means every chat. */
+    chatId: text("chat_id").references(() => chats.id),
+    text: text("text").notNull(),
+    kind: text("kind").notNull().default("fact"), // fact | rule | procedure | preference
+    importance: integer("importance").notNull().default(3), // 1-5
+    confidence: numeric("confidence", { precision: 4, scale: 2 }).notNull().default("0.70"),
+    source: text("source").notNull().default("taught"), // taught | reflection | runbook
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    useCount: integer("use_count").notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("memory_items_bot_idx").on(t.tenantId, t.definitionId, t.importance, t.lastUsedAt),
+    index("memory_items_owner_idx").on(t.ownerPersonId),
+    index("memory_items_department_idx").on(t.departmentId),
+    index("memory_items_chat_idx").on(t.chatId),
+    index("memory_items_search_idx").using("gin", sql`to_tsvector('english', ${t.text})`),
+  ],
+);
+
+export type MemoryItem = typeof memoryItems.$inferSelect;
 export type Tenant = typeof tenants.$inferSelect;
 export type Person = typeof people.$inferSelect;
 export type Department = typeof departments.$inferSelect;

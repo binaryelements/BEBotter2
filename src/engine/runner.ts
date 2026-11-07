@@ -17,8 +17,9 @@ import { routineMcpServer } from "../routines/mcp.js";
 import { attachmentsMcpServer, chatAttachment } from "../teams/attachments.js";
 import { learningsMcpServer } from "../learnings/mcp.js";
 import { learningsNote, listLearnings } from "../learnings/store.js";
+import { memoryNote, searchMemory, touchMemory } from "../memory/store.js";
 import type { Db } from "../db/client.js";
-import { chats, mailboxes, sessions } from "../db/schema.js";
+import { chats, departmentMembers, mailboxes, sessions } from "../db/schema.js";
 import { getTenantSettings } from "../org/org.js";
 import type { TenantSettings } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
@@ -268,6 +269,13 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const key = `${chatId}:${definition.id}`;
   const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine, key);
   const { conn } = setup;
+  // the long tail of memory: only the few relevant to this message are put in the prompt, never the whole table
+  const personal = definition.identity === "person";
+  const owner = personal ? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null) : null;
+  const departments = (await db.select({ id: departmentMembers.departmentId }).from(departmentMembers).where(eq(departmentMembers.personId, person.id))).map((r) => r.id);
+  const remembered = await searchMemory(db, { tenantId, definitionId: definition.id, ownerPersonId: owner, departmentIds: departments, chatId }, turn.text, 12);
+  if (remembered.length) await touchMemory(db, remembered.map((r) => r.id));
+  const memoryText = memoryNote(remembered);
 
   // tool use id → audit row of a call that was allowed and has not finished yet
   const inFlight = new Map<string, string>();
@@ -403,8 +411,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const runEngine = (): Promise<EngineResult> => {
     const history: EngineMessage[] = [...(session?.messages ?? []), { role: "user", text: prompt }];
     const systemPrompt = session?.summary
-      ? `${setup.processOptions.systemPrompt}\n\nEarlier in this conversation:\n${session.summary}`
-      : setup.processOptions.systemPrompt;
+      ? `${setup.processOptions.systemPrompt}\n\nEarlier in this conversation:\n${session.summary}${memoryText}`
+      : `${setup.processOptions.systemPrompt}${memoryText}`;
     const input: EngineRunInput = {
       ...setup.processOptions,
       systemPrompt,

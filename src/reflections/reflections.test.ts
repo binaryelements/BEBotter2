@@ -1,14 +1,15 @@
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { completeAction, beginAction } from "../audit/audit.js";
-import { upsertDefinition } from "../bots/definitions.js";
+import { upsertDefinition, setReflectionSettings } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import type { Engine } from "../engine/engine.js";
 import { addLearning, listLearnings } from "../learnings/store.js";
+import { listAllMemory } from "../memory/store.js";
 import { setRole } from "../org/directory.js";
-import { recordChatOwner, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { recordChatOwner, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { runReflection } from "./run.js";
 import { runReflectionTick } from "./scheduler.js";
 import { applyLearningAction, createProposal, dayInZone, decideProposal, hourInZone, listProposals, listReflections, reflectionKey, saveReflection } from "./store.js";
@@ -137,6 +138,9 @@ describe("reflection runner", () => {
       const learnings = await input.callTool("mcp__reflection__learnings", {});
       expect(learnings.text).toBeDefined();
       await input.callTool("mcp__reflection__learn", { text: "Check the SBC before the trunk" });
+      await input.callTool("mcp__reflection__remember", { text: "BE Voice: check the SIP trunk first", kind: "procedure", importance: 4 });
+      const memory = await input.callTool("mcp__reflection__memory", { query: "SIP trunk" });
+      expect(memory.text).toContain("SIP trunk first");
       if (mode === "auto") {
         await input.callTool("mcp__reflection__post", { text: "I learnt to check the SBC first. I will do that before escalating." });
         seen.posts.push("posted");
@@ -160,6 +164,7 @@ describe("reflection runner", () => {
     const proposals = await listProposals(db, T, botId, "pending");
     expect(proposals.map((p) => p.text)).toContain("Check the SBC before the trunk");
     expect(await listLearnings(db, T, botId)).toEqual([]);
+    expect((await listAllMemory(db, T, botId)).map((m) => m.text)).toContain("BE Voice: check the SIP trunk first");
     expect(seen.posts).toEqual([]);
     expect(seen.tools).toContain("mcp__reflection__learn");
     expect(seen.tools).not.toContain("mcp__reflection__post");
@@ -197,10 +202,7 @@ describe("reflection runner", () => {
 
   it("the scheduler reflects once at the chosen hour and does not repeat", async () => {
     await seed();
-    await setTenantSettings(db, T, {
-      botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null,
-      reflectionMode: "propose", reflectionChatId: null, reflectionHour: 18,
-    });
+    await setReflectionSettings(db, T, botId, { mode: "propose", chatId: null, hour: 18 });
     const before = await beginAction(db, { tenantId: T, chatId, definitionId: botId, personId: admin, kind: "message", summary: "Review me", model: MODEL, startedAt: new Date("2026-11-07T10:00:00Z") });
     await completeAction(db, before, { status: "done" });
     const engine: Engine = {

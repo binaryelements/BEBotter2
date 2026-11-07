@@ -12,6 +12,7 @@ import { fakeSsh } from "../connections/ssh.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
 import { addLearning, listLearnings } from "../learnings/store.js";
 import { createProposal, listProposals, saveReflection } from "../reflections/store.js";
+import { listAllMemory } from "../memory/store.js";
 import { eq } from "drizzle-orm";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { MailError } from "../mail/agentmail.js";
@@ -350,14 +351,43 @@ describe("bots screen", () => {
       expect((await listLearnings(db, T, d.id)).map((l) => l.text)).not.toContain("Never do this");
       expect((await listProposals(db, T, d.id, "rejected")).map((p) => p.id)).toContain(reject.id);
     });
-    it("the reflections tab shows the daily summaries", async () => {
+    it("the memory tab lists, adds, rewrites and deletes long-term memory", async () => {
       const d = await def("helper");
+      const page = await (await get(`/admin/bots/${d.id}?tab=memory`, "Ann")).text();
+      expect(page).toContain("Long-term memory");
+      expect((await post(`/admin/bots/${d.id}/memory`, "Hal", [["text", "x"]])).status).toBe(403);
+      await post(`/admin/bots/${d.id}/memory`, "Ann", [["text", "BE Voice: check the SIP trunk first"], ["kind", "procedure"], ["importance", "5"]]);
+      const [m] = await listAllMemory(db, T, d.id);
+      expect(m).toMatchObject({ text: "BE Voice: check the SIP trunk first", kind: "procedure", importance: 5 });
+      await post(`/admin/bots/${d.id}/memory/${m.id}`, "Ann", [["text", "Check the SIP trunk first, then the SBC"]]);
+      expect((await listAllMemory(db, T, d.id))[0].text).toBe("Check the SIP trunk first, then the SBC");
+      expect(await (await post(`/admin/bots/${d.id}/memory/${m.id}/delete`, "Ann", [])).text()).toContain("confirm delete?");
+      expect(await listAllMemory(db, T, d.id)).toHaveLength(1);
+      await post(`/admin/bots/${d.id}/memory/${m.id}/delete`, "Ann", [["confirm", "yes"]]);
+      expect(await listAllMemory(db, T, d.id)).toHaveLength(0);
+    });
+    it("the reflections tab shows the daily summaries and saves the per-bot setting", async () => {
+      const d = await def("helper");
+      const group = "chat-reflect";
+      await db.insert(chats).values({ id: group, tenantId: T, conversationType: "groupChat", label: "IT room" } as typeof chats.$inferInsert);
+      await db.insert(chatAssignments).values({ chatId: group, definitionId: d.id } as typeof chatAssignments.$inferInsert);
       await saveReflection(db, { tenantId: T, definitionId: d.id, day: "2026-11-07", summary: "A quiet day with one Voice issue.", wentWrong: "Restarted the SBC.", willDo: "Check the trunk first.", model: "deepseek/deepseek-flash", costUsd: 0.001 });
       const page = await (await get(`/admin/bots/${d.id}?tab=reflections`, "Ann")).text();
-      expect(page).toContain("Daily reflections");
+      expect(page).toContain("Daily reflection");
       expect(page).toContain("A quiet day with one Voice issue.");
       expect(page).toContain("Restarted the SBC.");
       expect(page).toContain("Check the trunk first.");
+      expect(page).toContain('name="reflectionMode"');
+      // auto mode needs a group
+      expect((await post(`/admin/bots/${d.id}/reflection`, "Ann", [["reflectionMode", "auto"], ["reflectionHour", "7"]])).status).toBe(400);
+      // the group must be one of this bot's chats
+      expect((await post(`/admin/bots/${d.id}/reflection`, "Ann", [["reflectionMode", "auto"], ["reflectionChatId", "nope"], ["reflectionHour", "7"]])).status).toBe(400);
+      expect((await post(`/admin/bots/${d.id}/reflection`, "Ann", [["reflectionMode", "auto"], ["reflectionChatId", group], ["reflectionHour", "7"]])).status).toBe(303);
+      let saved = await getDefinition(db, T, d.id);
+      expect(saved?.reflectionMode).toBe("auto");
+      expect(saved?.reflectionChatId).toBe(group);
+      expect(saved?.reflectionHour).toBe(7);
+      expect((await post(`/admin/bots/${d.id}/reflection`, "Hal", [["reflectionMode", "off"], ["reflectionHour", "7"]])).status).toBe(403);
     });
     it("lists what is waiting or repeating, and folds one-offs that already ran away", async () => {
       const d = await def("helper");
