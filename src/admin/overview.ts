@@ -155,7 +155,7 @@ ${waiting.map((r) => html`<div class="be-notice warn"><span><b>${name.get(r.defi
 </div>
 <section class="be-section"><h3>Last messages <a href="/admin/activity">all activity</a></h3>${
         last.length
-          ? scroll(html`<table class="be-table"><tbody>${last.map((r) => {
+          ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Who</th><th>What</th><th>Status</th></tr></thead><tbody>${last.map((r) => {
               const d = bot.get(r.definitionId);
               const who = html`${r.personId ? (personName.get(r.personId) ?? "") : "routine"} → <b>${name.get(r.definitionId) ?? ""}</b><div class="be-mono muted">${d?.identity === "person" ? "own chat · private" : (r.chatId && chatName.get(r.chatId)) || ""}</div>`;
               return html`<tr><td class="be-mono muted">${stamp(r.startedAt)}</td><td>${who}</td><td>${d?.identity === "person" ? html`<span class="muted">1 reply</span>` : r.summary}</td><td>${r.status === "done" ? "" : chip(r.status)}</td></tr>`;

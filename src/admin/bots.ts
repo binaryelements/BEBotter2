@@ -6,7 +6,7 @@ import {
   addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setGraph, setPersona,
   setReflectionSettings, updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray, max } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
 import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setDescription, setLinked } from "../connections/store.js";
@@ -22,7 +22,7 @@ import type { ToolRule } from "../engine/gate.js";
 import { knownTools, recordTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
 import { decrypt } from "../secrets/cipher.js";
 import { beginAction, completeAction } from "../audit/audit.js";
-import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, connections, definitionConnections, mailboxes, people } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, auditEvents, botDefinitions, chatAssignments, chats, connections, definitionConnections, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
 import { ensureMailbox, MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
 import type { MailDeps } from "../mail/mailboxes.js";
@@ -38,7 +38,7 @@ import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 import { armedPage, isArmed } from "./arm.js";
-import { botsTable, visibleBots } from "./overview.js";
+import { visibleBots } from "./overview.js";
 import { chatNames } from "./chat-names.js";
 import { capabilityWords, chatTypeWords, cronWords, whenFor, whenIn } from "./words.js";
 import { toolWords } from "../teams/cards.js";
@@ -53,6 +53,38 @@ const many = (req: Request, name: string) => {
 };
 const list = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
+
+/** The bots list as cards: who they are, what they can use, and the two things an admin does next. */
+async function botsGrid(db: Db, tenantId: string, defs: BotDefinition[], add?: SafeHtml): Promise<SafeHtml> {
+  if (!defs.length && !add) return html`<div class="be-empty"><b>No bots yet</b>Add a teammate to get started.</div>`;
+  const when = await whenFor(db, tenantId);
+  const ids = defs.map((d) => d.id);
+  const [boxes, last, chatCounts, personal] = await Promise.all([
+    db.select({ id: mailboxes.definitionId, address: mailboxes.address }).from(mailboxes).where(and(eq(mailboxes.tenantId, tenantId), inArray(mailboxes.definitionId, ids))),
+    db.select({ id: auditEvents.definitionId, at: max(auditEvents.startedAt) }).from(auditEvents).where(and(eq(auditEvents.tenantId, tenantId), inArray(auditEvents.definitionId, ids))).groupBy(auditEvents.definitionId),
+    db.select({ id: chatAssignments.definitionId, n: count() }).from(chatAssignments).where(inArray(chatAssignments.definitionId, ids)).groupBy(chatAssignments.definitionId),
+    db.select({ on: count() }).from(people).where(and(eq(people.tenantId, tenantId), eq(people.personalBot, true))),
+  ]);
+  const personalOn = Number(personal[0]?.on ?? 0);
+  const address = new Map(boxes.map((b) => [b.id, b.address]));
+  const active = new Map(last.map((l) => [l.id, l.at]));
+  const chats = new Map(chatCounts.map((c) => [c.id, Number(c.n)]));
+  const initials = (d: BotDefinition) => (d.displayName ?? d.name).split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  const hue = (d: BotDefinition) => [...d.id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+  return html`<div class="bot-grid">${defs.map((d) => {
+    const n = chats.get(d.id) ?? 0;
+    const persona = d.persona.replace(/\s+/g, " ").trim();
+    const short = persona.length > 150 ? `${persona.slice(0, 147).trimEnd()}…` : persona;
+    const tools = [d.webSearch ? "web search" : "", d.computer ? "computer" : "", d.mcpServers.length ? `${d.mcpServers.length} connection${d.mcpServers.length === 1 ? "" : "s"}` : "", address.get(d.id) ? "mail" : ""].filter(Boolean);
+    const h = hue(d);
+    return html`<section class="be-card bot-card">
+<div class="bot-head"><div class="bot-avatar" style="background:hsl(${h} 45% 22%);color:hsl(${h} 80% 85%)">${initials(d)}</div><div class="bot-title"><div class="bot-name">${d.displayName ?? d.name}</div><div class="bot-role">${d.label}</div></div><span class="be-chip ${d.identity === "person" ? "c" : "g"}">${d.identity === "person" ? "personal" : "active"}</span></div>
+<p class="bot-desc">${short}</p>
+<div class="bot-chips"><span class="be-chip c">${d.model}</span><span class="be-chip">${n} ${n === 1 ? "chat" : "chats"}</span>${d.identity === "person" ? html`<span class="be-chip">${personalOn} on</span>` : ""}${tools.map((t) => html`<span class="be-chip">${t}</span>`)}</div>
+<div class="bot-foot"><span class="muted">${active.get(d.id) ? `Last active ${when(active.get(d.id))}` : "Never used"}</span><a class="be-btn sm" href="/admin/bots/${d.id}/try">Try it</a><a class="be-btn sm primary" href="/admin/bots/${d.id}">Open</a></div>
+</section>`;
+  })}${add ?? ""}</div>`;
+}
 
 export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string; defaultModel: string; models?: string[]; onSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner }): Router {
   const { db, secretsKey, defaultModel, onSaved, mail } = deps;
@@ -269,8 +301,8 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
       render(
         res,
         "Bots",
-        html`<header class="be-pagehead"><div class="pt"><h1>Bots</h1></div></header>
-${await botsTable(db, actor.tenantId, defs)}${
+        html`<header class="be-pagehead"><div class="pt"><h1>Bots</h1><p class="meta">The teammates your people can talk to in Teams. Each has its own persona, model, tools and memory.</p></div>${admin ? html`<div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;">New bot</a></div>` : ""}</header>
+${await botsGrid(db, actor.tenantId, defs, admin ? html`<a class="be-card bot-card bot-add" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;"><div class="bot-add-icon">+</div><b>Add a teammate</b><p>Start from a template: IT support, finance, HR or a personal assistant.</p><span class="be-btn primary sm">New bot</span></a>` : undefined)}${
           admin
             ? html`<details class="be-section" id="add"${t ? html` open` : ""}><summary class="be-btn">add bot…</summary>
 <p class="muted">start from a template: ${PERSONA_TEMPLATES.map((p, i) => html`${i ? " · " : ""}<a href="/admin/bots?template=${p.id}#add">${p.title}</a>`)}</p>
