@@ -179,6 +179,13 @@ const FILE_SCRIPT = `<script>(function(){
   });
 })()</script>`;
 
+const REVIEW_SCRIPT = `<script>(function(){
+  var f=document.getElementById("rb-review"); if(!f) return;
+  f.addEventListener("submit",function(){
+    var b=f.querySelector("button"); if(b){ b.disabled=true; b.textContent="reviewing…"; }
+  });
+})()</script>`;
+
 export type RunbookDeps = { db: Db; key: Buffer; defaultModel: string; models?: string[]; engine?: Engine };
 
 export function runbookRoutes(deps: RunbookDeps): Router {
@@ -253,7 +260,7 @@ ${isAdmin(actor)
           body: html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/runbooks">runbooks</a> / <span aria-current="page">${path}</span></nav><h1>${path}</h1><p class="meta">version ${note.version}</p></div></header>
 <section class="be-card"><h2>What the model reads</h2><pre>${note.body}</pre></section>
 ${isAdmin(actor)
-  ? html`<section class="be-card"><h2>Ask the model to review it</h2><p class="be-muted">The model gets the runbook and nothing else. It reports what it understood, what is missing, and test cases.</p><form method="post" action="/admin/runbooks/review"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="path" value="${path}"><div class="fields"><label>model<select class="be-select" name="model">${models().map((m) => html`<option value="${m}" ${m === model ? "selected" : ""}>${m}</option>`)}</select></label></div><p><button class="be-btn primary">review with AI</button></p></form></section>`
+  ? html`<section class="be-card"><h2>Ask the model to review it</h2><p class="be-muted">The model gets the runbook and nothing else. It reports what it understood, what is missing, and test cases.</p><form id="rb-review" method="post" action="/admin/runbooks/review"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="path" value="${path}"><div class="fields"><label>model<select class="be-select" name="model">${models().map((m) => html`<option value="${m}" ${m === model ? "selected" : ""}>${m}</option>`)}</select></label></div><p><button class="be-btn primary">review with AI</button></p></form></section>${raw(REVIEW_SCRIPT)}`
   : html`<div class="be-notice"><span>Only an admin can run the review.</span></div>`}
 ${isAdmin(actor) && bots.length
   ? html`<section class="be-card"><h2>Test it</h2><p class="be-muted">Open a bot's test chat with a first message already filled in.</p><form class="row" method="get" action="/admin/runbooks/test"><select class="be-select" name="bot">${botOptions(bots)}</select> <input class="be-input" name="prompt" placeholder="I can't access BE Voice" aria-label="First message"> <button class="be-btn">open test chat</button></form></section>`
