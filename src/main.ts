@@ -13,6 +13,7 @@ import { tenants } from "./db/schema.js";
 import { Confirmations } from "./engine/confirm.js";
 import { McpPool } from "./engine/mcp-pool.js";
 import { OpenAICompatEngine } from "./engine/openai.js";
+import { modelSlugs } from "./engine/providers.js";
 import { systemSsh } from "./connections/ssh.js";
 import { agentMailAdmin } from "./mail/agentmail.js";
 import { mountMailInbound } from "./mail/inbound.js";
@@ -31,6 +32,8 @@ for (const t of await db.select({ id: tenants.id }).from(tenants)) {
 }
 const confirmations = new Confirmations();
 const engine = new OpenAICompatEngine({ providers: config.providers });
+// only models whose provider has a key, so the runbook review never offers a model that cannot answer
+const models = modelSlugs().filter((slug) => !!config.providers[slug.slice(0, slug.indexOf("/"))]?.apiKey);
 // stdio MCP clients (the browser, the files server) stay warm between turns; the browser is keyed per chat
 const mcpPool = new McpPool({ idleMs: 10 * 60_000, max: 20 });
 const runnerDeps: RunnerDeps = {
@@ -71,7 +74,7 @@ startServer(app, {
       });
       next();
     });
-    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, fetchUsers, mail, runTurn: turn, confirmations,
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations,
       // never fails or delays the save; a missed attempt is retried on the next save or start
       onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
     }));

@@ -57,6 +57,7 @@ export function tryRoutes(deps: TryDeps): Router {
       const { actor, csrf } = adminOf(res);
       if (!isAdmin(actor)) return page(res, 403, "Not allowed.");
       const { def, everyone, person, may } = await load(res, req.params.id, typeof req.query.as === "string" ? req.query.as : "");
+      const prompt = typeof req.query.prompt === "string" ? req.query.prompt.slice(0, MAX_TEXT) : "";
       const chatId = tryChatId(def.id, person.id);
       const earlier = await db
         .select({ summary: auditEvents.summary, startedAt: auditEvents.startedAt, status: auditEvents.status })
@@ -77,7 +78,7 @@ ${
           earlier.length
             ? html`<section class="try-earlier"><h2>earlier replies to ${person.name}</h2>${earlier.reverse().map((e) => html`<p><span class="be-muted">${when(e.startedAt)}</span> ${e.summary}${e.status !== "done" ? html` <span class="be-chip b">${e.status}</span>` : ""}</p>`)}<form method="post" action="/admin/bots/${def.id}/try/reset"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="as" value="${person.id}"><button class="be-btn sm">forget this chat</button></form></section>`
             : ""
-        }<form class="be-form try-send" method="post" action="/admin/bots/${def.id}/try"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="as" value="${person.id}"><div class="fields"><label>message <textarea class="be-input" name="text" rows="4" required maxlength="${MAX_TEXT}" placeholder="what ${person.name} would type in Teams"></textarea></label></div><button class="be-btn primary">send</button></form>`
+        }<form class="be-form try-send" method="post" action="/admin/bots/${def.id}/try"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="as" value="${person.id}"><div class="fields"><label>message <textarea class="be-input" name="text" rows="4" required maxlength="${MAX_TEXT}" placeholder="what ${person.name} would type in Teams">${prompt}</textarea></label></div><button class="be-btn primary">send</button></form>`
 }`;
       res.type("html").send(layout({ title: `Try ${name}`, body, actor, csrf }));
     }),
