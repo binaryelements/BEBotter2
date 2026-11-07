@@ -499,7 +499,7 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
           const day = await whenFor(db, actor.tenantId);
           // each row is its own form, so an admin rewords one teaching in place
           const row = (l: (typeof rows)[number]) => html`<tr><td><form method="post" action="/admin/bots/${def.id}/learnings/${l.id}">${csrf}<textarea name="text" rows="2" required>${l.text}</textarea><button class="be-btn sm">save</button></form></td>
-<td>${personName.get(l.taughtByPersonId) ?? "—"}</td><td>${l.chatId ? (chatLabel.get(l.chatId) ?? l.chatId.slice(-12)) : "admin site"}</td><td>${l.ownerPersonId ? `only ${personName.get(l.ownerPersonId) ?? "one person"}` : "everyone"}</td><td>${day(l.updatedAt)}</td>
+<td>${l.source === "reflection" ? "daily reflection" : (personName.get(l.taughtByPersonId) ?? "—")}</td><td>${l.chatId ? (chatLabel.get(l.chatId) ?? l.chatId.slice(-12)) : "admin site"}</td><td>${l.ownerPersonId ? `only ${personName.get(l.ownerPersonId) ?? "one person"}` : "everyone"}</td><td>${day(l.updatedAt)}</td>
 <td><form method="post" action="/admin/bots/${def.id}/learnings/${l.id}/delete">${csrf}<button class="be-btn sm danger">delete</button></form></td></tr>`;
           const proposal = (p: (typeof proposals)[number]) => {
             const target = p.learningId ? rows.find((l) => l.id === p.learningId) : undefined;
