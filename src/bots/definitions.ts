@@ -1,5 +1,5 @@
 import type { McpServerConfig } from "../engine/mcp.js";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionDepartments, departments, people } from "../db/schema.js";
@@ -74,13 +74,64 @@ export async function ensurePersonalDefinition(db: Db, tenantId: string, default
   return row;
 }
 
+/**
+ * The one Personal assistant a person is allowed to have. The person must be switched on first
+ * (people.personalBot), so an admin controls who gets one. The old tenant-wide "personal" definition
+ * is adopted by the first person who needs one, so its memory and learnings survive the change.
+ */
+export async function ensurePersonalAssistant(db: Db, tenantId: string, personId: string, defaultModel: string): Promise<BotDefinition> {
+  const [person] = await db.select({ on: people.personalBot }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
+  if (!person) throw new DirectoryError("Person not found");
+  if (!person.on) throw new DirectoryError("This person is not allowed a personal assistant");
+  const [mine] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.ownerPersonId, personId)));
+  if (mine) return mine;
+  // adopt the old tenant-wide definition if it has no owner yet
+  const [legacy] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.identity, "person"), isNull(botDefinitions.ownerPersonId))).limit(1);
+  if (legacy) {
+    const [row] = await db.update(botDefinitions).set({ ownerPersonId: personId, updatedAt: new Date() }).where(eq(botDefinitions.id, legacy.id)).returning();
+    return row;
+  }
+  const model = (await getTenantSettings(db, tenantId)).defaultModel ?? defaultModel;
+  const [row] = await db
+    .insert(botDefinitions)
+    .values({
+      id: crypto.randomUUID(),
+      tenantId,
+      name: `pa-${personId}`,
+      label: "My assistant",
+      persona: PERSONAL_PERSONA,
+      model,
+      webSearch: false,
+      computer: false,
+      identity: "person",
+      ownerPersonId: personId,
+      graph: [...GRAPH_CAPABILITIES],
+      mcpServers: [],
+    })
+    .returning();
+  return row;
+}
+
+/** One-time: give the old tenant-wide Personal definition to the person who has it switched on. */
+export async function backfillPersonalAssistants(db: Db, tenantId: string, defaultModel: string): Promise<void> {
+  const [legacy] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.identity, "person"), isNull(botDefinitions.ownerPersonId))).limit(1);
+  if (!legacy) return;
+  const on = await db.select({ id: people.id }).from(people).where(and(eq(people.tenantId, tenantId), eq(people.personalBot, true)));
+  if (!on.length) return;
+  await db.update(botDefinitions).set({ ownerPersonId: on[0].id, updatedAt: new Date() }).where(eq(botDefinitions.id, legacy.id));
+  for (const p of on.slice(1)) await ensurePersonalAssistant(db, tenantId, p.id, defaultModel).catch((e) => {
+    if (!(e instanceof DirectoryError)) throw e;
+  });
+}
+
 /** A Personal assistant works only in its owner's one-to-one chat; the owner is checked once it is recorded. */
 async function checkPersonDefinition(db: Db, chatId: string, definitionId: string): Promise<void> {
-  const [def] = await db.select({ identity: botDefinitions.identity }).from(botDefinitions).where(eq(botDefinitions.id, definitionId));
+  const [def] = await db.select({ identity: botDefinitions.identity, owner: botDefinitions.ownerPersonId }).from(botDefinitions).where(eq(botDefinitions.id, definitionId));
   if (def?.identity !== "person") return;
   // a personal chat with no recorded owner passes until the owner is recorded on the first message
   const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId));
   if (chat?.type !== "personal") throw new DirectoryError("A personal assistant works only in a one-to-one chat");
+  if (chat.owner && def.owner && chat.owner !== def.owner) throw new DirectoryError("This assistant belongs to someone else");
   if (chat.owner) {
     const [p] = await db.select({ on: people.personalBot }).from(people).where(eq(people.id, chat.owner));
     if (!p?.on) throw new DirectoryError("The chat owner has no personal assistant");
@@ -120,12 +171,12 @@ export async function definitionsForChat(db: Db, chatId: string): Promise<BotDef
   return rows.map((r) => r.def);
 }
 
-/** The bots a person may talk to: their Personal assistant first (when switched on), then the others by label. */
+/** The bots a person may talk to: their own Personal assistant first (when switched on), then the others by label. */
 export async function usableDefinitions(db: Db, tenantId: string, personId: string, defaultModel: string): Promise<BotDefinition[]> {
   const [p] = await db.select({ on: people.personalBot }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, tenantId)));
-  if (p?.on) await ensurePersonalDefinition(db, tenantId, defaultModel).catch((e) => {
+  if (p?.on) await ensurePersonalAssistant(db, tenantId, personId, defaultModel).catch((e) => {
       if (!(e instanceof DirectoryError)) throw e;
-      console.error(`personal assistant for tenant ${tenantId}:`, e.message);
+      console.error(`personal assistant for ${personId}:`, e.message);
     });
   const all = await db.select().from(botDefinitions).where(eq(botDefinitions.tenantId, tenantId));
   const usable: BotDefinition[] = [];

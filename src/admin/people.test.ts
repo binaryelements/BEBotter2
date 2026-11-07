@@ -1,6 +1,6 @@
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ensurePersonalDefinition, definitionsForChat, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
+import { ensurePersonalAssistant, definitionsForChat, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import { chats } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
@@ -191,7 +191,6 @@ describe("people and departments screens", () => {
   });
 
   it("turning the switch off clears only the person's own chat on Personal", async () => {
-    const personal = await ensurePersonalDefinition(db, T, "m");
     const other = await upsertDefinition(db, secretsKey, T, { name: "helper", label: "Helper", persona: "p" });
     const chat = async (cid: string, owner: string | null, type = "personal") => {
       await db.insert(chats).values({ id: cid, tenantId: T, conversationType: type, ownerPersonId: owner });
@@ -202,13 +201,15 @@ describe("people and departments screens", () => {
     await chat("c-group", null, "groupChat");
     await post(`/admin/people/${id.Mo}/personal-bot`, "Ann", { personalBot: "on" });
     await post(`/admin/people/${id.Ola}/personal-bot`, "Ann", { personalBot: "on" });
+    const personal = await ensurePersonalAssistant(db, T, id.Mo, "m");
+    const olaPersonal = await ensurePersonalAssistant(db, T, id.Ola, "m");
     await setChatDefinition(db, T, "c-mo", personal.id);
-    await setChatDefinition(db, T, "c-ola", personal.id);
+    await setChatDefinition(db, T, "c-ola", olaPersonal.id);
     await setChatDefinition(db, T, "c-mo-other", other.id);
     await setChatDefinition(db, T, "c-group", other.id);
     expect((await post(`/admin/people/${id.Mo}/personal-bot`, "Ann", {})).status).toBe(303);
     expect(await definitionsForChat(db, "c-mo")).toEqual([]);
-    expect((await definitionsForChat(db, "c-ola")).map((d) => d.id)).toEqual([personal.id]);
+    expect((await definitionsForChat(db, "c-ola")).map((d) => d.id)).toEqual([olaPersonal.id]);
     expect((await definitionsForChat(db, "c-mo-other")).map((d) => d.id)).toEqual([other.id]);
     expect((await definitionsForChat(db, "c-group")).map((d) => d.id)).toEqual([other.id]);
   });

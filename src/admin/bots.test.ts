@@ -2,7 +2,7 @@ import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
-import { ensurePersonalDefinition, getDefinition, listDefinitions, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
+import { ensurePersonalAssistant, ensurePersonalDefinition, getDefinition, listDefinitions, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
 import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
@@ -137,14 +137,14 @@ describe("bots screen", () => {
   describe("the Personal bot", () => {
     let pid: string;
     beforeAll(async () => {
-      pid = (await ensurePersonalDefinition(db, T, "m")).id;
-      await db.insert(definitionDepartments).values({ definitionId: pid, departmentId: sales }); // a stale link, by hand: the save refuses one
       await db.update(people).set({ personalBot: true }).where(eq(people.id, id.Mo));
+      pid = (await ensurePersonalAssistant(db, T, id.Mo, "m")).id;
+      await db.insert(definitionDepartments).values({ definitionId: pid, departmentId: sales }); // a stale link, by hand: the save refuses one
     });
 
     it("has a Microsoft 365 tab and no Email or Connections tab", async () => {
       const page = await (await get(`/admin/bots/${pid}`, "Ann")).text();
-      expect(page).toContain("Acts as each person who uses it");
+      expect(page).toContain("Acts as Mo in their own chat");
       expect(page).toContain(`href="/admin/bots/${pid}?tab=m365"`);
       expect(page).toContain(">Microsoft 365<");
       expect(page).not.toContain("?tab=email");
@@ -204,12 +204,12 @@ describe("bots screen", () => {
       expect(await listConnectionsFor(db, T, pid)).toEqual([]);
     });
 
-    it("the list and the overview show it once, with how many people have it on", async () => {
-      for (const path of ["/admin/bots"]) { // the dashboard groups personal assistants as one line
-        const body = await (await get(path, "Ann")).text();
-        expect(body.match(/My assistant/g)).toHaveLength(1);
-        expect(body).toContain("1 on");
-      }
+    it("the assistants page and the overview show it once, with its owner", async () => {
+      const assistants = await (await get("/admin/assistants", "Ann")).text();
+      expect(assistants.match(/My assistant/g)).toHaveLength(1);
+      expect(assistants).toContain("for Mo");
+      const overview = await (await get("/admin", "Ann")).text();
+      expect(overview.match(/Personal assistants/g)).toHaveLength(1);
     });
   });
 

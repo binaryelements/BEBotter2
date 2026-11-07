@@ -847,7 +847,7 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(await s.assigned()).toEqual([a.id]);
   });
 
-  it("refuses Personal in a group chat, and for anyone but the chat's owner, without a turn", async () => {
+  it("refuses Personal in a group chat, and for anyone but the chat's owner", async () => {
     const s = await chat();
     const personal = await ensurePersonalDefinition(s.db, "t1", "m");
     await setPersonalBot(s.db, "t1", s.ann.id, true);
@@ -855,10 +855,10 @@ describe("choosing the bot in a one-to-one chat", () => {
     await upsertChat(s.db, { id: "g1", tenantId: "t1", conversationType: "groupChat" });
     await s.db.insert(chatAssignments).values({ chatId: "g1", definitionId: personal.id });
     await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1" }, { ...s.io, graphToken: async () => "t" });
-    await handleMessage(s.deps, { ...msg("personal"), text: "hi" }, { ...s.io, graphToken: async () => "t" }); // Ann's own chat: Personal is her only bot, so it is assigned and answers
-    await s.say("hello", "u2");
+    await handleMessage(s.deps, { ...msg("personal"), text: "hi" }, { ...s.io, graphToken: async () => "t" }); // Ann's own chat: her assistant is assigned and answers
+    await s.say("hello", "u2"); // Bob in Ann's chat: refused
     const refusal = "This assistant is private to its owner.";
-    expect(s.sent).toEqual([refusal, "**My assistant**\n\nreply", refusal]);
+    expect(s.sent).toEqual([refusal, "**My assistant**\n\nreply", "You no longer have access to My assistant."]);
     expect(s.runTurn).toHaveBeenCalledTimes(1); // Ann's only
     expect(await s.db.select().from(auditEvents)).toEqual([]);
   });

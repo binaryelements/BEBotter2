@@ -119,6 +119,8 @@ export const botDefinitions = pgTable(
     webSearch: boolean("web_search").notNull(),
     computer: boolean("computer").notNull(),
     identity: text("identity").$type<"service" | "person">().notNull().default("service"), // person: acts as whoever is talking, through Graph
+    /** A person bot belongs to one person; service bots have no owner. */
+    ownerPersonId: text("owner_person_id").references(() => people.id),
     graph: jsonb("graph").$type<GraphCapability[]>().notNull().default([]),
     mcpServers: jsonb("mcp_servers").$type<McpServerRecord[]>().notNull(),
     /** Daily self-reflection for this bot: off, propose learnings for approval, or apply them and post to its group. */
@@ -130,8 +132,28 @@ export const botDefinitions = pgTable(
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [unique().on(t.tenantId, t.name)],
+  (t) => [unique().on(t.tenantId, t.name), unique().on(t.tenantId, t.ownerPersonId)],
 );
+
+/** A request from one person's assistant to another's; the body is the only thing shared. */
+export const assistantRequests = pgTable(
+  "assistant_requests",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    fromDefinitionId: text("from_definition_id").notNull().references(() => botDefinitions.id),
+    toDefinitionId: text("to_definition_id").notNull().references(() => botDefinitions.id),
+    fromPersonId: text("from_person_id").notNull().references(() => people.id),
+    toPersonId: text("to_person_id").notNull().references(() => people.id),
+    kind: text("kind").notNull().default("request"), // request | todo
+    body: text("body").notNull(),
+    status: text("status").notNull().default("pending"), // pending | accepted | declined | done
+    createdAt: createdAt(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [index("assistant_requests_to_idx").on(t.toDefinitionId, t.status)],
+);
+export type AssistantRequest = typeof assistantRequests.$inferSelect;
 
 export const mailboxes = pgTable("mailboxes", {
   definitionId: text("definition_id").primaryKey().references(() => botDefinitions.id),

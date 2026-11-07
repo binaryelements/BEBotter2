@@ -169,6 +169,20 @@
       "when": 1794024248702,
       "tag": "0023_memory-items",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794047690551,
+      "tag": "0024_personal-assistant-owner",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794049065038,
+      "tag": "0025_assistant-requests",
+      "breakpoints": true
     }
   ]
 }

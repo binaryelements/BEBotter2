@@ -1,0 +1,3 @@
+ALTER TABLE "bot_definitions" ADD COLUMN "owner_person_id" text;--> statement-breakpoint
+ALTER TABLE "bot_definitions" ADD CONSTRAINT "bot_definitions_owner_person_id_people_id_fk" FOREIGN KEY ("owner_person_id") REFERENCES "public"."people"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bot_definitions" ADD CONSTRAINT "bot_definitions_tenant_id_owner_person_id_unique" UNIQUE("tenant_id","owner_person_id");

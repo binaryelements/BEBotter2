@@ -5,6 +5,7 @@ import { confirmerPolicy } from "../admin/access.js";
 import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
 import { tellMcpServer } from "../bots/tell.js";
+import { assistantMcpServer } from "../bots/assistant.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
@@ -19,7 +20,7 @@ import { learningsMcpServer } from "../learnings/mcp.js";
 import { learningsNote, listLearnings } from "../learnings/store.js";
 import { memoryNote, searchMemory, touchMemory } from "../memory/store.js";
 import type { Db } from "../db/client.js";
-import { chats, departmentMembers, mailboxes, sessions } from "../db/schema.js";
+import { assistantRequests, chats, departmentMembers, mailboxes, people, sessions } from "../db/schema.js";
 import { getTenantSettings } from "../org/org.js";
 import type { TenantSettings } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
@@ -120,8 +121,19 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
   };
   // a Personal assistant is one bot shared by everyone, so it reads only the shared learnings and its chat owner's own
   const personal = definition.identity === "person";
-  const owner = personal ? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null) : null;
+  const owner = personal ? (definition.ownerPersonId ?? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null)) : null;
   const learnt = await listLearnings(db, tenantId, definition.id, owner);
+  const pending = personal
+    ? await db
+        .select({ id: assistantRequests.id, body: assistantRequests.body, from: people.name })
+        .from(assistantRequests)
+        .innerJoin(people, eq(people.id, assistantRequests.fromPersonId))
+        .where(and(eq(assistantRequests.tenantId, tenantId), eq(assistantRequests.toDefinitionId, definition.id), eq(assistantRequests.status, "pending")))
+        .limit(5)
+    : [];
+  const requestsNote = pending.length
+    ? `\n\nRequests waiting from other assistants. Tell your owner who asked and what they want; use resolve_request only after your owner says yes or no: ${pending.map((r) => `#${r.id} from ${r.from}: ${r.body}`).join(" | ")}`
+    : "";
   const rulesText =
     ruleNote("free", "An admin set these actions to run without a confirmation card, so run them and never say they need confirming") +
     ruleNote("confirm", "An admin set these actions to need a confirmation card in the chat");
@@ -153,7 +165,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     mail
       ? `Your own email address is ${mail.address}.`
       : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-  }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}`;
+  }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}${requestsNote}`;
   const processOptions: EngineProcessOptions = {
     model: definition.model,
     systemPrompt,
@@ -173,6 +185,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       learnings: learningsMcpServer(deps, ctx, personal),
       // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
       bots: tellMcpServer({ db, run: (t) => runTurn(deps, t as RunTurnInput), ...(deps.personToken ? { personToken: deps.personToken } : {}) }, ctx),
+      ...(definition.identity === "person" ? { assistant: assistantMcpServer({ db }, ctx) } : {}),
       ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
       ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
       ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
@@ -272,7 +285,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const { conn } = setup;
   // the long tail of memory: only the few relevant to this message are put in the prompt, never the whole table
   const personal = definition.identity === "person";
-  const owner = personal ? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null) : null;
+  const owner = personal ? (definition.ownerPersonId ?? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null)) : null;
   const departments = (await db.select({ id: departmentMembers.departmentId }).from(departmentMembers).where(eq(departmentMembers.personId, person.id))).map((r) => r.id);
   const remembered = await searchMemory(db, { tenantId, definitionId: definition.id, ownerPersonId: owner, departmentIds: departments, chatId }, turn.text, 12);
   if (remembered.length) await touchMemory(db, remembered.map((r) => r.id));

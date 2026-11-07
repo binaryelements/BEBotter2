@@ -1,7 +1,9 @@
 import express from "express";
 import type { Request, Response, Router } from "express";
-import { clearPersonalChat } from "../bots/definitions.js";
+import { and, eq } from "drizzle-orm";
+import { clearPersonalChat, ensurePersonalAssistant } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
+import { botDefinitions } from "../db/schema.js";
 import {
   DirectoryError, createDepartment, deleteDepartment, listDepartments, listPeople, renameDepartment, setMembership, setPersonalBot, setRole,
 } from "../org/directory.js";
@@ -34,7 +36,7 @@ const options = (values: readonly string[], current?: string) =>
   values.map((v) => html`<option value="${v}" ${v === current ? "selected" : ""}>${v}</option>`);
 const deny = (res: Response) => page(res, 403, "Not allowed.");
 
-export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
+export function peopleRoutes(db: Db, fetchUsers: FetchUsers, defaultModel: string): Router {
   const router = express.Router();
   const render = (res: Response, title: string, body: SafeHtml) => {
     const { actor, csrf } = adminOf(res);
@@ -48,6 +50,8 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
       const { actor } = adminOf(res);
       const admin = isAdmin(actor);
       const all = await listPeople(db, actor.tenantId);
+      const assistants = await db.select({ owner: botDefinitions.ownerPersonId, name: botDefinitions.displayName, label: botDefinitions.label }).from(botDefinitions).where(and(eq(botDefinitions.tenantId, actor.tenantId), eq(botDefinitions.identity, "person")));
+      const assistantName = new Map(assistants.filter((a) => a.owner).map((a) => [a.owner!, a.name ?? a.label]));
       const synced = typeof req.query.synced === "string" ? /^(\d+),(\d+)$/.exec(req.query.synced) : null;
       const rows = admin ? all : all.filter((p) => p.memberships.some((m) => actor.headOf.includes(m.departmentId)));
       const csrf = csrfField(res);
@@ -66,8 +70,8 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
               : p.role
           }</td><td>${
             editable
-              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/personal-bot" data-autosave>${csrf}${AUTO}<label class="be-toggle"><input type="checkbox" name="personalBot" ${p.personalBot ? "checked" : ""}> ${p.personalBot ? "on" : "off"}</label> <button class="be-btn sm auto">save</button></form>`
-              : p.personalBot ? "On" : "Off"
+              ? html`<form class="inline-edit" method="post" action="/admin/people/${p.id}/personal-bot" data-autosave>${csrf}${AUTO}<label class="be-toggle"><input type="checkbox" name="personalBot" ${p.personalBot ? "checked" : ""}> ${p.personalBot ? "on" : "off"}</label> <button class="be-btn sm auto">save</button></form>${p.personalBot && assistantName.get(p.id) ? html` <a class="be-btn sm quiet" href="/admin/assistants">${assistantName.get(p.id)}</a>` : ""}`
+              : html`${p.personalBot ? "On" : "Off"}${p.personalBot && assistantName.get(p.id) ? html` · ${assistantName.get(p.id)}` : ""}`
           }</td><td>${p.memberships.filter((m) => admin || actor.headOf.includes(m.departmentId)).map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
         })}</tbody></table>`)
           : html`<div class="be-empty">No people yet.</div>`
@@ -108,6 +112,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers): Router {
       if ((!isAdmin(actor) && req.params.id === actor.personId) || !(await mayManagePerson(db, actor, req.params.id))) return deny(res);
       const on = field(req, "personalBot") === "on";
       await setPersonalBot(db, actor.tenantId, req.params.id, on);
+      if (on) await ensurePersonalAssistant(db, actor.tenantId, req.params.id, defaultModel);
       if (!on) await clearPersonalChat(db, actor.tenantId, req.params.id);
       res.redirect(303, "/admin/people");
     }),

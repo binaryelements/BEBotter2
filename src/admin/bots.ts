@@ -297,12 +297,14 @@ ${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th
       const { actor } = adminOf(res);
       const admin = isAdmin(actor);
       const t = personaTemplate(req.query.template);
-      const [{ defs }, settings, domain] = await Promise.all([visibleBots(db, actor), getTenantSettings(db, actor.tenantId), admin ? mailDomain() : undefined]);
+      const [{ defs: allDefs }, settings, domain] = await Promise.all([visibleBots(db, actor), getTenantSettings(db, actor.tenantId), admin ? mailDomain() : undefined]);
+      // Personal assistants have their own section; the Bots page is for the company's service bots.
+      const defs = allDefs.filter((d) => d.identity !== "person");
       render(
         res,
         "Bots",
         html`<header class="be-pagehead"><div class="pt"><h1>Bots</h1><p class="meta">The teammates your people can talk to in Teams. Each has its own persona, model, tools and memory.</p></div>${admin ? html`<div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;">New bot</a></div>` : ""}</header>
-${await botsGrid(db, actor.tenantId, defs, admin ? html`<a class="be-card bot-card bot-add" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;"><div class="bot-add-icon">+</div><b>Add a teammate</b><p>Start from a template: IT support, finance, HR or a personal assistant.</p><span class="be-btn primary sm">New bot</span></a>` : undefined)}${
+${await botsGrid(db, actor.tenantId, defs, admin ? html`<a class="be-card bot-card bot-add" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;"><div class="bot-add-icon">+</div><b>Add a teammate</b><p>Start from a template: IT support, finance, HR or a general assistant.</p><span class="be-btn primary sm">New bot</span></a>` : undefined)}${
           admin
             ? html`<details class="be-section" id="add"${t ? html` open` : ""}><summary class="be-btn">add bot…</summary>
 <p class="muted">start from a template: ${PERSONA_TEMPLATES.map((p, i) => html`${i ? " · " : ""}<a href="/admin/bots?template=${p.id}#add">${p.title}</a>`)}</p>
@@ -435,7 +437,8 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const admin = isAdmin(actor);
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
-      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
+      const ownerName = def.ownerPersonId ? (await db.select({ name: people.name }).from(people).where(eq(people.id, def.ownerPersonId)))[0]?.name : undefined;
+      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${def.identity === "person" && ownerName ? `for ${ownerName} · ` : ""}${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
       const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
@@ -467,7 +470,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
 <label>model<span class="hint">the provider/model this bot uses</span><select class="be-select" name="model">${modelOptions(def.model)}</select></label>
 </div>
 <p class="be-label">can use</p><p><label class="be-toggle"><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search and browser</label>${person ? "" : html` <label class="be-toggle"><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> a computer</label>`}</p>
-${person ? html`<p class="muted">Acts as each person who uses it, in their own chat.</p>` : html`<p class="be-label">who can talk to it <span class="hint">none ticked means everyone in the company</span></p><p>${depts.map((d) => html`<label class="be-toggle"><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</p>`}${hide("persona", def.persona)}`
+${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their own chat. Only ${ownerName ?? "the owner"} can use it.</p>` : html`<p class="be-label">who can talk to it <span class="hint">none ticked means everyone in the company</span></p><p>${depts.map((d) => html`<label class="be-toggle"><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</p>`}${hide("persona", def.persona)}`
             : html`${personaBox}${hide("displayName", def.displayName ?? "")}${hide("label", def.label)}${hide("model", def.model)}${def.webSearch ? hide("webSearch", "on") : ""}${def.computer ? hide("computer", "on") : ""}${person ? "" : allowed.map((d) => hide("departments", d))}`
         }<p><button class="be-btn primary">save</button></p></form>`;
         let section: SafeHtml;

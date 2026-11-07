@@ -65,6 +65,7 @@ export function tellMcpServer(deps: { db: Db; run: TellRun; personToken?: (chatI
           let graphToken: (() => Promise<string | undefined>) | undefined;
           if (target.identity === "person") {
             // the assistant acts with its owner's sign-in: only in the owner's own chat, with the token kept from their sign-in
+            if (target.ownerPersonId && target.ownerPersonId !== person.id) return no(`${botTitle(target)} belongs to someone else.`);
             const [chat] = await db.select({ type: chats.conversationType, owner: chats.ownerPersonId }).from(chats).where(and(eq(chats.id, ctx.chatId), eq(chats.tenantId, ctx.tenantId)));
             if (chat?.type !== "personal" || chat.owner !== person.id) return no(`${botTitle(target)} is private to its owner and answers only in their own chat.`);
             const token = await deps.personToken?.(ctx.chatId).catch(() => undefined);

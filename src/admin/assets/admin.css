@@ -468,6 +468,7 @@ main h2, main h3 {
 .bot-name { font-size: 15px; font-weight: 600; color: var(--ui-ink); }
 .bot-role { color: var(--ui-muted); font-size: 12.5px; }
 .bot-desc { margin: 12px 0 14px; color: var(--ui-muted); font-size: 12.5px; line-height: 1.55; }
+.bot-desc.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .bot-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .bot-foot { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--ui-line); }
 .bot-foot .muted { font-size: 12px; margin-right: auto; }
