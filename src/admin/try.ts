@@ -68,7 +68,7 @@ export function tryRoutes(deps: TryDeps): Router {
       const when = await whenFor(db, actor.tenantId);
       const name = def.displayName ?? def.name;
       const body = html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <a href="/admin/bots/${def.id}">${name}</a> / <span aria-current="page">try it</span></nav><h1>Try ${name}</h1><p class="meta">Talk to it here as any person. It answers with that person's rights and departments, and remembers this test chat only.</p></div></header>
-<form class="be-form try-as" method="get" action="/admin/bots/${def.id}/try" data-autosave><div class="fields"><label>as <select class="be-select" name="as">${everyone.map((p) => html`<option value="${p.id}" ${p.id === person.id ? "selected" : ""}>${p.name} · ${roleWords(p)}</option>`)}</select> <button class="be-btn sm auto">change</button></label></div></form>
+<form class="be-form try-as" method="get" action="/admin/bots/${def.id}/try" data-autosave><input type="hidden" name="prompt" value="${prompt}"><div class="fields"><label>as <select class="be-select" name="as">${everyone.map((p) => html`<option value="${p.id}" ${p.id === person.id ? "selected" : ""}>${p.name} · ${roleWords(p)}</option>`)}</select> <button class="be-btn sm auto">change</button></label></div></form>
 ${
   !may
     ? html`<div class="be-notice"><span>${person.name} can't talk to ${name}: not in a department this bot is allowed for.</span></div>`
