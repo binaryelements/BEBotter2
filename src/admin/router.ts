@@ -1,6 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response, Router } from "express";
 import { eq } from "drizzle-orm";
+import { listActions } from "../audit/audit.js";
 import { tenants } from "../db/schema.js";
 import { ConnectionError } from "../connections/store.js";
 import type { SqlRunner } from "../connections/sql.js";
@@ -114,6 +115,28 @@ export function adminRouter(deps: AdminDeps): Router {
       res.locals.admin = { actor, csrf: session.csrf };
       const store = shell.getStore();
       if (store) store.company = (await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, actor.tenantId)))[0]?.name;
+      // The bell: approvals still inside their ten-minute window, and failures from the last day.
+      if (store && isAdmin(actor)) {
+        const [pending, failed] = await Promise.all([
+          listActions(db, { tenantId: actor.tenantId, status: "pending", limit: 5 }),
+          listActions(db, { tenantId: actor.tenantId, status: "failed", limit: 5 }),
+        ]);
+        const now = Date.now();
+        const ago = (d: Date) => {
+          const m = Math.round((now - d.getTime()) / 60_000);
+          return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+        };
+        const approvals = pending.filter((r) => r.kind === "tool" && r.startedAt.getTime() > now - 10 * 60_000);
+        const failures = failed.filter((r) => r.startedAt.getTime() > now - 24 * 60 * 60_000);
+        store.notifications = {
+          approvals: approvals.length,
+          failures: failures.length,
+          items: [
+            ...approvals.map((r) => ({ kind: "approval" as const, title: r.summary, meta: `waiting for approval · ${ago(r.startedAt)}`, href: "/admin/activity?status=pending" })),
+            ...failures.map((r) => ({ kind: "failure" as const, title: r.summary, meta: `failed · ${ago(r.startedAt)}`, href: "/admin/activity?status=failed" })),
+          ].slice(0, 6),
+        };
+      }
       next();
     }),
   );

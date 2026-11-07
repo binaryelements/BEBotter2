@@ -27,7 +27,14 @@ export function html(strings: TemplateStringsArray, ...values: Value[]): SafeHtm
 export const raw = (s: string) => new SafeHtml(s);
 
 /** Per-request facts the shell needs but pages do not pass: set by the router. */
-export type Shell = { theme?: string; path: string; url?: string; company?: string; flash?: { kind: "good" | "bad"; text: string } };
+export type Shell = {
+  theme?: string;
+  path: string;
+  url?: string;
+  company?: string;
+  flash?: { kind: "good" | "bad"; text: string };
+  notifications?: { approvals: number; failures: number; items: { kind: "approval" | "failure"; title: string; meta: string; href: string }[] };
+};
 export const shell = new AsyncLocalStorage<Shell>();
 
 export const assetsDir = fileURLToPath(new URL("./assets/", import.meta.url));
@@ -117,6 +124,9 @@ export function layout(opts: { title: string; body: SafeHtml; actor?: Actor; csr
   const role = actor ? (isAdmin(actor) ? "admin" : "head") : "";
   const brand = html`<a class="brand" href="/admin"><img class="be-mark-dark" src="${href("be/be-mark-cyan.png")}" alt=""><img class="be-mark-light" src="${href("be/be-mark-red.png")}" alt=""><span>TEAMMATE<span class="by">by Binary Elements</span></span></a>`;
   const themeForm = html`<form class="theme" method="get" action="/admin/theme" aria-label="theme"><input type="hidden" name="next" value="${ctx?.url ?? ctx?.path ?? "/admin"}">${pick("device", "follow device")}${pick("light", "light")}${pick("dark", "dark")}</form>`;
+  const n = ctx?.notifications;
+  const notifCount = (n?.approvals ?? 0) + (n?.failures ?? 0);
+  const notif = html`<details class="notif"><summary class="icon-btn" aria-label="Notifications" title="Notifications"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>${notifCount ? html`<span class="dot"></span>` : ""}</summary><div class="panel"><div class="panel-head"><b>Notifications</b>${notifCount ? html`<span class="be-chip bad">${notifCount} new</span>` : ""}<a class="be-btn sm quiet" href="/admin/activity">All activity</a></div><div class="panel-list">${n?.items.length ? n.items.map((item) => html`<a class="panel-item" href="${item.href}"><div class="ico ${item.kind === "failure" ? "bad" : "warn"}">${raw(item.kind === "failure" ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>' : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 8v4M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>')}</div><div class="grow"><b>${item.title}</b><div class="meta">${item.meta}</div></div></a>`) : html`<div class="panel-empty">Nothing needs attention.</div>`}</div></div></details>`;
   const head = html`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${opts.title}</title><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"><link rel="stylesheet" href="${href("be/tokens.css")}"><link rel="stylesheet" href="${href("be/components.css")}"><link rel="stylesheet" href="${href("admin.css")}"></head>`;
   if (!menu.length) {
     return html`<!doctype html>
@@ -146,7 +156,7 @@ ${brand}
 <label for="nav-open" class="icon-btn burger" title="menu" aria-label="menu"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></label>
 <div class="crumb">${ctx?.company ? html`<span>${ctx.company}</span><span class="sep">/</span>` : ""}<b>${opts.title}</b></div>
 <form class="search" method="get" action="/admin/activity" role="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" name="q" placeholder="Search activity…" aria-label="Search activity"><kbd>⌘K</kbd></form>
-<a class="icon-btn" href="/admin/activity" aria-label="Activity" title="Activity"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></a>
+${notif}
 ${themeForm}
 </header>
 <main class="content">${opts.body}</main>
@@ -173,6 +183,10 @@ document.addEventListener("keydown", function (e) {
 });
 document.querySelectorAll(".nav-item").forEach(function (a) {
   a.addEventListener("click", function () { var c = document.getElementById("nav-open"); if (c) c.checked = false; });
+});
+document.addEventListener("click", function (e) {
+  var d = document.querySelector("details.notif[open]");
+  if (d && !d.contains(e.target)) d.open = false;
 });
 document.querySelectorAll("table.be-table").forEach(function (t) {
   var heads = Array.from(t.querySelectorAll("thead th")).map(function (th) { return th.textContent.trim(); });
