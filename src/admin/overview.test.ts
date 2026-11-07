@@ -63,7 +63,8 @@ describe("overview", () => {
     expect(page).not.toContain("is waiting for approval: Orphaned long ago"); // pending for over 10 minutes: no longer approvable, not counted
     expect(page).not.toContain("<button class=\"be-btn primary\">approve");
     expect(page).toContain("Sales helper"); // by bot
-    expect(page).toContain('aria-current="page">Dashboard</a>');
+    expect(page).toContain('aria-current="page"');
+    expect(page).toContain('>Dashboard</a>');
     expect(page).toContain('<span>today</span></div>'); // replies per day ends on today
     expect(page).toContain("Hal 2"); // busiest people
     const today = await (await get("/admin/overview?period=today", "Ann")).text();

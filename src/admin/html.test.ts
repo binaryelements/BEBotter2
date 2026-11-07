@@ -36,7 +36,7 @@ describe("html", () => {
     expect(page).toContain("by Binary Elements");
     expect(page).toContain("be-mark-dark");
     expect(page).toContain("be-mark-light");
-    for (const g of ["Bots", "People", "Audit"]) expect(page).toContain(`<div class="nh">${g}</div>`);
+    for (const g of ["Operate", "Configure", "Audit"]) expect(page).toContain(`<div class="nav-label nh">${g}</div>`);
     expect(page).toContain(">Shared notes</a>");
     expect(page).not.toContain("data-theme");
     const head = layout({ title: "T", body: html`x`, actor: actor({ headOf: ["d"] }) });
@@ -46,7 +46,8 @@ describe("html", () => {
     expect(signedOut).not.toContain("be-nav");
     const themed = shell.run({ theme: "light", path: "/admin/bots/b1", company: "Acme <b>" }, () => layout({ title: "T", body: html`x`, actor: actor({ role: "admin" }) }));
     expect(themed).toContain('<html lang="en" data-theme="light">');
-    expect(themed).toContain('class="active" aria-current="page">Bots</a>');
+    expect(themed).toContain('class="nav-item active" aria-current="page"');
+    expect(themed).toContain('>Bots</a>');
     expect(themed).toContain("Acme &lt;b&gt;");
     expect(themed).toMatch(/aria-label="light" title="light" aria-pressed="true"><svg/);
     expect(themed).toMatch(/aria-label="follow device" title="follow device" aria-pressed="false"><svg/);

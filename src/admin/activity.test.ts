@@ -93,6 +93,14 @@ describe("activity screen", () => {
     expect(arr.status).toBe(200);
   });
 
+  it("searches summaries and tool names", async () => {
+    const t = await (await get("/admin/activity?q=oz-alpha", "Ann")).text();
+    expect(t).toContain("oz-alpha");
+    expect(t).not.toContain("oz-beta");
+    const tool = await (await get("/admin/activity?q=mcp__x__y", "Ann")).text();
+    expect(tool).toContain("x y");
+  });
+
   it("a head sees only their departments, in the page and the csv, and gets 403 for outsiders", async () => {
     const t = await (await get("/admin/activity", "Hal")).text();
     expect(t).toContain("Sam");

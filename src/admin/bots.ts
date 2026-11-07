@@ -558,7 +558,7 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
         }
         body = html`${head(tab)}<div class="be-section">${section}</div>`;
       }
-      render(res, def.label, body);
+      render(res, def.displayName ?? def.name, body);
     }),
   );
 

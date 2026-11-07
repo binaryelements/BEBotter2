@@ -17,7 +17,7 @@ import { page } from "./oidc.js";
 
 const PAGE = 100;
 const CSV_MAX = 10_000;
-const FILTERS = ["bot", "person", "chat", "status"] as const;
+const FILTERS = ["bot", "person", "chat", "status", "q"] as const;
 
 const q = (req: Request, name: string) => {
   const v = req.query[name];
@@ -111,6 +111,7 @@ export function activityRoutes(db: Db): Router {
       definitionId: q(req, "bot"),
       chatId: q(req, "chat"),
       status: q(req, "status"),
+      q: q(req, "q"),
       personId,
       personIds,
       definitionIds,
@@ -135,14 +136,15 @@ export function activityRoutes(db: Db): Router {
       const csv = keep.toString();
       const tr = rows.map((e) => {
         const c = cells(e, n, when);
-        return html`<tr>${c.slice(0, 5).map((v) => html`<td>${v}</td>`)}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
+        const cls = ["be-mono be-nowrap", "", "", "be-nowrap", ""];
+        return html`<tr>${c.slice(0, 5).map((v, i) => (cls[i] ? html`<td class="${cls[i]}">${v}</td>` : html`<td>${v}</td>`))}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
       });
       const sel = { bot: q(req, "bot"), person: q(req, "person"), chat: q(req, "chat") };
       res.type("html").send(
         layout({
           title: "Activity",
           body: html`${pageHead("Activity", html`<a class="be-btn" href="/admin/activity.csv${csv ? `?${csv}` : ""}">export csv</a>`)}
-<form class="row" method="get" action="/admin/activity">${pick("bot", "bot", n.bot, sel.bot)} ${pick("person", "person", n.person, sel.person)} ${pick("chat", "chat", n.chat, sel.chat)} <select class="be-select" name="status" aria-label="Status"><option value="">any status</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
+<form class="row" method="get" action="/admin/activity"><input class="be-input" type="search" name="q" value="${q(req, "q") ?? ""}" placeholder="search summaries…" aria-label="Search"> ${pick("bot", "bot", n.bot, sel.bot)} ${pick("person", "person", n.person, sel.person)} ${pick("chat", "chat", n.chat, sel.chat)} <select class="be-select" name="status" aria-label="Status"><option value="">any status</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
 ${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Chat</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
 ${older ? html`<p><a href="/admin/activity?${older}">older</a></p>` : ""}`,
           actor,

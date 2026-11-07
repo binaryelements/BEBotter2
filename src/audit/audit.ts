@@ -56,7 +56,7 @@ export async function recordAuthority(db: Db, id: string, authority: Authority):
 
 export async function listActions(
   db: Db,
-  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; definitionIds?: string[]; status?: string; before?: string; /* id of the last row of the previous page */ limit?: number },
+  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; definitionIds?: string[]; status?: string; q?: string; before?: string; /* id of the last row of the previous page */ limit?: number },
 ): Promise<AuditEvent[]> {
   if (filter.personIds?.length === 0 || filter.definitionIds?.length === 0) return [];
   const conditions = [eq(auditEvents.tenantId, filter.tenantId)];
@@ -66,6 +66,7 @@ export async function listActions(
   if (filter.personIds) conditions.push(inArray(auditEvents.personId, filter.personIds));
   if (filter.definitionIds) conditions.push(inArray(auditEvents.definitionId, filter.definitionIds));
   if (filter.status) conditions.push(eq(auditEvents.status, filter.status));
+  if (filter.q) conditions.push(sql`(${auditEvents.summary} ILIKE ${`%${filter.q}%`} OR ${auditEvents.toolName} ILIKE ${`%${filter.q}%`})`);
   if (filter.before) {
     // Keyset cursor on (started_at, id), compared in SQL so microseconds are never truncated; an unknown id is ignored.
     const [c] = await db.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.id, filter.before), eq(auditEvents.tenantId, filter.tenantId)));

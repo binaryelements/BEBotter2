@@ -95,10 +95,11 @@ describe("admin router", () => {
   it("pages carry the theme cookie, the company, the role and the current menu item; an invalid theme is ignored", async () => {
     const page = await (await get("/admin/people", `${as(admin)}; theme=light`)).text();
     expect(page).toContain('data-theme="light"');
-    expect(page).toContain('class="active" aria-current="page">People</a>');
-    expect(page).toContain("Ann</b> · admin");
+    expect(page).toContain('class="nav-item active" aria-current="page"');
+    expect(page).toContain('>People</a>');
+    expect(page).toContain("<b>Ann</b><span>admin");
     expect(await (await get("/admin/people", `${as(admin)}; theme=bogus`)).text()).not.toContain("data-theme");
-    expect(await (await get("/admin/people", as(head))).text()).toContain("Hal</b> · head");
+    expect(await (await get("/admin/people", as(head))).text()).toContain("<b>Hal</b><span>head");
   });
 
   it("every screen renders inside the shell with its title and an active menu item", async () => {
@@ -106,7 +107,7 @@ describe("admin router", () => {
       const page = await (await get(`/admin/${path}`, as(admin))).text();
       expect(page).toContain('<body class="be">');
       expect(page).toContain(`<h1>${title}</h1>`);
-      expect(page).toContain(`href="/admin/${path}" class="active"`);
+      expect(page).toContain(`href="/admin/${path}" class="nav-item active"`);
     }
   });
 
