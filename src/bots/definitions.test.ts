@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { mayUseDefinition } from "../admin/access.js";
 import { botDefinitions, chats, people, tenants } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
-import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { upsertChat, upsertPerson, upsertTenant, getTenantSettings, setTenantSettings } from "../org/org.js";
 import { createDepartment } from "../org/directory.js";
-import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, botDefinitionInput, ensurePersonalDefinition, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, setChatDefinition, usableDefinitions, updateDefinitionFields, upsertDefinition } from "./definitions.js";
+import { mcpServerInput, addMcpServer, allowedDepartments, assignToChat, backfillBotModels, botDefinitionInput, ensurePersonalDefinition, definitionsForChat, getDefinition, mcpServerConfigs, removeMcpServer, setAllowedDepartments, setChatDefinition, usableDefinitions, updateDefinitionFields, upsertDefinition } from "./definitions.js";
 
 describe("bot definitions", () => {
   it("stores MCP headers encrypted and gives them back decrypted", async () => {
@@ -236,5 +236,16 @@ describe("the Personal definition", () => {
     await db.update(people).set({ personalBot: true }).where(eq(people.id, p.id));
     const broken = Object.assign(Object.create(db), { insert: () => { throw new Error("db down"); } });
     await expect(usableDefinitions(broken, "t1", p.id, "m")).rejects.toThrow("db down");
+  });
+
+  it("backfillBotModels moves unsupported models to the supported tenant default", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const key = Buffer.alloc(32, 3);
+    const def = await upsertDefinition(db, key, "t1", { name: "legacy", label: "Legacy", persona: "p", model: "claude-sonnet" } as never);
+    await setTenantSettings(db, "t1", { botName: null, retentionDays: 90, defaultModel: "claude-sonnet", timezone: "UTC", location: null, country: null });
+    await backfillBotModels(db, "t1", "deepseek/deepseek-flash");
+    expect((await getDefinition(db, "t1", def.id))!.model).toBe("deepseek/deepseek-flash");
+    expect((await getTenantSettings(db, "t1")).defaultModel).toBe("deepseek/deepseek-flash");
   });
 });

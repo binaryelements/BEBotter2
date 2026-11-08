@@ -7,7 +7,7 @@ import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
 import { documentReader } from "./engine/read-document.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
-import { backfillPersonalAssistants } from "./bots/definitions.js";
+import { backfillBotModels, backfillPersonalAssistants } from "./bots/definitions.js";
 import { connect } from "./db/client.js";
 import { tenants } from "./db/schema.js";
 import { Confirmations } from "./engine/confirm.js";
@@ -29,6 +29,7 @@ loadEnvFile();
 const config = loadConfig(process.env);
 const db = await connect(config.databaseUrl);
 for (const t of await db.select({ id: tenants.id }).from(tenants)) {
+  await backfillBotModels(db, t.id, config.defaultModel).catch((e) => console.error(`bot models for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
   await backfillPersonalAssistants(db, t.id, config.defaultModel).catch((e) => console.error(`personal assistants for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
 }
 const confirmations = new Confirmations();

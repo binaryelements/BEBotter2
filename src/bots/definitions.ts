@@ -2,11 +2,12 @@ import type { McpServerConfig } from "../engine/mcp.js";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
-import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionDepartments, departments, people } from "../db/schema.js";
+import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionDepartments, departments, people, tenants } from "../db/schema.js";
 import type { BotDefinition, McpServerRecord } from "../db/schema.js";
 import { mayUseDefinition } from "../admin/access.js";
 import { DirectoryError } from "../org/directory.js";
 import { getTenantSettings, upsertTenant } from "../org/org.js";
+import { resolveModel } from "../engine/providers.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 
 export const RESERVED_MCP_NAMES = ["computer", "knowledge", "connections", "routine", "mail", "m365", "browser", "learnings", "bots"] as const;
@@ -110,6 +111,19 @@ export async function ensurePersonalAssistant(db: Db, tenantId: string, personId
     })
     .returning();
   return row;
+}
+
+/** One-time: point bots whose model the engine cannot resolve at the tenant's supported default. */
+export async function backfillBotModels(db: Db, tenantId: string, envDefault: string): Promise<void> {
+  const settings = await getTenantSettings(db, tenantId);
+  const supported = (slug: string | null | undefined) => !!slug && !!resolveModel(slug);
+  const fallback = supported(settings.defaultModel) ? settings.defaultModel! : supported(envDefault) ? envDefault : "deepseek/deepseek-flash";
+  const defs = await listDefinitions(db, tenantId);
+  const stale = defs.filter((d) => !supported(d.model));
+  if (!stale.length) return;
+  await db.update(botDefinitions).set({ model: fallback, updatedAt: new Date() }).where(and(eq(botDefinitions.tenantId, tenantId), inArray(botDefinitions.id, stale.map((d) => d.id))));
+  if (!supported(settings.defaultModel)) await db.update(tenants).set({ defaultModel: fallback }).where(eq(tenants.id, tenantId));
+  console.log(`bot models for tenant ${tenantId}: ${stale.length} moved to ${fallback}`);
 }
 
 /** One-time: give the old tenant-wide Personal definition to the person who has it switched on. */
