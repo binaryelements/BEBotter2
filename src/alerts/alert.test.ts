@@ -27,7 +27,7 @@ describe("alerts", () => {
   });
 
   it("sends an enabled alert from the chosen bot and throttles the same condition", async () => {
-    expect(await sendAlert({ db, admin }, "t1", "balance", "low-balance", "DeepSeek balance is $3.00", "Top it up.")).toBe(true);
+    expect(await sendAlert({ db, admin, publicUrl: "https://bot.example.test" }, "t1", "balance", "low-balance", "DeepSeek balance is $3.00", "Top it up.")).toBe(true);
     expect(sent).toHaveBeenCalledWith(expect.objectContaining({
       inboxId: "inbox-1",
       to: ["ops@example.com", "ann@example.com"],
@@ -36,14 +36,14 @@ describe("alerts", () => {
     const call = sent.mock.calls[0] as unknown as [{ text: string }];
     expect(call[0].text).toContain("Top it up.");
     expect(call[0].text).toContain("IT Support · BE Teammate");
-    expect(await sendAlert({ db, admin }, "t1", "balance", "low-balance", "Again", "Body")).toBe(false);
+    expect(await sendAlert({ db, admin, publicUrl: "https://bot.example.test" }, "t1", "balance", "low-balance", "Again", "Body")).toBe(false);
   });
 
   it("does not send a kind that is switched off, or when there are no recipients", async () => {
-    expect(await sendAlert({ db, admin }, "t1", "approvals", "x", "Approvals", "Body")).toBe(false);
+    expect(await sendAlert({ db, admin, publicUrl: "https://bot.example.test" }, "t1", "approvals", "x", "Approvals", "Body")).toBe(false);
     const s = await getTenantSettings(db, "t1");
     await setTenantSettings(db, "t1", { ...s, alertEmails: null });
-    expect(await sendAlert({ db, admin }, "t1", "failures", "x", "Failures", "Body")).toBe(false);
+    expect(await sendAlert({ db, admin, publicUrl: "https://bot.example.test" }, "t1", "failures", "x", "Failures", "Body")).toBe(false);
     await setTenantSettings(db, "t1", { ...s, alertEmails: "ops@example.com", alertBotId: null });
   });
 

@@ -96,7 +96,7 @@ startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
 startReflectionScheduler({ db, engine, send: (chatId, text) => sendToChat(proactive, chatId, text) });
-if (mail) startAlertScheduler({ db, admin: mail.admin, ...(balance ? { balance } : {}) });
+if (mail) startAlertScheduler({ db, admin: mail.admin, publicUrl: config.publicUrl, ...(balance ? { balance } : {}) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
   process.once(signal, () => void mcpPool.close().finally(() => process.exit(0)));

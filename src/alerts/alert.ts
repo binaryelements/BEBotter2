@@ -5,13 +5,15 @@ import { getDefinition } from "../bots/definitions.js";
 import { getTenantSettings } from "../org/org.js";
 import type { agentMailAdmin } from "../mail/agentmail.js";
 import type { BalanceReader } from "../engine/balances.js";
+import { buildDailyReport, localParts } from "./report.js";
 
-export type AlertKind = "balance" | "failures" | "approvals";
+export type AlertKind = "balance" | "failures" | "approvals" | "report";
 
 export type AlertDeps = {
   db: Db;
   admin: ReturnType<typeof agentMailAdmin>;
   balance?: BalanceReader;
+  publicUrl: string;
 };
 
 /** The shared outgoing mailbox for operational alerts. */
@@ -47,6 +49,7 @@ export async function sendAlert(deps: AlertDeps, tenantId: string, kind: AlertKi
   if (kind === "balance" && !s.alertLowBalance) return false;
   if (kind === "failures" && !s.alertFailures) return false;
   if (kind === "approvals" && !s.alertApprovals) return false;
+  if (kind === "report" && !s.reportEnabled) return false;
   const to = recipients(s.alertEmails);
   if (!to.length) return false;
   const [recent] = await deps.db
@@ -68,7 +71,7 @@ export async function sendAlert(deps: AlertDeps, tenantId: string, kind: AlertKi
 }
 
 /** A test from the settings page: no throttle, no condition check. */
-export async function sendTestAlert(deps: AlertDeps, tenantId: string): Promise<boolean> {
+export async function sendTestAlert(deps: { db: Db; admin: ReturnType<typeof agentMailAdmin> }, tenantId: string): Promise<boolean> {
   const s = await getTenantSettings(deps.db, tenantId);
   const to = recipients(s.alertEmails);
   if (!to.length) return false;
@@ -144,6 +147,13 @@ export function startAlertScheduler(deps: AlertDeps, everyMs = 5 * 60_000): () =
               `${approvals.length} approval${approvals.length === 1 ? "" : "s"} waiting`,
               approvals.map((a) => `- ${a.summary}`).join("\n"),
             );
+          }
+        }
+        if (s.reportEnabled) {
+          const local = localParts(new Date(), s.timezone);
+          if (local.hour === (s.reportHour ?? 8)) {
+            const report = await buildDailyReport(deps.db, t.id, s.timezone, deps.publicUrl, deps.balance);
+            await sendAlert(deps, t.id, "report", `report-${local.day}`, report.subject, report.body);
           }
         }
       }

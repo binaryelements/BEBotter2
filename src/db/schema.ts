@@ -44,6 +44,9 @@ export const tenants = pgTable("tenants", {
   alertFailures: boolean("alert_failures").notNull().default(true),
   alertApprovals: boolean("alert_approvals").notNull().default(false),
   alertBalanceThreshold: integer("alert_balance_threshold").notNull().default(5),
+  reportEnabled: boolean("report_enabled").notNull().default(true),
+  /** Local hour (0-23) in the tenant zone when the daily report is sent. */
+  reportHour: integer("report_hour").notNull().default(8),
   createdAt: createdAt(),
 });
 

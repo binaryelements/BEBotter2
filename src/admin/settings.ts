@@ -85,10 +85,12 @@ ${wallet ? html`<div class="be-notice ${!wallet.available || wallet.total < 5 ? 
 <p class="muted small">Email the admin team when something needs attention. Alerts are sent from <code>teammate-admin@eml.binaryelements.com</code>.</p>
 <div class="form-grid">
 <div class="field"><label for="s-alert-bot">Alert from</label><select id="s-alert-bot" class="be-select" name="alertBotId"><option value="">BE Teammate</option>${bots.map((b) => html`<option value="${b.id}" ${b.id === s.alertBotId ? "selected" : ""}>${b.displayName ? `${b.displayName} · ${b.label}` : b.label}</option>`)}</select><div class="hint">The bot's name signs the email.</div></div>
-<div class="field"><label for="s-alert-emails">Send to</label><input id="s-alert-emails" class="be-input" name="alertEmails" value="${s.alertEmails ?? ""}" placeholder="ops@example.com, ann@example.com"><div class="hint">Comma separated.</div></div>
+<div class="field"><label for="s-alert-emails">Send to</label><input id="s-alert-emails" class="be-input" name="alertEmails" value="${s.alertEmails ?? ""}" placeholder="ops@example.com, ann@example.com"><div class="hint">Comma separated. Alerts and the daily report go here.</div></div>
 <div class="field"><label for="s-alert-threshold">Low balance threshold</label><input id="s-alert-threshold" class="be-input" type="number" min="0" max="10000" name="alertBalanceThreshold" value="${s.alertBalanceThreshold ?? 5}"><div class="hint">USD. Alert when the DeepSeek balance is below this.</div></div>
+<div class="field"><label for="s-report-hour">Daily report hour</label><input id="s-report-hour" class="be-input" type="number" min="0" max="23" name="reportHour" value="${s.reportHour ?? 8}"><div class="hint">Local hour in the company time zone. The report goes to the same recipients.</div></div>
 </div>
 <div class="list" style="margin-top:14px">
+<div class="list-row"><div class="grow"><div class="name">Daily report</div><div class="meta">A summary of replies, actions, spend, failures and the balance.</div></div><label class="be-toggle"><input type="checkbox" name="reportEnabled" ${s.reportEnabled ? "checked" : ""}> on</label></div>
 <div class="list-row"><div class="grow"><div class="name">Low DeepSeek balance</div><div class="meta">Email when the provider balance drops below the threshold.</div></div><label class="be-toggle"><input type="checkbox" name="alertLowBalance" ${s.alertLowBalance ? "checked" : ""}> on</label></div>
 <div class="list-row"><div class="grow"><div class="name">Failed actions</div><div class="meta">Email when a tool, connection or mail action fails.</div></div><label class="be-toggle"><input type="checkbox" name="alertFailures" ${s.alertFailures ? "checked" : ""}> on</label></div>
 <div class="list-row"><div class="grow"><div class="name">Approvals waiting</div><div class="meta">Email when a confirmation card is still waiting after 10 minutes.</div></div><label class="be-toggle"><input type="checkbox" name="alertApprovals" ${s.alertApprovals ? "checked" : ""}> on</label></div>
@@ -134,6 +136,8 @@ ${wallet ? html`<div class="be-notice ${!wallet.available || wallet.total < 5 ? 
       const alertBalanceThreshold = Number(field(req, "alertBalanceThreshold") || "5");
       if (hasAlertForm && !(Number.isFinite(alertBalanceThreshold) && alertBalanceThreshold >= 0 && alertBalanceThreshold <= 10000))
         throw new DirectoryError("The balance threshold must be between 0 and 10000");
+      const reportHour = Number(field(req, "reportHour") || "8");
+      if (hasAlertForm && !(Number.isInteger(reportHour) && reportHour >= 0 && reportHour <= 23)) throw new DirectoryError("The daily report hour must be between 0 and 23");
       const current = await getTenantSettings(db, actor.tenantId);
       await setTenantSettings(db, actor.tenantId, {
         botName,
@@ -150,6 +154,8 @@ ${wallet ? html`<div class="be-notice ${!wallet.available || wallet.total < 5 ? 
               alertFailures: field(req, "alertFailures") === "on",
               alertApprovals: field(req, "alertApprovals") === "on",
               alertBalanceThreshold,
+              reportEnabled: field(req, "reportEnabled") === "on",
+              reportHour,
             }
           : {}),
       });
