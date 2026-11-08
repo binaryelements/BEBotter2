@@ -73,6 +73,10 @@ export function agentMailAdmin(cfg: { url: string; adminKey: string }, fetchFn: 
     async removeWebhook(id: string): Promise<void> {
       await call("DELETE", `/webhooks/${seg(id)}`);
     },
+    /** Send an alert or other system email from an inbox the admin key can reach. */
+    async sendMessage(input: { inboxId: string; to: string[]; subject: string; text: string }): Promise<void> {
+      await call("POST", "/messages/send", { inbox_id: input.inboxId, to: input.to, subject: input.subject, body_text: input.text });
+    },
     /** The inbox with this local part, or undefined. Looked up in the inbox list, which also tells who owns it. */
     async findInbox(localPart: string): Promise<{ id: string; address: string; ownerAgent: string | null } | undefined> {
       const r = await call("GET", "/inboxes");

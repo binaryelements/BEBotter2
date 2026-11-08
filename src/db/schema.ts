@@ -37,6 +37,13 @@ export const tenants = pgTable("tenants", {
   timezone: text("timezone").notNull().default("UTC"),
   location: text("location"),
   country: text("country"),
+  /** Which bot's name frames an alert, who receives it, and what is worth an email. */
+  alertBotId: text("alert_bot_id"),
+  alertEmails: text("alert_emails"),
+  alertLowBalance: boolean("alert_low_balance").notNull().default(true),
+  alertFailures: boolean("alert_failures").notNull().default(true),
+  alertApprovals: boolean("alert_approvals").notNull().default(false),
+  alertBalanceThreshold: integer("alert_balance_threshold").notNull().default(5),
   createdAt: createdAt(),
 });
 
@@ -175,6 +182,20 @@ export const todos = pgTable(
   (t) => [index("todos_person_idx").on(t.personId, t.status, t.dueAt)],
 );
 export type Todo = typeof todos.$inferSelect;
+
+/** One row per alert actually sent, so the same condition does not email every tick. */
+export const alertLog = pgTable(
+  "alert_log",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    kind: text("kind").notNull(), // balance | failures | approvals | test
+    fingerprint: text("fingerprint").notNull(),
+    sentAt: createdAt(),
+  },
+  (t) => [index("alert_log_tenant_idx").on(t.tenantId, t.kind, t.sentAt)],
+);
+export type AlertLog = typeof alertLog.$inferSelect;
 
 export const mailboxes = pgTable("mailboxes", {
   definitionId: text("definition_id").primaryKey().references(() => botDefinitions.id),

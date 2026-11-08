@@ -7,8 +7,10 @@ import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
 import { documentReader } from "./engine/read-document.js";
 import { deepseekBalance } from "./engine/balances.js";
+import { startAlertScheduler } from "./alerts/alert.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { backfillBotModels, backfillPersonalAssistants } from "./bots/definitions.js";
+import { getTenantSettings, setTenantSettings } from "./org/org.js";
 import { connect } from "./db/client.js";
 import { tenants } from "./db/schema.js";
 import { Confirmations } from "./engine/confirm.js";
@@ -32,6 +34,8 @@ const db = await connect(config.databaseUrl);
 for (const t of await db.select({ id: tenants.id }).from(tenants)) {
   await backfillBotModels(db, t.id, config.defaultModel).catch((e) => console.error(`bot models for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
   await backfillPersonalAssistants(db, t.id, config.defaultModel).catch((e) => console.error(`personal assistants for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
+  const settings = await getTenantSettings(db, t.id).catch(() => undefined);
+  if (settings && !settings.alertEmails && config.adminEmails.length) await setTenantSettings(db, t.id, { ...settings, alertEmails: config.adminEmails.join(",") }).catch((e) => console.error(`alert recipients for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
 }
 const confirmations = new Confirmations();
 const engine = new OpenAICompatEngine({ providers: config.providers });
@@ -59,6 +63,7 @@ const runnerDeps: RunnerDeps = {
 const mail = config.agentmail
   ? { db, secretsKey: config.secretsKey, admin: agentMailAdmin(config.agentmail, fetch), publicUrl: config.publicUrl }
   : undefined;
+const balance = config.providers.deepseek?.apiKey ? deepseekBalance(config.providers.deepseek.apiKey) : undefined;
 const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
 const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection });
@@ -77,7 +82,7 @@ startServer(app, {
       });
       next();
     });
-    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations, ...(config.providers.deepseek?.apiKey ? { balance: deepseekBalance(config.providers.deepseek.apiKey) } : {}),
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations, ...(balance ? { balance } : {}),
       // never fails or delays the save; a missed attempt is retried on the next save or start
       onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
     }));
@@ -91,6 +96,7 @@ startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
 startReflectionScheduler({ db, engine, send: (chatId, text) => sendToChat(proactive, chatId, text) });
+if (mail) startAlertScheduler({ db, admin: mail.admin, ...(balance ? { balance } : {}) });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const)
   process.once(signal, () => void mcpPool.close().finally(() => process.exit(0)));

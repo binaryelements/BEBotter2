@@ -25,13 +25,13 @@ describe("settings screen", () => {
     await setRole(db, T, id.Ann, "admin");
     await setMembership(db, T, (await createDepartment(db, T, "Sales")).id, id.Hal, "head");
     const app = express();
-    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [] }));
+    app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [], mail: { db, secretsKey, publicUrl: "https://bot.example.test", admin: { findInbox: async () => ({ id: "inbox-1", address: "teammate-admin@eml.binaryelements.com", ownerAgent: "be-teammate-admin" }), sendMessage: async () => {} } as never } }));
     ({ url, close } = await serve(app));
   });
   afterAll(() => close());
 
   const get = (who: string) => fetch(url + "/admin/settings", { redirect: "manual", headers: { cookie: sessionCookie(secretsKey, T, id[who]) } });
-  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string; timezone?: string; location?: string; country?: string }) =>
+  const post = (who: string, f: { botName?: string; retentionDays?: string; defaultModel?: string; timezone?: string; location?: string; country?: string; alertBotId?: string; alertEmails?: string; alertLowBalance?: string; alertFailures?: string; alertApprovals?: string; alertBalanceThreshold?: string }) =>
     fetch(url + "/admin/settings", {
       method: "POST",
       redirect: "manual",
@@ -40,19 +40,19 @@ describe("settings screen", () => {
     });
 
   it("defaults for a missing tenant", async () => {
-    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null });
+    expect(await getTenantSettings(db, "nobody")).toEqual({ botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null, alertBotId: null, alertEmails: null, alertLowBalance: true, alertFailures: true, alertApprovals: false, alertBalanceThreshold: 5 });
   });
 
   it("saves, trims, and stores an empty bot name as null", async () => {
     const r = await post("Ann", { botName: "  Helper  ", retentionDays: "30", defaultModel: " deepseek/deepseek-flash " });
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/admin/settings");
-    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "deepseek/deepseek-flash", timezone: "UTC", location: null, country: null });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: "Helper", retentionDays: 30, defaultModel: "deepseek/deepseek-flash", timezone: "UTC", location: null, country: null, alertBotId: null, alertEmails: null, alertLowBalance: true, alertFailures: true, alertApprovals: false, alertBalanceThreshold: 5 });
     const page = await (await get("Ann")).text();
     expect(page).toContain('value="Helper"');
     expect(page).toContain('value="30"');
     await post("Ann", { botName: "  ", retentionDays: "30" });
-    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null, timezone: "UTC", location: null, country: null });
+    expect(await getTenantSettings(db, T)).toEqual({ botName: null, retentionDays: 30, defaultModel: null, timezone: "UTC", location: null, country: null, alertBotId: null, alertEmails: null, alertLowBalance: true, alertFailures: true, alertApprovals: false, alertBalanceThreshold: 5 });
   });
 
   it("rejects bad values and keeps the old ones", async () => {
@@ -77,6 +77,17 @@ describe("settings screen", () => {
     expect((await post("Ann", { retentionDays: "30", location: "x".repeat(81) })).status).toBe(400);
     expect((await post("Ann", { retentionDays: "30", location: "", country: "" })).status).toBe(303);
     expect(await getTenantSettings(db, T)).toMatchObject({ location: null, country: null });
+  });
+
+  it("saves the alert bot, recipients and triggers, and sends a test alert", async () => {
+    const bot = await upsertDefinition(db, secretsKey, T, { name: "alerts", label: "Alerts", persona: "p" });
+    const r = await post("Ann", { retentionDays: "30", alertBotId: bot.id, alertEmails: "ops@example.com", alertLowBalance: "on", alertBalanceThreshold: "10" });
+    expect(r.status).toBe(303);
+    expect(await getTenantSettings(db, T)).toMatchObject({ alertBotId: bot.id, alertEmails: "ops@example.com", alertLowBalance: true, alertFailures: false, alertApprovals: false, alertBalanceThreshold: 10 });
+    const page = await (await get("Ann")).text();
+    expect(page).toContain("teammate-admin@eml.binaryelements.com");
+    expect(page).toContain('value="ops@example.com"');
+    expect((await fetch(url + "/admin/settings/alert-test", { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, id.Ann) }, body: "csrf=csrf-1" })).status).toBe(303);
   });
 
   it("a head gets 403", async () => {

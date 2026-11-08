@@ -69,6 +69,12 @@ export type TenantSettings = {
   timezone: string;
   location: string | null;
   country: string | null;
+  alertBotId?: string | null;
+  alertEmails?: string | null;
+  alertLowBalance?: boolean;
+  alertFailures?: boolean;
+  alertApprovals?: boolean;
+  alertBalanceThreshold?: number;
 };
 
 export async function getTenantSettings(db: Db, tenantId: string): Promise<TenantSettings> {
@@ -80,13 +86,31 @@ export async function getTenantSettings(db: Db, tenantId: string): Promise<Tenan
       timezone: tenants.timezone,
       location: tenants.location,
       country: tenants.country,
+      alertBotId: tenants.alertBotId,
+      alertEmails: tenants.alertEmails,
+      alertLowBalance: tenants.alertLowBalance,
+      alertFailures: tenants.alertFailures,
+      alertApprovals: tenants.alertApprovals,
+      alertBalanceThreshold: tenants.alertBalanceThreshold,
     })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
-  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null };
+  return row ?? { botName: null, retentionDays: 90, defaultModel: null, timezone: "UTC", location: null, country: null, alertBotId: null, alertEmails: null, alertLowBalance: true, alertFailures: true, alertApprovals: false, alertBalanceThreshold: 5 };
 }
 
 export async function setTenantSettings(db: Db, tenantId: string, settings: TenantSettings): Promise<void> {
   if (!validTimeZone(settings.timezone)) throw new DirectoryError("Unknown time zone");
-  await db.update(tenants).set(settings).where(eq(tenants.id, tenantId));
+  const { alertBotId, alertEmails, alertLowBalance, alertFailures, alertApprovals, alertBalanceThreshold, ...rest } = settings;
+  await db
+    .update(tenants)
+    .set({
+      ...rest,
+      ...(alertBotId === undefined ? {} : { alertBotId }),
+      ...(alertEmails === undefined ? {} : { alertEmails }),
+      ...(alertLowBalance === undefined ? {} : { alertLowBalance }),
+      ...(alertFailures === undefined ? {} : { alertFailures }),
+      ...(alertApprovals === undefined ? {} : { alertApprovals }),
+      ...(alertBalanceThreshold === undefined ? {} : { alertBalanceThreshold }),
+    })
+    .where(eq(tenants.id, tenantId));
 }

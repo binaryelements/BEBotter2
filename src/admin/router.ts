@@ -154,7 +154,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(activityRoutes(db));
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(runbookRoutes({ db, key: deps.config.secretsKey, defaultModel: deps.defaultModel, models: deps.models, engine: deps.engine }));
-  router.use(settingsRoutes(db, deps.models, deps.balance));
+  router.use(settingsRoutes(db, deps.models, deps.balance, deps.mail?.admin));
 
   router.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     // Body-parser errors (too large, malformed) carry a 4xx status and can arrive before sign-in.
