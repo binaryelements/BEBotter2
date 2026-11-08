@@ -6,6 +6,7 @@ import { resolveModel } from "../engine/providers.js";
 import { getTenantSettings, setTenantSettings } from "../org/org.js";
 import { isAdmin } from "./access.js";
 import { html, layout, pageHead } from "./html.js";
+import type { BalanceReader } from "../engine/balances.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 
@@ -14,7 +15,7 @@ const field = (req: Request, name: string) => {
   return typeof v === "string" ? v.trim() : "";
 };
 
-export function settingsRoutes(db: Db, models?: string[]): Router {
+export function settingsRoutes(db: Db, models?: string[], balance?: BalanceReader): Router {
   const router = express.Router();
   // the configured models, plus the current one if it is no longer offered, so a save never silently changes it
   const modelOptions = (current: string | null) => {
@@ -29,6 +30,7 @@ export function settingsRoutes(db: Db, models?: string[]): Router {
       const { actor, csrf } = adminOf(res);
       if (!isAdmin(actor)) return page(res, 403, "Not allowed.");
       const s = await getTenantSettings(db, actor.tenantId);
+      const wallet = balance ? await balance().catch(() => undefined) : undefined;
       res.type("html").send(
         layout({
           title: "Settings",
@@ -51,6 +53,7 @@ export function settingsRoutes(db: Db, models?: string[]): Router {
 <div class="form-grid">
 <div class="field wide"><label for="s-model">Default model</label><select id="s-model" class="be-select" name="defaultModel">${modelOptions(s.defaultModel)}</select><div class="hint">Flash is the value default; Pro is for hard troubleshooting and research.</div></div>
 </div>
+${wallet ? html`<div class="be-notice ${!wallet.available || wallet.total < 5 ? "warn" : ""}" style="margin-top:14px"><div class="grow"><b>DeepSeek balance: ${wallet.currency === "USD" ? "$" : ""}${wallet.total.toFixed(2)}</b><div class="meta">${wallet.available ? `Checked ${wallet.checkedAt.toISOString().slice(0, 16).replace("T", " ")} UTC. Top up when it gets low.` : (wallet.error ?? "Could not check the balance.")}</div></div></div>` : ""}
 </section>
 </div>
 <div class="grid-2 section">

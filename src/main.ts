@@ -6,6 +6,7 @@ import { dockerodeClient } from "./computer/docker.js";
 import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
 import { documentReader } from "./engine/read-document.js";
+import { deepseekBalance } from "./engine/balances.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { backfillBotModels, backfillPersonalAssistants } from "./bots/definitions.js";
 import { connect } from "./db/client.js";
@@ -76,7 +77,7 @@ startServer(app, {
       });
       next();
     });
-    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations,
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations, ...(config.providers.deepseek?.apiKey ? { balance: deepseekBalance(config.providers.deepseek.apiKey) } : {}),
       // never fails or delays the save; a missed attempt is retried on the next save or start
       onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
     }));

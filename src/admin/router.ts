@@ -7,6 +7,7 @@ import { ConnectionError } from "../connections/store.js";
 import type { SqlRunner } from "../connections/sql.js";
 import type { SshRunner } from "../connections/ssh.js";
 import type { Engine } from "../engine/engine.js";
+import type { BalanceReader } from "../engine/balances.js";
 import { KnowledgeError } from "../knowledge/store.js";
 import { DirectoryError } from "../org/directory.js";
 import type { FetchUsers } from "../org/directory-sync.js";
@@ -31,7 +32,7 @@ import { csrfOk, readSession, sessionKey } from "./session.js";
 import { tryRoutes } from "./try.js";
 import type { TryDeps } from "./try.js";
 
-export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; models?: string[]; engine?: Engine; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner } & TryDeps;
+export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; models?: string[]; engine?: Engine; balance?: BalanceReader; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner } & TryDeps;
 
 export function adminRouter(deps: AdminDeps): Router {
   const { db } = deps;
@@ -143,7 +144,7 @@ export function adminRouter(deps: AdminDeps): Router {
     }),
   );
 
-  router.use(overviewRoutes(db));
+  router.use(overviewRoutes(db, deps.balance));
   router.use(peopleRoutes(db, deps.fetchUsers, deps.defaultModel));
   router.use(assistantRoutes(db, deps.defaultModel));
   router.use(todoRoutes(db));
@@ -153,7 +154,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(activityRoutes(db));
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(runbookRoutes({ db, key: deps.config.secretsKey, defaultModel: deps.defaultModel, models: deps.models, engine: deps.engine }));
-  router.use(settingsRoutes(db, deps.models));
+  router.use(settingsRoutes(db, deps.models, deps.balance));
 
   router.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     // Body-parser errors (too large, malformed) carry a 4xx status and can arrive before sign-in.

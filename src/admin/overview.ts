@@ -9,6 +9,7 @@ import type { BotDefinition } from "../db/schema.js";
 import type { Actor } from "./access.js";
 import { isAdmin } from "./access.js";
 import { chip, html, layout, raw, scroll } from "./html.js";
+import type { BalanceReader } from "../engine/balances.js";
 import { chatNames } from "./chat-names.js";
 import { inputWords, whenFor, whenIn } from "./words.js";
 import type { SafeHtml } from "./html.js";
@@ -69,7 +70,7 @@ const median = (xs: number[]) => {
   return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 };
 
-export function overviewRoutes(db: Db): Router {
+export function overviewRoutes(db: Db, balance?: BalanceReader): Router {
   const router = express.Router();
   router.get(
     ["/", "/overview"],
@@ -121,6 +122,7 @@ export function overviewRoutes(db: Db): Router {
       const name = new Map(defs.map((d) => [d.id, d.displayName ?? d.name]));
       const bot = new Map(defs.map((d) => [d.id, d]));
       const stamp = whenIn(timezone, now);
+      const wallet = balance ? await balance().catch(() => undefined) : undefined;
       const tile = (label: string, value: string, sub: string, cls = "") => html`<div class="be-tile ${cls}"><div class="be-eyebrow">${label}</div><div class="v">${value}</div><div class="s">${sub}</div></div>`;
       // replies per local day for the last seven days, oldest first
       const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -147,7 +149,7 @@ export function overviewRoutes(db: Db): Router {
       const switcher = html`<div class="be-seg" role="radiogroup" aria-label="period">${PERIODS.map((p) => html`<a href="/admin?period=${p}" class="${p === period ? "on" : ""}" ${p === period ? raw('aria-current="true"') : ""}>${PERIOD_WORDS[p]}</a>`)}</div>`;
       const body = html`<header class="be-pagehead"><div class="pt"><h1>Dashboard</h1><p class="meta">${stamp(now)} · ${timezone.split("/").pop()!.replace(/_/g, " ")} · ${defs.length} bots · ${new Set(chatRows.map((c) => c.id)).size} chats</p></div><div class="act">${switcher}</div></header>
 ${waiting.map((r) => html`<div class="be-notice warn"><span><b>${name.get(r.definitionId) ?? ""}</b> is waiting for approval: ${inputWords(r.summary)}</span><span class="n">${r.personId ? `asked by ${personName.get(r.personId) ?? ""} · ` : ""}${stamp(r.startedAt)}</span></div>`)}
-<div class="be-tiles" style="margin-top:var(--space-12)">${tile("replies", String(messages.length), change)}${tile("actions", String(tools.length), `${tools.filter((r) => r.authority?.type === "confirmation").length} confirmed · ${tools.filter((r) => r.status === "denied").length} declined`)}${tile("people served", String(served.size), `of ${people_.length}`)}${tile("median reply", typical === undefined ? "none" : `${typical.toFixed(1)} s`, slowest === undefined ? "" : `slowest ${slowest.toFixed(0)} s`)}${tile("spend", `$${spend(rows).toFixed(2)}`, `$${spend(monthRows).toFixed(2)} this month so far`)}${tile("failed", String(failed.length), failedBy || "none", failed.length ? "bad" : "")}${tile("waiting approvals", String(waiting.length), waiting.length ? "in the chats now" : "none", waiting.length ? "warn" : "")}</div>
+<div class="be-tiles" style="margin-top:var(--space-12)">${tile("replies", String(messages.length), change)}${tile("actions", String(tools.length), `${tools.filter((r) => r.authority?.type === "confirmation").length} confirmed · ${tools.filter((r) => r.status === "denied").length} declined`)}${tile("people served", String(served.size), `of ${people_.length}`)}${tile("median reply", typical === undefined ? "none" : `${typical.toFixed(1)} s`, slowest === undefined ? "" : `slowest ${slowest.toFixed(0)} s`)}${tile("spend", `$${spend(rows).toFixed(2)}`, `$${spend(monthRows).toFixed(2)} this month so far`)}${tile("failed", String(failed.length), failedBy || "none", failed.length ? "bad" : "")}${tile("waiting approvals", String(waiting.length), waiting.length ? "in the chats now" : "none", waiting.length ? "warn" : "")}${wallet ? tile("deepseek balance", `${wallet.currency === "USD" ? "$" : ""}${wallet.total.toFixed(2)}`, wallet.available ? `checked ${stamp(wallet.checkedAt)}` : (wallet.error ?? "unavailable"), !wallet.available || wallet.total < 5 ? "warn" : "") : ""}</div>
 <div class="dash-cols">
 <section class="be-section"><h3>Replies per day</h3><div class="be-bars" role="img" aria-label="Replies per day: ${perDay.map((p) => `${p.label} ${p.n}`).join(", ")}">${perDay.map((p) => html`<div class="bar${p.label === "today" ? " today" : ""}" style="height:${Math.round((p.n / peak) * 100)}%" title="${p.label}: ${p.n}"></div>`)}</div><div class="be-bars-key">${perDay.map((p) => html`<span>${p.label}</span>`)}</div></section>
 <section class="be-section"><h3>By bot, ${PERIOD_WORDS[period]}</h3>${bots.length ? html`<table class="be-table lean"><tbody>${bots.map((b) => html`<tr><td>${b.label}</td><td class="w"><div class="be-meter"><div style="width:${Math.round((b.replies / mostReplies) * 100)}%"></div></div></td><td class="n">${b.replies} ${b.replies === 1 ? "reply" : "replies"} · $${b.cost.toFixed(2)}</td></tr>`)}</tbody></table>` : html`<div class="be-empty">Nothing yet.</div>`}
