@@ -49,6 +49,7 @@ export function confirmationCard({ actionId, label, name, toolName, input }: Con
         { ...exact(keyWords(key), true)[0], spacing: "Medium" },
         ...exact(typeof value === "string" ? value : JSON.stringify(value) ?? "null"),
       ]),
+      { type: "TextBlock", text: "Or reply yes or no in the chat.", isSubtle: true, spacing: "Medium", wrap: true },
     ],
     [
       { type: "Action.Execute", title: "Yes, do it", verb: "confirm", data: { actionId, answer: "yes" } },

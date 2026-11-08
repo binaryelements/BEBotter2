@@ -372,7 +372,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         releaseApprove(callId);
         return { allow: false, message: "Not done: the request was too large to show for confirmation." };
       }
-      const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId) });
+      const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId), chatId, personId: person.id, definitionId: definition.id });
       let o: Outcome | { result: "failed" };
       try {
         await turn.askConfirmation({ actionId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input });

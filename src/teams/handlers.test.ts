@@ -827,6 +827,24 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(addressedByName("it support, help", { displayName: null, label: "IT Support" })).toBe(true);
   });
 
+  it("accepts a typed yes/no for a pending confirmation", async () => {
+    const s = await chat();
+    const a = await s.service("helper", "Helper");
+    await upsertChat(s.db, { id: "c1", tenantId: "t1", conversationType: "personal" });
+    await setChatDefinition(s.db, "t1", "c1", a.id);
+    const c = new Confirmations();
+    const first = c.create({ auditId: "x", mayConfirm: async (p) => p === s.ann.id, chatId: "c1", personId: s.ann.id, definitionId: a.id });
+    await handleMessage({ ...s.deps, confirmations: c }, { ...msg("personal"), text: "yes please" }, s.io);
+    expect(await first.outcome).toEqual({ result: "confirmed", personId: s.ann.id });
+    expect(s.sent).toEqual(["Got it — doing that now."]);
+    expect(s.runTurn).not.toHaveBeenCalled();
+    const second = c.create({ auditId: "y", mayConfirm: async (p) => p === s.ann.id, chatId: "c1", personId: s.ann.id, definitionId: a.id, ttlMs: 20 });
+    await handleMessage({ ...s.deps, confirmations: c }, { ...msg("personal"), text: "what about the printer?" }, s.io);
+    expect(s.sent).toEqual(["Got it — doing that now.", "I'm waiting for your confirmation on the card above. Say yes or no, or use the buttons."]);
+    await second.outcome; // the short TTL releases the timer; no turn was started
+    expect(s.runTurn).not.toHaveBeenCalled();
+  });
+
   it("leaves My assistant off the card of a person without the flag", async () => {
     const s = await chat();
     await s.service("a", "A");

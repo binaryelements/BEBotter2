@@ -1,7 +1,7 @@
 import { recordSent } from "../audit/audit.js";
 import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { auditEvents, chats, people } from "../db/schema.js";
+import { auditEvents, chats, people, sessions } from "../db/schema.js";
 import type { TurnTimings } from "../db/schema.js";
 import type { Confirmations } from "../engine/confirm.js";
 import type { ProgressEvent, RunResult, RunTurnInput } from "../engine/runner.js";
@@ -140,7 +140,7 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
 
 const ownerOf = async (db: Db, chatId: string) => (await db.select({ owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.owner;
 
-export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string; defaultModel: string };
+export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string; defaultModel: string; confirmations?: Confirmations };
 
 export const signInFailed = "Sign-in didn't work. Say anything to try again.";
 
@@ -193,6 +193,21 @@ export async function handleMessage(
       await assignToChat(db, msg.chatId, usable[0]!.id);
       definition = usable[0];
     }
+  }
+  // A confirmation is a question: a typed yes/no answers it, and other messages do not queue behind the waiting turn.
+  const pending = deps.confirmations?.pendingFor(msg.chatId, person.id, definition?.id);
+  if (pending) {
+    const answer = confirmationWord(msg.text);
+    if (answer) {
+      const outcome = await deps.confirmations!.resolveText(msg.chatId, person.id, answer, definition?.id);
+      if (outcome === "confirmed") await io.send("Got it — doing that now.");
+      else if (outcome === "denied") await io.send("Okay, I won't do it.");
+      else if (outcome === "not_allowed") await io.send("You can't confirm this one.");
+      else await io.send("That request has already expired.");
+      return;
+    }
+    const aimed = msg.conversationType === "personal" || msg.mentioned || (definition && addressedByName(msg.text, definition));
+    if (aimed) return void (await io.send("I'm waiting for your confirmation on the card above. Say yes or no, or use the buttons."));
   }
   // a group chat the bot may hear in full: it answers only when @mentioned or addressed by name, and keeps the rest as context
   if (msg.conversationType !== "personal" && msg.mentioned === false && !(definition && (addressedByName(msg.text, definition) || (await followUp(db, msg, definition.id, person.id))))) {
@@ -344,15 +359,33 @@ const nameRe = (d: { displayName: string | null; label: string }): RegExp | unde
 };
 /** "Mickey, …" or "hey mickey …": the message starts with the bot's name (its display name, or its label). */
 export const addressedByName = (text: string, d: { displayName: string | null; label: string }): boolean => !!nameRe(d)?.test(text);
+/** A typed answer to a confirmation card. Short and unambiguous; anything longer is a normal message. */
+const YES = /^(?:yes|y|yeah|yep|yup|ok|okay|sure|confirm|confirmed|do it|go ahead|please do|please)\b/i;
+const NO = /^(?:no|n|nope|nah|cancel|decline|don't|do not|stop|leave it)\b/i;
+export const confirmationWord = (text: string): "yes" | "no" | undefined => {
+  const t = text.trim();
+  if (!t || t.length > 40) return undefined;
+  if (NO.test(t)) return "no";
+  if (YES.test(t)) return "yes";
+  return undefined;
+};
+
 /** For this long after the bot answers someone in a group chat, their next messages are follow-ups and need no name. */
 const FOLLOW_UP_MS = 2 * 60_000;
+/** A bot that ended on a question is waiting for an answer; do not stop listening after two minutes. */
+const QUESTION_FOLLOW_UP_MS = 30 * 60_000;
 /** A group-chat message is a follow-up when the bot answered its sender within the window and it is not aimed at someone else. */
 async function followUp(db: Db, msg: IncomingMessage, definitionId: string, personId: string): Promise<boolean> {
   if (msg.mentionedOthers) return false;
   const [last] = await db.select({ at: auditEvents.finishedAt }).from(auditEvents)
     .where(and(eq(auditEvents.chatId, msg.chatId), eq(auditEvents.definitionId, definitionId), eq(auditEvents.personId, personId), eq(auditEvents.kind, "message"), isNotNull(auditEvents.finishedAt)))
     .orderBy(desc(auditEvents.finishedAt)).limit(1);
-  if (!last?.at || (msg.receivedAt ?? new Date()).getTime() - last.at.getTime() > FOLLOW_UP_MS) return false;
+  if (!last?.at) return false;
+  // the bot's last reply is the best signal: a question is still waiting for an answer after the ordinary window
+  const [session] = await db.select({ messages: sessions.messages }).from(sessions).where(and(eq(sessions.chatId, msg.chatId), eq(sessions.definitionId, definitionId)));
+  const lastReply = [...(session?.messages ?? [])].reverse().find((m) => m.role === "assistant" && (m.text ?? "").trim())?.text?.trim();
+  const window = lastReply?.endsWith("?") ? QUESTION_FOLLOW_UP_MS : FOLLOW_UP_MS;
+  if ((msg.receivedAt ?? new Date()).getTime() - last.at.getTime() > window) return false;
   // "Ann, can you…" is for Ann: a message that starts with a colleague's first name stays overheard
   const others = await db.select({ name: people.name }).from(people).where(and(eq(people.tenantId, msg.tenantId), ne(people.id, personId)));
   return !others.some((p) => addressedByName(msg.text, { displayName: p.name.split(/\s+/)[0] || null, label: p.name }));

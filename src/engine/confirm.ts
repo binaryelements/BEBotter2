@@ -1,6 +1,6 @@
 export type Outcome = { result: "confirmed"; personId: string } | { result: "denied" | "expired" };
 
-type Pending = { mayConfirm: (personId: string) => Promise<boolean>; settle: (o: Outcome) => void };
+type Pending = { chatId?: string; personId?: string; definitionId?: string; mayConfirm: (personId: string) => Promise<boolean>; settle: (o: Outcome) => void };
 
 /** In-memory by design: a restart expires every pending confirmation. */
 export class Confirmations {
@@ -10,7 +10,7 @@ export class Confirmations {
 
   constructor(private schedule: (fn: () => void, ms: number) => unknown = setTimeout) {}
 
-  create(opts: { auditId: string; mayConfirm: (personId: string) => Promise<boolean>; ttlMs?: number }): {
+  create(opts: { auditId: string; mayConfirm: (personId: string) => Promise<boolean>; ttlMs?: number; chatId?: string; personId?: string; definitionId?: string }): {
     actionId: string;
     outcome: Promise<Outcome>;
   } {
@@ -24,11 +24,23 @@ export class Confirmations {
         }
         resolve(o);
       };
-      this.pending.set(actionId, { mayConfirm: opts.mayConfirm, settle });
+      this.pending.set(actionId, { chatId: opts.chatId, personId: opts.personId, definitionId: opts.definitionId, mayConfirm: opts.mayConfirm, settle });
       const timer = this.schedule(() => settle({ result: "expired" }), opts.ttlMs ?? 600_000);
       (timer as { unref?: () => void } | undefined)?.unref?.(); // a pending timer must not hold the process open
     });
     return { actionId, outcome };
+  }
+
+  /** The confirmation waiting in this chat for this person, if one is. */
+  pendingFor(chatId: string, personId: string, definitionId?: string): string | undefined {
+    for (const [id, p] of this.pending) if (p.chatId === chatId && p.personId === personId && (!definitionId || !p.definitionId || p.definitionId === definitionId)) return id;
+    return undefined;
+  }
+
+  /** A typed yes/no, for people who answer the card in words instead of tapping it. */
+  async resolveText(chatId: string, personId: string, answer: "yes" | "no", definitionId?: string): Promise<"confirmed" | "denied" | "not_allowed" | "unknown"> {
+    const actionId = this.pendingFor(chatId, personId, definitionId);
+    return actionId ? this.resolve(actionId, personId, answer) : "unknown";
   }
 
   async resolve(actionId: string, personId: string, answer: "yes" | "no"): Promise<"confirmed" | "denied" | "not_allowed" | "unknown"> {

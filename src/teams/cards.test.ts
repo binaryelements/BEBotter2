@@ -26,6 +26,7 @@ describe("cards", () => {
       block('["a@example.test"]'),
       block("Reply all", { spacing: "Medium" }, { weight: "Bolder" }),
       block("false"),
+      { type: "TextBlock", text: "Or reply yes or no in the chat.", isSubtle: true, spacing: "Medium", wrap: true },
     ]);
     expect(JSON.stringify(card)).not.toContain("\\n"); // no escaped line breaks anywhere
     expect(card.actions).toEqual([
@@ -39,6 +40,7 @@ describe("cards", () => {
     expect(card.body).toEqual([
       { type: "TextBlock", text: "Helper wants to:", weight: "Bolder", wrap: true },
       { type: "TextBlock", text: "WebFetch", wrap: true },
+      { type: "TextBlock", text: "Or reply yes or no in the chat.", isSubtle: true, spacing: "Medium", wrap: true },
     ]);
   });
 
