@@ -30,6 +30,8 @@ const schema = z.object({
   FILES_DIR: z.string().default("/srv/files"),
   AGENTMAIL_URL: z.string().default("https://agentmail.a.sapautomate.com").transform((s) => s.replace(/\/+$/, "")),
   AGENTMAIL_ADMIN_KEY: z.string().optional(),
+  BE_HUB_MCP_URL: z.string().url().default("https://behub.a.sapautomate.com/mcp"),
+  BE_HUB_API_KEY: z.string().optional(),
   GRAPH_OAUTH_CONNECTION: z.string().default("graph"),
 });
 
@@ -49,6 +51,8 @@ export type Config = {
   dockerSocket: string;
   filesDir: string;
   agentmail?: { url: string; adminKey: string };
+  /** BE Hub's MCP server, when an API key is configured. */
+  beHub?: { url: string; apiKey: string };
   /** The Azure Bot OAuth connection that signs a person in to Microsoft Graph. */
   graphOAuthConnection: string;
 };
@@ -81,6 +85,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     dockerSocket: e.DOCKER_SOCKET,
     filesDir: e.FILES_DIR,
     agentmail: e.AGENTMAIL_ADMIN_KEY ? { url: e.AGENTMAIL_URL, adminKey: e.AGENTMAIL_ADMIN_KEY } : undefined,
+    beHub: e.BE_HUB_API_KEY ? { url: e.BE_HUB_MCP_URL, apiKey: e.BE_HUB_API_KEY } : undefined,
     graphOAuthConnection: e.GRAPH_OAUTH_CONNECTION,
   };
 }
