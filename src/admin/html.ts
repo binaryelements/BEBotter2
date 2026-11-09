@@ -198,6 +198,24 @@ document.querySelectorAll("form[data-connection-kind]").forEach(function (f) {
   k.addEventListener("change", apply);
   apply();
 });
+document.querySelectorAll("[data-live-filter]").forEach(function (input) {
+  var target = document.querySelector(input.getAttribute("data-live-filter"));
+  if (!target) return;
+  var count = document.querySelector(input.getAttribute("data-live-count") || "");
+  var rows = Array.from(target.querySelectorAll("table.be-table tbody tr"));
+  var apply = function () {
+    var q = input.value.trim().toLowerCase();
+    var shown = 0;
+    rows.forEach(function (tr) {
+      var hit = !q || tr.textContent.toLowerCase().includes(q);
+      tr.hidden = !hit;
+      if (hit) shown++;
+    });
+    if (count) count.textContent = shown + " of " + rows.length;
+  };
+  input.addEventListener("input", apply);
+  apply();
+});
 document.querySelectorAll(".nav-item").forEach(function (a) {
   a.addEventListener("click", function () { var c = document.getElementById("nav-open"); if (c) c.checked = false; });
 });

@@ -101,7 +101,7 @@ describe("bots screen", () => {
     expect(tested).toContain("Connected\n?\n1");
     expect(tested).not.toContain("pw-top");
     const page = await (await get("/admin/connections", "Ann")).text();
-    expect(page).toMatch(/<td>sap<\/td><td>sql<\/td><td>sql1\.example\.test<\/td><td>read-only<\/td><td>active<\/td>/);
+    expect(page).toMatch(/<span class="nm">sap<\/span><\/td><td>sql<\/td><td class="conn-target"[^>]*>sql1\.example\.test<\/td><td>read-only<\/td><td>active<\/td>/);
     expect(page).toContain(`/admin/bots/${d.id}?tab=connections`);
     expect(page).toContain("SAP B1 company database; look things up, never write");
     expect(page).not.toContain("pw-top");
@@ -206,7 +206,7 @@ describe("bots screen", () => {
 
     it("the assistants page and the overview show it once, with its owner", async () => {
       const assistants = await (await get("/admin/assistants", "Ann")).text();
-      expect(assistants.match(/My assistant/g)).toHaveLength(1);
+      expect(assistants.match(/class="bot-name">My assistant</g) ?? []).toHaveLength(1);
       expect(assistants).toContain("for Mo");
       const overview = await (await get("/admin", "Ann")).text();
       expect(overview.match(/Personal assistants/g)).toHaveLength(1);
@@ -272,7 +272,7 @@ describe("bots screen", () => {
       expect(page).not.toContain("CIPHER-SECRET");
       expect(page).toContain("Connections this bot uses");
       const all = await (await get(`/admin/connections`, "Ann")).text();
-      expect(all).toMatch(/lnk<\/td>[\s\S]*?Helper/); // the Connections screen names the bot that uses it
+      expect(all).toMatch(/lnk<\/span><\/td>[\s\S]*?Helper/); // the Connections screen names the bot that uses it
       expect((await get(`/admin/connections`, "Hal")).status).toBe(403);
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
       expect((await listConnectionsFor(db, T, d.id)).map((x) => x.id)).not.toContain(c);
@@ -294,9 +294,9 @@ describe("bots screen", () => {
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
       const byName = await (await get("/admin/connections?q=search-me", "Ann")).text();
       expect(byName).toContain("search-me");
-      expect(byName).not.toContain("other</td>");
+      expect(byName).not.toContain(">other<");
       const byTarget = await (await get("/admin/connections?q=api.example", "Ann")).text();
-      expect(byTarget).toContain("other</td>");
+      expect(byTarget).toContain(">other<");
       const byBot = await (await get("/admin/connections?q=Search", "Ann")).text();
       expect(byBot).toContain("search-me");
       const none = await (await get("/admin/connections?q=zzzz", "Ann")).text();
@@ -311,7 +311,7 @@ describe("bots screen", () => {
       await post(`/admin/bots/${d.id}/connections/${a}/link`, "Ann", [["linked", "on"]]);
       const hits = await (await get(`/admin/bots/${d.id}?tab=connections&q=beta`, "Ann")).text();
       expect(hits).toContain("conn-search-beta");
-      expect(hits).not.toContain("conn-search-alpha</td>");
+      expect(hits).not.toContain(">conn-search-alpha<");
       expect(hits).toContain('name="q"');
       const none = await (await get(`/admin/bots/${d.id}?tab=connections&q=zzzz`, "Ann")).text();
       expect(none).toContain("No connections match");
