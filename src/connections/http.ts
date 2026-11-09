@@ -82,9 +82,9 @@ async function readCapped(res: Response, max: number): Promise<string> {
   return text.slice(0, max);
 }
 
-async function send(fetchFn: typeof fetch, url: URL, init: RequestInit, scrub: Mask, timeoutMs: number): Promise<Response> {
+async function send(fetchFn: typeof fetch, url: URL, init: RequestInit, scrub: Mask, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
   try {
-    return await fetchFn(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+    return await fetchFn(url, { ...init, redirect: "manual", signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs) });
   } catch (e) {
     const err = e as { name?: string; message?: string; cause?: { code?: string } };
     return fail(scrub(`Request failed: ${err.cause?.code ?? (err.name === "TimeoutError" ? "timed out" : (err.message ?? "unknown error"))}`));
@@ -97,6 +97,7 @@ export async function sendHttp(
   conn: { target: string; config: HttpConfig; secret?: string },
   req: HttpRequest,
   timeoutMs = 60_000,
+  signal?: AbortSignal,
 ): Promise<{ status: number; text: string }> {
   const scrub = masker(conn.secret);
   if (!HTTP_TOKEN.test(req.method)) fail("Invalid method");
@@ -115,7 +116,7 @@ export async function sendHttp(
     if (auth.in === "header") headers.set(auth.name, (auth.prefix ?? "") + conn.secret);
     else url.searchParams.set(auth.name, conn.secret);
   }
-  const res = await send(fetchFn, url, { method: req.method, headers, ...(req.body !== undefined ? { body: req.body } : {}) }, scrub, timeoutMs);
+  const res = await send(fetchFn, url, { method: req.method, headers, ...(req.body !== undefined ? { body: req.body } : {}) }, scrub, timeoutMs, signal);
   const location = res.headers.get("location");
   const head = `HTTP ${res.status} ${res.statusText}\n${location ? `Location: ${location}\n` : ""}`;
   const body = await readCapped(res, MAX_OUTPUT + scrub.longest);

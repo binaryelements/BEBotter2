@@ -60,7 +60,7 @@ describe("OpenAICompatEngine", () => {
     expect(result).toMatchObject({ text: "Done.", stopReason: "text", steps: 2, usage: { inputTokens: 30, outputTokens: 8 } });
     expect(result.usage.costUsd).toBeGreaterThan(0);
     expect(authorise).toHaveBeenCalledWith("call_1", "mcp__knowledge__read", { path: "x" });
-    expect(call).toHaveBeenCalledWith("mcp__knowledge__read", { path: "x" });
+    expect(call).toHaveBeenCalledWith("mcp__knowledge__read", { path: "x" }, expect.any(AbortSignal));
     expect(complete).toHaveBeenCalledWith("call_1", "done");
     expect(events).toEqual([
       { kind: "ready" },

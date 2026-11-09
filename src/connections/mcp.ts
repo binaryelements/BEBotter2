@@ -38,8 +38,10 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
       return fail(e);
     }
   };
-  const sshTool = (mode: "read-only" | "change") => ({ name, command }: { name: string; command: string }) =>
-    run(() => runSsh(deps, tenantId, definitionId, name, command, mode));
+  // a superseded turn aborts the MCP request; the signal stops the ssh child or the http fetch with it
+  const signalOf = (extra: unknown) => (extra as { signal?: AbortSignal } | undefined)?.signal;
+  const sshTool = (mode: "read-only" | "change") => ({ name, command }: { name: string; command: string }, extra?: unknown) =>
+    run(() => runSsh(deps, tenantId, definitionId, name, command, mode, signalOf(extra)));
   return createSdkMcpServer({
     name: "connections",
     tools: [
@@ -136,7 +138,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
         "http_read",
         `Send a GET or HEAD request on an active http connection. path is relative to the connection's URL; the service adds the secret. ${READ_ONLY_RULE}`,
         { name: z.string(), path: z.string(), method: z.enum(["GET", "HEAD"]).optional(), query: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional() },
-        ({ name, method, ...req }) => run(() => runHttp(deps, tenantId, definitionId, name, { method: method ?? "GET", ...req }, "read-only")),
+        ({ name, method, ...req }, extra) => run(() => runHttp(deps, tenantId, definitionId, name, { method: method ?? "GET", ...req }, "read-only", signalOf(extra))),
       ),
       tool(
         "http_change",
@@ -145,7 +147,7 @@ export function connectionsMcpServer(deps: ConnectionDeps & { publicUrl: string 
           name: z.string(), method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]), path: z.string(),
           query: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional(), body: z.string().optional(),
         },
-        ({ name, ...req }) => run(() => runHttp(deps, tenantId, definitionId, name, req, "change")),
+        ({ name, ...req }, extra) => run(() => runHttp(deps, tenantId, definitionId, name, req, "change", signalOf(extra))),
       ),
       tool(
         "sql_read",

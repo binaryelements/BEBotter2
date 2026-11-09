@@ -70,7 +70,9 @@ const mail = config.agentmail
 const balance = config.providers.deepseek?.apiKey ? deepseekBalance(config.providers.deepseek.apiKey) : undefined;
 const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
-const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection });
+// a person typing a second thought gets it taken with the first: the first reply stops and one turn answers both
+const burstQuietMs = Number(process.env.BURST_QUIET_MS ?? 1200);
+const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection, burstQuietMs });
 
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 

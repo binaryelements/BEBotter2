@@ -7,6 +7,7 @@ import { mcpServerConfigs } from "../bots/definitions.js";
 import { tellMcpServer } from "../bots/tell.js";
 import { assistantMcpServer } from "../bots/assistant.js";
 import { todoMcpServer } from "../todos/mcp.js";
+import { connectionGrantForTool } from "../connections/store.js";
 import { ensureComputer } from "../computer/computer.js";
 import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
@@ -67,7 +68,7 @@ export type RunnerDeps = {
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
 export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
-export type RunResult = { text: string; costUsd: number; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean };
+export type RunResult = { text: string; costUsd: number; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean; /** A newer message stopped this turn before it answered; nothing was saved and the caller answers the newer message instead. */ aborted?: boolean };
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
 export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; toolName: string } | { kind: "delta"; text: string } | { kind: "message-end" };
 
@@ -206,6 +207,8 @@ export type RunTurnInput = {
   person: Person;
   text: string;
   askConfirmation: (req: ConfirmationRequest) => Promise<void>;
+  /** Aborted when the person sends another message: the turn stops, its tools are cancelled and nothing is delivered. */
+  signal?: AbortSignal;
   /** A scheduled run. With a grantPersonId an admin has let it make changes unattended. */
   /** When the turn was asked for (the message arrived, the routine was due); defaults to now. */
   receivedAt?: Date;
@@ -234,6 +237,7 @@ const DEFAULTS_NOTE = ` Each message starts with a line in square brackets that 
 export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<RunResult> {
   const { db } = deps;
   const { tenantId, chatId, definition, person } = turn;
+  const signal = turn.signal ?? new AbortController().signal;
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id };
   const received = turn.receivedAt ?? new Date();
   const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };
@@ -347,7 +351,20 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     // read per call, so an admin's change applies to the next call without restarting the engine
     const rule = await toolRule(db, definition.id, toolName);
     if (run !== attemptNo) return stale();
-    const kind = classify(toolName, definition, conn.readOnly, rule);
+    if (signal.aborted) return stale();
+    // a per-bot, per-connection permission sits above the global tool rule
+    const perConnection = await connectionGrantForTool(db, tenantId, definition.id, toolName, input);
+    if (perConnection?.mode === "deny") {
+      await completeAction(db, auditId, { status: "denied" });
+      return { allow: false, message: `Not done: this bot has no access to ${perConnection.name}.` };
+    }
+    if (perConnection?.mode === "read" && perConnection.change) {
+      await completeAction(db, auditId, { status: "denied" });
+      return { allow: false, message: `Not done: this bot's access to ${perConnection.name} is read-only.` };
+    }
+    let kind = classify(toolName, definition, conn.readOnly, rule);
+    if (perConnection?.mode === "confirm" && perConnection.change) kind = "write";
+    if (perConnection?.mode === "free" && perConnection.change) kind = "read";
     if (kind === "read") {
       inFlight.set(callId, auditId);
       return { allow: true };
@@ -372,12 +389,33 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         releaseApprove(callId);
         return { allow: false, message: "Not done: the request was too large to show for confirmation." };
       }
+      if (signal.aborted) {
+        await completeAction(db, auditId, { status: "failed" });
+        releaseApprove(callId);
+        return STALE;
+      }
       const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId), chatId, personId: person.id, definitionId: definition.id });
-      let o: Outcome | { result: "failed" };
+      let o: Outcome | { result: "failed" } | { result: "aborted" };
+      let offAbort = () => {};
       try {
         await turn.askConfirmation({ actionId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input });
-        o = await outcome;
+        // a newer message stops the wait at once, so the old turn cannot run a tool after the person has moved on
+        const aborted = new Promise<{ result: "aborted" }>((resolve) => {
+          if (signal.aborted) return resolve({ result: "aborted" });
+          const f = () => resolve({ result: "aborted" });
+          signal.addEventListener("abort", f, { once: true });
+          offAbort = () => signal.removeEventListener("abort", f);
+        });
+        o = await Promise.race([outcome, aborted]);
+        offAbort();
+        if (o.result === "aborted") {
+          deps.confirmations.cancel([actionId]); // a late click must not run it either
+          await completeAction(db, auditId, { status: "failed" });
+          releaseApprove(callId);
+          return STALE;
+        }
       } catch (err) {
+        offAbort();
         console.error("confirmation card failed", err);
         o = { result: "failed" }; // the question never reached the asker; the model gets the denial and the turn goes on
       }
@@ -435,10 +473,10 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       // a background job works through many pages (each browser click is a step), so it gets more steps than a chat turn
       maxSteps: turn.routine?.background ? 100 : setup.processOptions.maxSteps,
       history,
-      signal: new AbortController().signal,
+      signal,
       onEvent,
       tools,
-      callTool: (name, args) => (registry ? registry.call(name, args) : Promise.resolve({ text: "No tool runtime.", isError: true })),
+      callTool: (name, args, callSignal) => (registry ? registry.call(name, args, callSignal ?? signal) : Promise.resolve({ text: "No tool runtime.", isError: true })),
       authoriseTool,
       completeTool,
       onAttemptStart: resetTimings,
@@ -451,6 +489,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
     tools = await registry.listTools();
     const result = await runEngine();
+    // a superseded turn leaves no trace: no session, no message audit row, no reply
+    if (result.stopReason === "aborted" || signal.aborted)
+      return { text: "", costUsd: result.usage.costUsd, changed, timings, auditId: "", aborted: true };
     timings.resultAt = new Date().toISOString();
     const ok = result.stopReason === "text";
     const text = ok ? result.text : FAILED_TEXT;

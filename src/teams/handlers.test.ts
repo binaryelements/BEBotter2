@@ -120,6 +120,38 @@ describe("handleMessage", () => {
     await s.run(msg("personal"));
     expect(s.sent).toEqual(["**Helper**\n\nSomething went wrong on my side."]);
   });
+
+  it("stops the reply and answers the whole burst when the person keeps typing", async () => {
+    const s = await setup(true);
+    await upsertTenant(s.db, { id: "t1" });
+    await upsertChat(s.db, { id: "c1", tenantId: "t1", conversationType: "personal" });
+    const def = await upsertDefinition(s.db, Buffer.alloc(32), "t1", { name: "helper", label: "Helper", persona: "p" } as never);
+    await assignToChat(s.db, "c1", def.id);
+    const texts: string[] = [];
+    const signals: AbortSignal[] = [];
+    s.runTurn.mockImplementation(async (turn: RunTurnInput) => {
+      texts.push(turn.text);
+      signals.push(turn.signal!);
+      if (texts.length === 1) {
+        // the bot is still thinking when the person sends the next thought
+        await new Promise<void>((resolve) => turn.signal!.addEventListener("abort", () => resolve(), { once: true }));
+        return { text: "", costUsd: 0, sessionId: "s", changed: false, auditId: "", timings: { receivedAt: new Date().toISOString(), tools: 0 }, aborted: true };
+      }
+      return { text: "answer", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
+    });
+    const deps = { db: s.db, runTurn: s.runTurn, botName: "Bot", defaultModel: "m", burstQuietMs: 50 };
+    const io = { send: async (t: string) => (s.sent.push(t), undefined), update: async () => {}, sendCard: async () => {} };
+    const say = (text: string) => handleMessage(deps, { ...msg("personal"), text }, io);
+    const first = say("go ahead");
+    await vi.waitFor(() => expect(texts).toHaveLength(1));
+    await say("wait, let me turn on the server");
+    await say("nah, go ahead, you're good");
+    await first;
+    expect(signals[0]!.aborted).toBe(true);
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toContain("go ahead\nwait, let me turn on the server\nnah, go ahead, you're good");
+    expect(s.sent).toEqual(["**Helper**\n\nanswer"]);
+  });
 });
 
 describe("handleMessage status message", () => {

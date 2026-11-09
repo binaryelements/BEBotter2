@@ -9,8 +9,8 @@ import {
 import { and, count, eq, gte, inArray, max, sql } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
-import { activeMcp, adminVerify, ConnectionError, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setDescription, setLinked } from "../connections/store.js";
-import type { ConnectionKind, ConnectionMode } from "../connections/store.js";
+import { activeMcp, adminVerify, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setConnectionGrant, setDescription, setLinked } from "../connections/store.js";
+import type { ConnectionGrantMode, ConnectionKind, ConnectionMode } from "../connections/store.js";
 import { SQL_ENGINES } from "../connections/sql.js";
 import type { SqlRunner } from "../connections/sql.js";
 import { systemSsh } from "../connections/ssh.js";
@@ -423,7 +423,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
     const groupSwitch = (g: string) => html`<div class="be-seg" role="radiogroup" aria-label="all ${g}">${(["", "free", "confirm"] as const).map(
       (r) => html`<label><input type="radio" name="all:${g}" value="${r}" ${r === "" ? "checked" : ""}><span>${r ? `all: ${RULE_LABEL[r]}` : "as below"}</span></label>`,
     )}</div>`;
-    return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}${[...groups.keys()].sort().map(
+    return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it. A connection can be narrower or freer for this bot on its Connections tab; that per-connection choice wins over these rules.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}${[...groups.keys()].sort().map(
       (g) => html`<h3>${g}</h3>${groups.get(g)!.length > 1 ? groupSwitch(g) : ""}${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}`,
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
@@ -517,15 +517,27 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
           section = await actionsSectionFor(res, def, linked);
         } else if (tab === "connections") {
           // the company's connections, split by whether this bot uses them: one list per question an admin asks
-          const connRow = (c: Connection, uses: boolean) => html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted">${c.description ?? ""}</td>
+          const grants = await connectionGrantsFor(db, def.id);
+          const connRow = (c: Connection, uses: boolean) => {
+            const grant = grants.get(c.id) ?? (c.mode === "read-only" ? "read" : "confirm");
+            const modes: [ConnectionGrantMode, string][] =
+              c.mode === "read-only"
+                ? [["read", "read only"], ["deny", "no access"]]
+                : c.kind === "mcp"
+                  ? [["read", "read only"], ["confirm", "writes ask"], ["deny", "no access"]]
+                  : [["read", "read only"], ["confirm", "change: ask"], ["free", "change: free"], ["deny", "no access"]];
+            return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted">${c.description ?? ""}</td>
+<td>${uses ? html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/permission" data-autosave>${csrf}<select class="be-select" name="mode" aria-label="This bot's access">${modes.map(([m, label]) => html`<option value="${m}" ${m === grant ? "selected" : ""}>${label}</option>`)}</select><button class="be-btn sm auto">save</button></form>` : html`<span class="muted">—</span>`}</td>
 <td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${uses ? "off" : "on"}"><button class="be-btn sm${uses ? "" : " primary"}">${uses ? "take away" : "give to this bot"}</button></form>${
             c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td>
 <td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
+          };
           const connTable = (list: Connection[], uses: boolean) =>
-            scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
+            scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>This bot</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
           const mine = conns.filter((c) => linkedIds.has(c.id));
           const others = conns.filter((c) => !linkedIds.has(c.id) && c.status !== "revoked");
           section = html`<h2>Connections this bot uses</h2>
+<p class="hint"><strong>This bot</strong> sets what this bot may do on each connection: read only, ask before a change, change freely, or no access. It overrides the bot's Actions rules, so one SSH host can be read-only while another is free.</p>
 ${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: ${others.length ? "give it one below" : html`add an ssh, sql, MCP or http connection on the <a href="/admin/connections#add">Connections page</a>`}, or ask the bot in chat to set one up</div>`}
 ${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}
 <h2>MCP servers</h2>
@@ -783,6 +795,19 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       if (!isAdmin(actor)) return deny(res);
       await serviceBot(actor.tenantId, req.params.id);
       await setLinked(db, actor.tenantId, req.params.id, req.params.connectionId, field(req, "linked") === "on");
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/connections/:connectionId/permission",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await serviceBot(actor.tenantId, req.params.id);
+      const mode = field(req, "mode") as ConnectionGrantMode;
+      if (!["read", "confirm", "free", "deny"].includes(mode)) throw new DirectoryError("Unknown permission");
+      await setConnectionGrant(db, actor.tenantId, req.params.id, req.params.connectionId, mode);
       res.redirect(303, back(req, req.params.id));
     }),
   );

@@ -43,4 +43,11 @@ describe("Confirmations", () => {
     await expect(outcome).resolves.toEqual({ result: "expired" });
     await expect(c.resolve(actionId, "alice", "yes")).resolves.toBe("unknown");
   });
+
+  it("cancels a card whose turn was superseded, so a late click cannot act", async () => {
+    const { c, actionId, outcome } = make();
+    c.cancel([actionId]);
+    await expect(outcome).resolves.toEqual({ result: "expired" });
+    await expect(c.resolve(actionId, "alice", "yes")).resolves.toBe("unknown");
+  });
 });

@@ -2,7 +2,7 @@ import { and, eq, isNull, ne, or } from "drizzle-orm";
 import type { McpServerConfig } from "../engine/mcp.js";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
-import { connections, definitionConnections, secretLinks } from "../db/schema.js";
+import { connections, connectionGrants, definitionConnections, secretLinks } from "../db/schema.js";
 import type { Connection, ConnectionConfig } from "../db/schema.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { listMcpTools, sendHttp } from "./http.js";
@@ -231,11 +231,11 @@ async function setStatus(db: Db, c: Connection, set: Partial<Pick<Connection, "s
   await db.update(connections).set({ ...set, updatedAt: new Date() }).where(and(byId(c.tenantId, c.id), eq(connections.status, c.status)));
 }
 
-async function exec(deps: ConnectionDeps, c: Connection, command: string) {
+async function exec(deps: ConnectionDeps, c: Connection, command: string, signal?: AbortSignal) {
   if (!c.secretCipher) fail("The connection has no key");
   const { port, username } = c.config as { port: number; username: string };
   try {
-    return await deps.ssh.exec({ host: c.target, port, username, privateKey: decrypt(deps.secretsKey, c.secretCipher!), hostKey: c.hostKey }, command);
+    return await deps.ssh.exec({ host: c.target, port, username, privateKey: decrypt(deps.secretsKey, c.secretCipher!), hostKey: c.hostKey }, command, undefined, signal);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
     if (!KNOWN_SSH_ERRORS.has(msg)) console.error("ssh failed", (e as { code?: unknown } | undefined)?.code ?? "unknown");
@@ -298,12 +298,12 @@ export async function approveConnection(db: Db, tenantId: string, name: string, 
   if (!rows.length) fail(`${name} is not awaiting approval`);
 }
 
-export async function runSsh(deps: ConnectionDeps, tenantId: string, definitionId: string, name: string, command: string, mode: ConnectionMode): Promise<string> {
+export async function runSsh(deps: ConnectionDeps, tenantId: string, definitionId: string, name: string, command: string, mode: ConnectionMode, signal?: AbortSignal): Promise<string> {
   const c = await linkedConnection(deps.db, tenantId, definitionId, name);
   if (c.kind !== "ssh") fail(`${name} is not an ssh connection`);
   if (c.status !== "active" || !c.hostKey) fail(`${name} is not active (${c.status})`);
   if (c.mode !== mode) fail(`${name} is a ${c.mode} connection; use the ${c.mode === "change" ? "ssh_change" : "ssh_read"} tool`);
-  const r = await exec(deps, c, command);
+  const r = await exec(deps, c, command, signal);
   if (r.hostKeyMismatch) {
     await setStatus(deps.db, c, { status: "blocked" });
     fail(BLOCKED);
@@ -320,14 +320,14 @@ const mcpConn = async (deps: Pick<ConnectionDeps, "db" | "secretsKey" | "fetchFn
     : { target: c.target, headerName: (c.config as { headerName?: string }).headerName, secret: secretOf(deps, c) };
 
 /** http_read (GET/HEAD on any active http connection) and http_change (a change connection, confirmed per call). */
-export async function runHttp(deps: ConnectionDeps, tenantId: string, definitionId: string, name: string, req: HttpRequest, mode: ConnectionMode): Promise<string> {
+export async function runHttp(deps: ConnectionDeps, tenantId: string, definitionId: string, name: string, req: HttpRequest, mode: ConnectionMode, signal?: AbortSignal): Promise<string> {
   const c = await linkedConnection(deps.db, tenantId, definitionId, name);
   if (c.kind !== "http") fail(`${name} is not an http connection`);
   if (c.status !== "active") fail(`${name} is not active (${c.status})`);
   if (mode === "read-only" && req.method !== "GET" && req.method !== "HEAD") fail("http_read only sends GET or HEAD; use http_change on a change connection");
   if (mode === "change" && c.mode !== "change") fail(`${name} is a read-only connection; use http_read`);
   if (needsSecret(c) && !c.secretCipher) fail(`${name} has no secret`);
-  return (await sendHttp(deps.fetchFn, httpConn(deps, c), req)).text;
+  return (await sendHttp(deps.fetchFn, httpConn(deps, c), req, undefined, signal)).text;
 }
 
 const sqlTarget = (deps: Pick<ConnectionDeps, "secretsKey">, c: Connection) => ({ ...(c.config as SqlConfig), host: c.target, password: secretOf(deps, c) ?? "" });
@@ -386,4 +386,59 @@ export async function resetHostKey(db: Db, tenantId: string, id: string): Promis
     .where(and(byId(tenantId, id), ne(connections.status, "revoked")))
     .returning({ id: connections.id });
   if (!rows.length) fail("Connection not found");
+}
+
+export type ConnectionGrantMode = "read" | "confirm" | "free" | "deny";
+const GRANT_MODES: readonly ConnectionGrantMode[] = ["read", "confirm", "free", "deny"];
+
+export async function getConnectionGrant(db: Db, definitionId: string, connectionId: string): Promise<ConnectionGrantMode | undefined> {
+  const [row] = await db.select({ mode: connectionGrants.mode }).from(connectionGrants).where(and(eq(connectionGrants.definitionId, definitionId), eq(connectionGrants.connectionId, connectionId)));
+  return row && GRANT_MODES.includes(row.mode as ConnectionGrantMode) ? (row.mode as ConnectionGrantMode) : undefined;
+}
+
+export async function connectionGrantsFor(db: Db, definitionId: string): Promise<Map<string, ConnectionGrantMode>> {
+  const rows = await db.select({ connectionId: connectionGrants.connectionId, mode: connectionGrants.mode }).from(connectionGrants).where(eq(connectionGrants.definitionId, definitionId));
+  return new Map(rows.filter((r) => GRANT_MODES.includes(r.mode as ConnectionGrantMode)).map((r) => [r.connectionId, r.mode as ConnectionGrantMode]));
+}
+
+/** What this bot may do with this connection. The row is explicit; the connection's own mode is the ceiling. */
+export async function setConnectionGrant(db: Db, tenantId: string, definitionId: string, connectionId: string, mode: ConnectionGrantMode): Promise<void> {
+  if (!GRANT_MODES.includes(mode)) fail("Unknown permission");
+  if (!(await getDefinition(db, tenantId, definitionId))) fail("Bot not found");
+  const [conn] = await db.select({ id: connections.id, mode: connections.mode }).from(connections).where(byId(tenantId, connectionId));
+  if (!conn) fail("Connection not found");
+  if (mode === "free" && conn.mode !== "change") fail("A read-only connection cannot be changed freely");
+  const [link] = await db.select({ id: definitionConnections.definitionId }).from(definitionConnections).where(and(eq(definitionConnections.definitionId, definitionId), eq(definitionConnections.connectionId, connectionId)));
+  if (!link) fail("Give the bot the connection first");
+  await db.insert(connectionGrants).values({ definitionId, connectionId, mode }).onConflictDoUpdate({ target: [connectionGrants.definitionId, connectionGrants.connectionId], set: { mode, updatedAt: new Date() } });
+}
+
+export type ToolConnectionGrant = { connectionId: string; name: string; kind: ConnectionKind; mode: ConnectionGrantMode; change: boolean };
+
+/** The connection and per-bot grant behind a tool call, when the tool names one. */
+export async function connectionGrantForTool(db: Db, tenantId: string, definitionId: string, toolName: string, input: Record<string, unknown>): Promise<ToolConnectionGrant | undefined> {
+  const m = /^mcp__(connections|conn-(.+?))__(.+)$/.exec(toolName);
+  if (!m) return undefined;
+  const server = m[1]!;
+  const tool = m[3]!;
+  let name: string;
+  let change = false;
+  if (server === "connections") {
+    const connTool = /^(ssh|sql|http)_(read|change)$/.exec(tool);
+    if (!connTool) return undefined;
+    name = typeof input.name === "string" ? input.name : "";
+    change = connTool[2] === "change";
+  } else {
+    name = server.slice(5);
+  }
+  if (!name) return undefined;
+  const [conn] = await db.select({ id: connections.id, kind: connections.kind, config: connections.config }).from(connections).where(and(eq(connections.tenantId, tenantId), eq(connections.name, name)));
+  if (!conn) return undefined;
+  const mode = await getConnectionGrant(db, definitionId, conn.id);
+  if (!mode) return undefined;
+  if (server !== "connections") {
+    const readOnly = (conn.config as { readOnlyTools?: string[] }).readOnlyTools ?? [];
+    change = !readOnly.includes(tool);
+  }
+  return { connectionId: conn.id, name, kind: conn.kind as ConnectionKind, mode, change };
 }

@@ -177,6 +177,7 @@ export class OpenAICompatEngine implements Engine {
         });
 
         for (const call of calls) {
+          if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
           input.onEvent({ kind: "tool", toolName: call.name });
           const args = parseArgs(call.arguments);
           if (!args) {
@@ -191,7 +192,9 @@ export class OpenAICompatEngine implements Engine {
             openai.push({ role: "tool", tool_call_id: call.id, content: decision.message });
             continue;
           }
-          const result = await input.callTool(call.name, args);
+          if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
+          const result = await input.callTool(call.name, args, input.signal);
+          if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
           const text = result.text || "(no output)";
           messages.push({ role: "tool", toolCallId: call.id, text, ...(result.isError ? { isError: true } : {}) });
           openai.push({ role: "tool", tool_call_id: call.id, content: text });
@@ -211,6 +214,7 @@ export class OpenAICompatEngine implements Engine {
       }
       return this.result(input, messages, "max-steps", usage, steps);
     } catch (err) {
+      if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
       console.error("openai engine failed", err instanceof Error ? err.message : "unknown");
       return this.result(input, messages, "error", usage, steps);
     }

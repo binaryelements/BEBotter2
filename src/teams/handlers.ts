@@ -47,6 +47,101 @@ export async function serialize<T>(key: string, fn: () => Promise<T>): Promise<T
   }
 }
 
+type BurstJob = {
+  queue: IncomingMessage[];
+  running?: AbortController;
+  timer?: ReturnType<typeof setTimeout>;
+  wake?: () => void;
+  draining?: boolean;
+};
+/** One job per person and bot: their messages coalesce, while different people still take turns one at a time. */
+const burstJobs = new Map<string, BurstJob>();
+
+function armQuiet(job: BurstJob, quietMs: number) {
+  if (job.timer) clearTimeout(job.timer);
+  if (quietMs <= 0) {
+    // tests and an explicitly immediate setting: no timer at all, so fake timers cannot hold a turn
+    queueMicrotask(() => {
+      job.timer = undefined;
+      const wake = job.wake;
+      job.wake = undefined;
+      wake?.();
+    });
+    return;
+  }
+  const timer = setTimeout(() => {
+    job.timer = undefined;
+    const wake = job.wake;
+    job.wake = undefined;
+    wake?.();
+  }, quietMs);
+  (timer as { unref?: () => void }).unref?.();
+  job.timer = timer;
+}
+
+/**
+ * Runs the person's messages as one burst. A message that arrives while the bot is answering stops that
+ * answer; the next turn takes the running message and the new one together. Resolves when this call's
+ * burst (and any that overtook it) has finished.
+ */
+export async function submitBurst(
+  key: string,
+  msg: IncomingMessage,
+  quietMs: number,
+  run: (batch: IncomingMessage[], signal: AbortSignal) => Promise<boolean>,
+): Promise<void> {
+  let job = burstJobs.get(key);
+  if (!job) {
+    job = { queue: [] };
+    burstJobs.set(key, job);
+  }
+  job.queue.push(msg);
+  if (job.running) {
+    job.running.abort(); // the turn in flight stops; the drain loop takes its messages again with this one
+    return;
+  }
+  if (job.draining) {
+    armQuiet(job, quietMs); // still collecting: give the person another moment
+    return;
+  }
+  job.draining = true;
+  armQuiet(job, quietMs);
+  await drainBurst(key, job, quietMs, run);
+}
+
+async function drainBurst(
+  key: string,
+  job: BurstJob,
+  quietMs: number,
+  run: (batch: IncomingMessage[], signal: AbortSignal) => Promise<boolean>,
+): Promise<void> {
+  try {
+    while (true) {
+      await new Promise<void>((resolve) => (job.wake = resolve));
+      if (!job.queue.length) break;
+      const batch = job.queue.splice(0);
+      const controller = new AbortController();
+      job.running = controller;
+      let stopped = false;
+      try {
+        stopped = await run(batch, controller.signal);
+      } catch (err) {
+        console.error("turn burst failed", err);
+      } finally {
+        job.running = undefined;
+      }
+      // an overtaken turn starts over with everything it was given, plus whatever has arrived since
+      if (stopped && job.queue.length) job.queue.unshift(...batch);
+      if (!job.queue.length) break;
+      armQuiet(job, quietMs);
+    }
+  } finally {
+    if (job.timer) clearTimeout(job.timer);
+    job.draining = false;
+    burstJobs.delete(key);
+  }
+}
+
 const ms = (from: string, to?: string) => (to ? Date.parse(to) - Date.parse(from) : "-");
 export function logTurn(chatId: string, t: TurnTimings) {
   console.log(`turn ${chatId} ${Date.now() - Date.parse(t.receivedAt)}ms ready=${ms(t.receivedAt, t.engineReadyAt)}ms first=${ms(t.receivedAt, t.firstOutputAt)}ms deliver=${t.resultAt ? Date.now() - Date.parse(t.resultAt) : "-"}ms tools=${t.tools}`);
@@ -140,7 +235,15 @@ function statusMessage(io: TeamsIo, decorate: (text: string) => string = (t) => 
 
 const ownerOf = async (db: Db, chatId: string) => (await db.select({ owner: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.owner;
 
-export type HandlerDeps = { db: Db; runTurn: (turn: RunTurnInput) => Promise<RunResult>; botName: string; defaultModel: string; confirmations?: Confirmations };
+export type HandlerDeps = {
+  db: Db;
+  runTurn: (turn: RunTurnInput) => Promise<RunResult>;
+  botName: string;
+  defaultModel: string;
+  confirmations?: Confirmations;
+  /** Wait this long after a message for the person to finish typing; a later one stops the reply and is taken with it. */
+  burstQuietMs?: number;
+};
 
 export const signInFailed = "Sign-in didn't work. Say anything to try again.";
 
@@ -232,111 +335,132 @@ export async function handleMessage(
   const graphToken = definition.identity === "person" ? io.graphToken : undefined;
   // the route was chosen before the assignment or flag changed; the next message goes through sign-in
   if (definition.identity === "person" && !graphToken) return void (await io.send("Say that again, please."));
-  await serialize(`${msg.chatId}:${definition.id}`, async () => {
-    const personal = msg.conversationType === "personal";
-    // the reply's first line names the bot, in one-to-one chats too: every bot shares the one Teams identity
-    const name = botTitle(definition);
-    // group chats never stream; a stream that fails hands the rest of the turn to the status message
-    let stream = personal ? io.stream : undefined;
-    let streamed = false; // the stream showed something, so it must be ended
-    let flowing = false; // text is streaming; from here on there are no progress lines
-    let newMessage = false; // the next delta starts a later assistant message
-    let soFar = ""; // what the stream shows now
-    let fellBack = false; // the stream failed: the status message takes over
-    const toStream = (f: (s: TeamsStream) => void, text: string) => {
-      if (!stream) return false;
-      try {
-        f(stream);
-        streamed = true;
-        soFar = text;
-        return true;
-      } catch (err) {
-        console.error("streaming failed", err instanceof Error ? err.message : "unknown");
+  await submitBurst(`${msg.chatId}:${definition.id}:${person.id}`, msg, deps.burstQuietMs ?? 0, async (batch, signal) => {
+    const latest = batch[batch.length - 1]!;
+    // everything the person said while the bot was busy goes to the model as one message
+    const burstText = batch.map((m) => m.text).join("\n");
+    return await serialize(`${latest.chatId}:${definition.id}`, async () => {
+      const personal = latest.conversationType === "personal";
+      // the reply's first line names the bot, in one-to-one chats too: every bot shares the one Teams identity
+      const name = botTitle(definition);
+      // group chats never stream; a stream that fails hands the rest of the turn to the status message
+      let stream = personal ? io.stream : undefined;
+      let streamed = false; // the stream showed something, so it must be ended
+      let flowing = false; // text is streaming; from here on there are no progress lines
+      let newMessage = false; // the next delta starts a later assistant message
+      let soFar = ""; // what the stream shows now
+      let fellBack = false; // the stream failed: the status message takes over
+      const toStream = (f: (s: TeamsStream) => void, text: string) => {
+        if (!stream || signal.aborted) return false;
+        try {
+          f(stream);
+          streamed = true;
+          soFar = text;
+          return true;
+        } catch (err) {
+          console.error("streaming failed", err instanceof Error ? err.message : "unknown");
+          stream = undefined;
+          fellBack = true;
+          return false;
+        }
+      };
+      // a chat that streams never gets a status message unless the stream failed; once text flows, progress lines would only interrupt it
+      const onStream = (t: string) => {
+        if (!personal || !io.stream || fellBack || signal.aborted) return false;
+        return !stream || flowing || toStream((s) => s.informative(t), t);
+      };
+      const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(name, t), onStream);
+      const progress = (e: ProgressEvent) => {
+        if (signal.aborted) return; // the person has moved on; nothing more from this attempt reaches the chat
+        if (!stream) return status.progress(e);
+        if (e.kind === "delta") {
+          // interim text streams too, after the bot's name; Teams refuses a final message that does not carry on from what was streamed
+          const text = (flowing ? (newMessage ? "\n\n" : "") : withRoleLabel(name, "")) + e.text;
+          newMessage = false;
+          if (toStream((s) => s.chunk(text), (flowing ? soFar : "") + text)) flowing = true;
+        } else if (e.kind === "tool") status.progress(e);
+        else if (e.kind === "message-end") newMessage = true;
+      };
+      /** Ends the stream with text (and a card) as its final message; false when there was nothing to end or it failed. */
+      const endStream = async (text: string, card?: AdaptiveCard) => {
+        const s = stream;
         stream = undefined;
-        fellBack = true;
-        return false;
-      }
-    };
-    // a chat that streams never gets a status message unless the stream failed; once text flows, progress lines would only interrupt it
-    const onStream = (t: string) => {
-      if (!personal || !io.stream || fellBack) return false;
-      return !stream || flowing || toStream((s) => s.informative(t), t);
-    };
-    const status = statusMessage(io, personal ? undefined : (t) => withRoleLabel(name, t), onStream);
-    const progress = (e: ProgressEvent) => {
-      if (!stream) return status.progress(e);
-      if (e.kind === "delta") {
-        // interim text streams too, after the bot's name; Teams refuses a final message that does not carry on from what was streamed
-        const text = (flowing ? (newMessage ? "\n\n" : "") : withRoleLabel(name, "")) + e.text;
-        newMessage = false;
-        if (toStream((s) => s.chunk(text), (flowing ? soFar : "") + text)) flowing = true;
-      } else if (e.kind === "tool") status.progress(e);
-      else if (e.kind === "message-end") newMessage = true;
-    };
-    /** Ends the stream with text (and a card) as its final message; false when there was nothing to end or it failed. */
-    const endStream = async (text: string, card?: AdaptiveCard) => {
-      const s = stream;
-      stream = undefined;
-      if (!s || !streamed) return false;
-      try {
-        await s.end(text, card);
+        if (!s || !streamed) return false;
+        try {
+          await s.end(text, card);
+          return true;
+        } catch (err) {
+          console.error("ending the stream failed", err instanceof Error ? err.message : "unknown");
+          fellBack = true;
+          return false;
+        }
+      };
+      // a reply still running after SLOW_AFTER_MS says so once, so nobody is left looking at a silent chat
+      const slow = setTimeout(() => {
+        if (signal.aborted) return;
+        if (flowing && stream) {
+          if (toStream((s) => s.chunk(`\n\n${SLOW_NOTE}`), `${soFar}\n\n${SLOW_NOTE}`)) newMessage = true;
+        } else status.progress({ kind: "text", text: SLOW_NOTE });
+      }, SLOW_AFTER_MS);
+      const deliver = async (reply: string) => {
+        clearTimeout(slow);
+        await status.stop();
+        if (signal.aborted) return; // the newer message answers instead
+        const labelled = withRoleLabel(name, reply);
+        const final = !flowing ? labelled : soFar.trimEnd().endsWith(reply.trim()) ? soFar : `${soFar}\n\n${reply}`;
+        if (!(await endStream(final))) await status.finish(labelled);
+      };
+      // a turn that is being replaced still has to close what it opened, or Teams keeps the typing indicator
+      const stop = async () => {
+        clearTimeout(slow);
+        await status.stop();
+        if (streamed) await endStream(soFar || "…");
         return true;
+      };
+      try {
+        const heard = personal ? [] : await takeOverheard(db, latest.chatId);
+        for (const m of batch)
+          if (m.attachments?.length) await storeAttachments(db, { tenantId: m.tenantId, chatId: m.chatId, personId: person.id, senderName: person.name, ...(m.receivedAt ? { at: m.receivedAt } : {}) }, m.attachments);
+        const now = latest.receivedAt ?? new Date();
+        const result = await deps.runTurn({
+          tenantId: latest.tenantId,
+          chatId: latest.chatId,
+          definition,
+          person,
+          text: withAttachments(await recentAttachments(db, latest.chatId, now), withOverheard(heard, burstText), now),
+          receivedAt: latest.receivedAt,
+          signal,
+          ...(graphToken ? { graphToken } : {}),
+          askConfirmation: async (req) => {
+            clearTimeout(slow); // the card says what it is waiting for
+            status.supersede();
+            // a stream must not stay open through a wait of up to 10 minutes: the card ends it, replacing any progress line;
+            // the reply after the card is a new message
+            const card = confirmationCard(req);
+            if (await endStream(flowing ? soFar : "", card)) return;
+            return io.sendCard(card);
+          },
+          progress,
+        });
+        if (result.aborted || signal.aborted) return await stop();
+        await deliver(result.text);
+        // a revoked token can keep coming back from the token service until the person is signed out
+        if (result.signInLost)
+          await io.signOut?.().catch((e: unknown) => console.error("graph sign-out failed:", e instanceof Error ? e.name : "unknown"));
+        try {
+          await recordSent(db, result.auditId, new Date());
+        } catch (err) {
+          console.error("recording turn timing failed", err); // the reply is already delivered; never answer twice
+        }
+        logTurn(latest.chatId, result.timings);
+        return false;
       } catch (err) {
-        console.error("ending the stream failed", err instanceof Error ? err.message : "unknown");
-        fellBack = true;
+        if (signal.aborted) return await stop();
+        console.error(err);
+        await deliver("Something went wrong on my side.");
         return false;
       }
-    };
-    // a reply still running after SLOW_AFTER_MS says so once, so nobody is left looking at a silent chat
-    const slow = setTimeout(() => {
-      if (flowing && stream) {
-        if (toStream((s) => s.chunk(`\n\n${SLOW_NOTE}`), `${soFar}\n\n${SLOW_NOTE}`)) newMessage = true;
-      } else status.progress({ kind: "text", text: SLOW_NOTE });
-    }, SLOW_AFTER_MS);
-    const deliver = async (reply: string) => {
-      clearTimeout(slow);
-      await status.stop();
-      const labelled = withRoleLabel(name, reply);
-      const final = !flowing ? labelled : soFar.trimEnd().endsWith(reply.trim()) ? soFar : `${soFar}\n\n${reply}`;
-      if (!(await endStream(final))) await status.finish(labelled);
-    };
-    try {
-      const heard = personal ? [] : await takeOverheard(db, msg.chatId);
-      if (msg.attachments?.length) await storeAttachments(db, { tenantId: msg.tenantId, chatId: msg.chatId, personId: person.id, senderName: person.name, ...(msg.receivedAt ? { at: msg.receivedAt } : {}) }, msg.attachments);
-      const now = msg.receivedAt ?? new Date();
-      const result = await deps.runTurn({
-        tenantId: msg.tenantId,
-        chatId: msg.chatId,
-        definition,
-        person,
-        text: withAttachments(await recentAttachments(db, msg.chatId, now), withOverheard(heard, msg.text), now),
-        receivedAt: msg.receivedAt,
-        ...(graphToken ? { graphToken } : {}),
-        askConfirmation: async (req) => {
-          clearTimeout(slow); // the card says what it is waiting for
-          status.supersede();
-          // a stream must not stay open through a wait of up to 10 minutes: the card ends it, replacing any progress line;
-          // the reply after the card is a new message
-          const card = confirmationCard(req);
-          if (await endStream(flowing ? soFar : "", card)) return;
-          return io.sendCard(card);
-        },
-        progress,
-      });
-      await deliver(result.text);
-      // a revoked token can keep coming back from the token service until the person is signed out
-      if (result.signInLost)
-        await io.signOut?.().catch((e: unknown) => console.error("graph sign-out failed:", e instanceof Error ? e.name : "unknown"));
-      try {
-        await recordSent(db, result.auditId, new Date());
-      } catch (err) {
-        console.error("recording turn timing failed", err); // the reply is already delivered; never answer twice
-      }
-      logTurn(msg.chatId, result.timings);
-    } catch (err) {
-      console.error(err);
-      await deliver("Something went wrong on my side.");
-    }
+    });
   });
 }
 

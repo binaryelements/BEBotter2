@@ -31,6 +31,14 @@ export class Confirmations {
     return { actionId, outcome };
   }
 
+  /** Stops waiting for these cards: a turn that has been superseded must not act when a late click arrives. */
+  cancel(actionIds: Iterable<string>): void {
+    for (const id of actionIds) {
+      const p = this.pending.get(id);
+      if (p) p.settle({ result: "expired" });
+    }
+  }
+
   /** The confirmation waiting in this chat for this person, if one is. */
   pendingFor(chatId: string, personId: string, definitionId?: string): string | undefined {
     for (const [id, p] of this.pending) if (p.chatId === chatId && p.personId === personId && (!definitionId || !p.definitionId || p.definitionId === definitionId)) return id;

@@ -7,7 +7,7 @@ import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
-import { listConnectionsFor } from "../connections/store.js";
+import { getConnectionGrant, listConnectionsFor } from "../connections/store.js";
 import { fakeSsh } from "../connections/ssh.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
 import { addLearning, listLearnings } from "../learnings/store.js";
@@ -277,6 +277,19 @@ describe("bots screen", () => {
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
       expect((await listConnectionsFor(db, T, d.id)).map((x) => x.id)).not.toContain(c);
     });
+    it("sets a per-bot permission for one connection", async () => {
+      const d = await def("helper");
+      const c = await conn("granted", { mode: "change" });
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
+      const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
+      expect(page).toContain("This bot");
+      expect(page).toContain("change: ask");
+      expect((await post(`/admin/bots/${d.id}/connections/${c}/permission`, "Ann", [["mode", "free"]])).status).toBe(303);
+      expect(await getConnectionGrant(db, d.id, c)).toBe("free");
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("change: free");
+      expect((await post(`/admin/bots/${d.id}/connections/${c}/permission`, "Ann", [["mode", "nonsense"]])).status).toBe(400);
+    });
+
     it("revoke shows the public key and the connection can no longer run", async () => {
       const c = await conn("rev");
       const armed = await post(`/admin/connections/${c}/revoke`, "Ann", []);

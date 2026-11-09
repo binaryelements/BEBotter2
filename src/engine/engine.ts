@@ -65,7 +65,7 @@ export type EngineRunInput = EngineProcessOptions & {
   onEvent: (event: EngineEvent) => void;
   /** The tools the app offers; the engine calls `callTool` for each. */
   tools: EngineTool[];
-  callTool: (name: string, input: Record<string, unknown>) => Promise<ToolResult>;
+  callTool: (name: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolResult>;
   /** The app's gate, audit row and confirmation card. */
   authoriseTool: (callId: string, name: string, input: Record<string, unknown>) => Promise<ToolDecision>;
   /** Closes the audit row opened by authoriseTool. */

@@ -10,7 +10,7 @@ import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
 import type { SqlRunner } from "./sql.js";
 import {
-  adminVerify, approveConnection, connectionMcpConfigs, createConnection, getConnection, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setLinked, verifyConnection,
+  adminVerify, approveConnection, connectionGrantForTool, connectionGrantsFor, connectionMcpConfigs, createConnection, getConnection, getConnectionGrant, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setConnectionGrant, setLinked, verifyConnection,
 } from "./store.js";
 
 const key = randomBytes(32);
@@ -351,5 +351,22 @@ describe("connections store", () => {
     expect(await adminVerify(deps, "t1", pve.id, personId)).toMatch(/^Connected/);
     expect((await getConnection(db, "t1", "pve2"))!.status).toBe("active");
     expect(await adminVerify(deps, "t1", (await createConnection(deps, "t1", { ...base, kind: "http", name: "api", target: "https://api.example.test/", config: {} })).id, personId)).toMatch(/probe path/);
+  });
+
+  it("keeps a per-bot permission per connection and reads it for a tool call", async () => {
+    const pve = await createConnection(deps, "t1", { kind: "ssh", name: "pve3", target: "pve3.example.test", mode: "change", config: { port: 22, username: "root" }, personId, definitionIds: [defId] });
+    await setConnectionGrant(db, "t1", defId, pve.id, "read");
+    expect(await getConnectionGrant(db, defId, pve.id)).toBe("read");
+    expect(await connectionGrantsFor(db, defId)).toEqual(new Map([[pve.id, "read"]]));
+    await setConnectionGrant(db, "t1", defId, pve.id, "free");
+    expect(await getConnectionGrant(db, defId, pve.id)).toBe("free");
+    await expect(setConnectionGrant(db, "t1", otherDefId, pve.id, "read")).rejects.toThrow(/Give the bot/);
+    expect(await connectionGrantForTool(db, "t1", defId, "mcp__connections__ssh_change", { name: "pve3" })).toMatchObject({ name: "pve3", mode: "free", change: true });
+    expect(await connectionGrantForTool(db, "t1", defId, "mcp__connections__ssh_read", { name: "pve3" })).toMatchObject({ mode: "free", change: false });
+
+    const fleet = await createConnection(deps, "t1", { kind: "mcp", name: "fleet", target: "https://mcp.example.test/mcp", mode: "change", config: { headerName: "Authorization", readOnlyTools: ["list"] }, secret: "Bearer k", personId, definitionIds: [defId] });
+    await setConnectionGrant(db, "t1", defId, fleet.id, "confirm");
+    expect(await connectionGrantForTool(db, "t1", defId, "mcp__conn-fleet__list", {})).toMatchObject({ mode: "confirm", change: false });
+    expect(await connectionGrantForTool(db, "t1", defId, "mcp__conn-fleet__run_script", {})).toMatchObject({ mode: "confirm", change: true });
   });
 });

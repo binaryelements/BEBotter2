@@ -58,7 +58,7 @@ export class McpRegistry {
     return out;
   }
 
-  async call(name: string, args: Record<string, unknown>): Promise<McpToolResult> {
+  async call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<McpToolResult> {
     if (BLOCKED.has(name)) return { text: "That tool is not available.", isError: true };
     const match = /^mcp__(.+?)__(.+)$/.exec(name);
     if (!match) return { text: `Not an MCP tool: ${name}`, isError: true };
@@ -68,7 +68,7 @@ export class McpRegistry {
     if (!config) return { text: `No MCP server named ${server}.`, isError: true };
     try {
       const client = await this.client(server, config);
-      const result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
+      const result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS, ...(signal ? { signal } : {}) });
       const content = (result.content ?? []) as Content[];
       const texts: string[] = [];
       const images: EngineImage[] = [];

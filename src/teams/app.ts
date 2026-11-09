@@ -15,6 +15,8 @@ export type TeamsAppDeps = {
   confirmations: Confirmations;
   botName: string;
   defaultModel: string;
+  /** Wait this long after a message for the person to finish typing; a later one stops the reply and is taken with it. */
+  burstQuietMs?: number;
   /** The Azure Bot OAuth connection behind the `graph` sign-in. */
   graphConnection: string;
 };

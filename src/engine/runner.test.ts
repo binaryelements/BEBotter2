@@ -17,7 +17,7 @@ import type { Db } from "../db/client.js";
 import { botDefinitions, chats, connections, mailboxes, sessions } from "../db/schema.js";
 import { addLearning } from "../learnings/store.js";
 import { rememberMemory } from "../memory/store.js";
-import { requestConnection } from "../connections/store.js";
+import { requestConnection, setConnectionGrant } from "../connections/store.js";
 import { encrypt } from "../secrets/cipher.js";
 import { setRole } from "../org/directory.js";
 import { testDb } from "../db/test-db.js";
@@ -574,6 +574,40 @@ describe("runTurn", () => {
     expect(q.seen[0]!.mcpServers["conn-desk"]).toEqual({ type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Api-Key": "mcp-tok" } });
     expect(q.decisions).toEqual(["allow", "deny"]);
     expect(requests.map((r) => [r.toolName, r.input])).toEqual([["mcp__conn-desk__close_ticket", { id: 1 }]]);
+  });
+
+  it("a per-connection grant narrows or frees one bot without changing the global tool rule", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const { connection } = await requestConnection({ db, ssh: fakeSsh(), secretsKey: key }, "t1", {
+      kind: "mcp", name: "desk", target: "https://mcp.example.test/mcp", mode: "change", config: { headerName: "X-Api-Key", readOnlyTools: ["list_tickets"] }, definitionId: definition.id, personId: person.id,
+    });
+    await db.update(connections).set({ status: "active", secretCipher: encrypt(key, "mcp-tok") }).where(eq(connections.id, connection.id));
+    const calls: [string, Record<string, unknown>][] = [["mcp__conn-desk__close_ticket", { id: 1 }], ["mcp__conn-desk__list_tickets", {}]];
+    const run = async (mode: "read" | "free" | "confirm") => {
+      await setConnectionGrant(db, "t1", definition.id, connection.id, mode);
+      const q = fakeEngine({ calls });
+      const d = deps(db, q.engine);
+      const requests: ConfirmationRequest[] = [];
+      await runTurn(d, {
+        tenantId: "t1", chatId: "c1", definition, person, text: "x",
+        askConfirmation: async (r) => {
+          requests.push(r);
+          await d.confirmations.resolve(r.actionId, person.id, "yes");
+        },
+      });
+      return { q, requests };
+    };
+    const read = await run("read");
+    expect(read.q.decisions).toEqual(["deny", "allow"]);
+    expect(read.requests).toEqual([]);
+    const free = await run("free");
+    expect(free.q.decisions).toEqual(["allow", "allow"]);
+    expect(free.requests).toEqual([]);
+    await setToolRule(db, definition.id, "mcp__conn-desk__close_ticket", "free");
+    const confirm = await run("confirm");
+    expect(confirm.q.decisions).toEqual(["allow", "allow"]);
+    expect(confirm.requests.map((r) => r.toolName)).toEqual(["mcp__conn-desk__close_ticket"]);
   });
 
   it("a person definition gets no linked connection", async () => {

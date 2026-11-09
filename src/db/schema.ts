@@ -375,6 +375,19 @@ export const definitionConnections = pgTable(
   (t) => [primaryKey({ columns: [t.definitionId, t.connectionId] })],
 );
 
+/** Per-bot access to one linked connection: read-only, ask on change, free for change, or no access. */
+export const connectionGrants = pgTable(
+  "connection_grants",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id").notNull().references(() => connections.id, { onDelete: "cascade" }),
+    mode: text("mode").notNull(), // read | confirm | free | deny
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.connectionId] })],
+);
+export type ConnectionGrant = typeof connectionGrants.$inferSelect;
+
 export const knowledgeVersions = pgTable(
   "knowledge_versions",
   {

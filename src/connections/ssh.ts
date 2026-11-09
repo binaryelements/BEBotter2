@@ -15,10 +15,10 @@ export type SshTarget = { host: string; port: number; username: string; privateK
 export type SshResult = { output: string; exitCode: number; hostKey: string | null; hostKeyMismatch: boolean };
 export interface SshRunner {
   generateKey(comment: string): Promise<{ privateKey: string; publicKey: string }>;
-  exec(target: SshTarget, command: string, timeoutMs?: number): Promise<SshResult>;
+  exec(target: SshTarget, command: string, timeoutMs?: number, signal?: AbortSignal): Promise<SshResult>;
 }
 
-type ExecFileOpts = { timeout?: number; maxBuffer: number; encoding: "utf8" };
+type ExecFileOpts = { timeout?: number; maxBuffer: number; encoding: "utf8"; signal?: AbortSignal };
 type ExecFileCb = (err: (Error & { code?: number | string; killed?: boolean }) | null, stdout: string, stderr: string) => void;
 export type ExecFileImpl = (file: string, args: string[], opts: ExecFileOpts, cb: ExecFileCb) => unknown;
 
@@ -30,9 +30,9 @@ export function validTarget(t: { host: string; port: number; username: string })
 }
 
 export function systemSsh(execFileImpl: ExecFileImpl = execFile as unknown as ExecFileImpl): SshRunner {
-  const run = (file: string, args: string[], timeout?: number) =>
+  const run = (file: string, args: string[], timeout?: number, signal?: AbortSignal) =>
     new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>((resolve, reject) => {
-      execFileImpl(file, args, { timeout, maxBuffer: MAX_STREAM_BYTES, encoding: "utf8" }, (err, stdout, stderr) => {
+      execFileImpl(file, args, { timeout, maxBuffer: MAX_STREAM_BYTES, encoding: "utf8", ...(signal ? { signal } : {}) }, (err, stdout, stderr) => {
         if (!err) return resolve({ stdout, stderr, exitCode: 0, timedOut: false });
         // a missing binary (ENOENT) is a real failure; exit codes, timeouts and oversized output are results
         if (typeof err.code === "string" && err.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return reject(err);
@@ -58,7 +58,7 @@ export function systemSsh(execFileImpl: ExecFileImpl = execFile as unknown as Ex
         return { privateKey: await readFile(file, "utf8"), publicKey: (await readFile(`${file}.pub`, "utf8")).trim() };
       }),
 
-    exec: (target, command, timeoutMs = 120_000) =>
+    exec: (target, command, timeoutMs = 120_000, signal) =>
       withDir(async (dir) => {
         const invalid = validTarget(target);
         if (invalid) throw new Error(invalid);
@@ -72,7 +72,7 @@ export function systemSsh(execFileImpl: ExecFileImpl = execFile as unknown as Ex
           "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10",
           "-o", `UserKnownHostsFile=${known}`, "-o", `StrictHostKeyChecking=${target.hostKey ? "yes" : "accept-new"}`,
           "-o", "LogLevel=ERROR", "--", target.host, command,
-        ], timeoutMs);
+        ], timeoutMs, signal);
         let hostKey = target.hostKey;
         if (!hostKey) {
           // the throwaway file holds only this connection, and ssh lowercases the host it writes
