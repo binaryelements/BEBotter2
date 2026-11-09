@@ -9,7 +9,7 @@ import { ensureMantisConnection } from "./mantis.js";
 import { getConnection } from "./store.js";
 
 describe("mantis connection", () => {
-  it("creates one MCP connection, links the IT Support bot and keeps line_show free", async () => {
+  it("creates the MCP and HTTP connections, links the IT Support bot and keeps line_show free", async () => {
     const db = await testDb();
     await upsertTenant(db, { id: "t1" });
     const admin = await upsertPerson(db, { tenantId: "t1", aadObjectId: "u1", name: "Ann" });
@@ -20,6 +20,10 @@ describe("mantis connection", () => {
     expect(c).toMatchObject({ kind: "mcp", target: "https://mantis.example/mcp", mode: "change", status: "active" });
     expect(c!.config).toMatchObject({ headerName: "Authorization", readOnlyTools: ["line_show"] });
     expect((await db.select().from(definitionConnections).where(eq(definitionConnections.connectionId, c!.id))).map((l) => l.definitionId)).toEqual([bot.id]);
+    const api = await getConnection(db, "t1", "mantis-api");
+    expect(api).toMatchObject({ kind: "http", target: "https://mantis.example", mode: "change", status: "active" });
+    expect(api!.config).toMatchObject({ auth: { in: "header", name: "Authorization" } });
+    expect((await db.select().from(definitionConnections).where(eq(definitionConnections.connectionId, api!.id))).map((l) => l.definitionId)).toEqual([bot.id]);
     await ensureMantisConnection(db, Buffer.alloc(32, 2), "t1", { url: "https://mantis.example/mcp", secret: "Basic test" });
   });
 });
