@@ -6,7 +6,7 @@ import { testDb } from "../db/test-db.js";
 import { setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { ensureMantisConnection } from "./mantis.js";
-import { getConnection } from "./store.js";
+import { getConnection, getConnectionGrant, setConnectionGrant } from "./store.js";
 
 describe("mantis connection", () => {
   it("creates the MCP and HTTP connections, links the IT Support bot and keeps line_show free", async () => {
@@ -24,6 +24,11 @@ describe("mantis connection", () => {
     expect(api).toMatchObject({ kind: "http", target: "https://mantis.example", mode: "change", status: "active" });
     expect(api!.config).toMatchObject({ auth: { in: "header", name: "Authorization" } });
     expect((await db.select().from(definitionConnections).where(eq(definitionConnections.connectionId, api!.id))).map((l) => l.definitionId)).toEqual([bot.id]);
+    expect(await getConnectionGrant(db, bot.id, c!.id)).toBe("free");
+    expect(await getConnectionGrant(db, bot.id, api!.id)).toBe("free");
+    // an explicit choice on the bot's Connections tab is kept on the next start
+    await setConnectionGrant(db, "t1", bot.id, c!.id, "read");
     await ensureMantisConnection(db, Buffer.alloc(32, 2), "t1", { url: "https://mantis.example/mcp", secret: "Basic test" });
+    expect(await getConnectionGrant(db, bot.id, c!.id)).toBe("read");
   });
 });
