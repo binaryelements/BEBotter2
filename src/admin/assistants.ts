@@ -1,7 +1,7 @@
 import express from "express";
 import type { Router } from "express";
 import { and, count, desc, eq, inArray, max } from "drizzle-orm";
-import { clearPersonalChat, ensurePersonalAssistant, listDefinitions } from "../bots/definitions.js";
+import { clearPersonalChat, ensurePersonalAssistant, listDefinitions, updateDefinitionFields } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { assistantRequests, auditEvents, botDefinitions, chatAssignments, people } from "../db/schema.js";
 import { setPersonalBot } from "../org/directory.js";
@@ -52,6 +52,9 @@ export function assistantRoutes(db: Db, defaultModel: string): Router {
         return html`<section class="be-card bot-card">
 <div class="bot-head"><div class="bot-avatar" style="background:hsl(${h} 45% 22%);color:hsl(${h} 80% 85%)">${initials}</div><div class="bot-title"><div class="bot-name">${d.displayName ?? d.label}</div><div class="bot-role">${o ? `for ${o.name}` : "no owner"}</div></div><span class="be-chip ${on ? "g" : ""}">${on ? "on" : "off"}</span></div>
 <p class="bot-desc clamp">${persona}</p>
+<form class="assistant-name" method="post" action="/admin/assistants/${d.id}/name" data-autosave><input type="hidden" name="csrf" value="${csrf}">
+<label>name<span class="hint">shown in chat; blank means “My assistant”</span><input class="be-input" name="displayName" value="${d.displayName ?? ""}" placeholder="${d.label}" maxlength="60" autocomplete="off"></label><button class="be-btn sm auto">save</button>
+</form>
 <div class="bot-chips"><span class="be-chip c">${d.model}</span><span class="be-chip">${n} ${n === 1 ? "chat" : "chats"}</span>${d.ownerPersonId ? html`<span class="be-chip">${todoCount.get(d.ownerPersonId) ?? 0} ${(todoCount.get(d.ownerPersonId) ?? 0) === 1 ? "to-do" : "to-dos"}</span>` : ""}${lastAt.get(d.id) ? html`<span class="be-chip">last ${when(lastAt.get(d.id))}</span>` : ""}</div>
 <div class="bot-foot"><form method="post" action="/admin/assistants/${d.id}/enabled" data-autosave><input type="hidden" name="csrf" value="${csrf}"><label class="be-toggle"><input type="checkbox" name="enabled" ${on ? "checked" : ""}> ${on ? "on" : "off"}</label><button class="be-btn sm auto">save</button></form><a class="be-btn sm" href="/admin/bots/${d.id}/try">Try it</a><a class="be-btn sm primary" href="/admin/bots/${d.id}">Open</a></div>
 </section>`;
@@ -77,6 +80,26 @@ ${requests.length ? scroll(html`<table class="be-table"><thead><tr><th>From</th>
       await setPersonalBot(db, actor.tenantId, def.ownerPersonId, on);
       if (on) await ensurePersonalAssistant(db, actor.tenantId, def.ownerPersonId, defaultModel);
       else await clearPersonalChat(db, actor.tenantId, def.ownerPersonId);
+      res.redirect(303, "/admin/assistants");
+    }),
+  );
+
+  router.post(
+    "/assistants/:id/name",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const [def] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.id, req.params.id), eq(botDefinitions.tenantId, actor.tenantId)));
+      if (!def || def.identity !== "person") return page(res, 404, "Assistant not found.");
+      const displayName = String((req.body as Record<string, unknown> | undefined)?.displayName ?? "").trim();
+      await updateDefinitionFields(db, actor.tenantId, def.id, {
+        label: def.label,
+        persona: def.persona,
+        model: def.model,
+        webSearch: def.webSearch,
+        computer: def.computer,
+        displayName,
+      });
       res.redirect(303, "/admin/assistants");
     }),
   );

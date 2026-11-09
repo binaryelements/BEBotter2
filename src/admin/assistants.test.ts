@@ -1,6 +1,6 @@
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ensurePersonalAssistant } from "../bots/definitions.js";
+import { ensurePersonalAssistant, getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
@@ -50,6 +50,15 @@ describe("personal assistants screen", () => {
     expect(page).toContain("for Mo");
     expect(page).toContain("My assistant");
     expect((await get("/admin/assistants", "Hal")).status).toBe(403);
+  });
+
+  it("renames an assistant from its card and resets it with an empty name", async () => {
+    expect((await post(`/admin/assistants/${pa}/name`, "Ann", { displayName: "Mickey" })).status).toBe(303);
+    expect((await getDefinition(db, T, pa))!.displayName).toBe("Mickey");
+    expect(await (await get("/admin/assistants", "Ann")).text()).toContain("Mickey");
+    expect((await post(`/admin/assistants/${pa}/name`, "Ann", { displayName: "" })).status).toBe(303);
+    expect((await getDefinition(db, T, pa))!.displayName).toBeNull();
+    expect((await post(`/admin/assistants/${pa}/name`, "Hal", { displayName: "Hacked" })).status).toBe(403);
   });
 
   it("turns an assistant off and on from its card", async () => {
