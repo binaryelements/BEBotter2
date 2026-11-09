@@ -1,0 +1,1 @@
+ALTER TABLE "people" ADD COLUMN "licensed" boolean DEFAULT true NOT NULL;

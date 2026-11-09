@@ -3,7 +3,7 @@ import type { Db } from "../db/client.js";
 import type { Config } from "../config/config.js";
 import { people, tenants } from "../db/schema.js";
 
-export type DirectoryUser = { id: string; displayName: string; mail: string | null; userPrincipalName: string; accountEnabled: boolean; userType: string; city?: string | null; country?: string | null; officeLocation?: string | null };
+export type DirectoryUser = { id: string; displayName: string; mail: string | null; userPrincipalName: string; accountEnabled: boolean; userType: string; assignedLicenses?: { skuId?: string }[]; city?: string | null; country?: string | null; officeLocation?: string | null };
 export type FetchUsers = () => Promise<DirectoryUser[]>;
 
 const MAX_PAGES = 50;
@@ -35,7 +35,7 @@ export function graphFetchUsers(config: Pick<Config, "teams">, fetchFn: typeof f
     if (typeof access_token !== "string") throw new Error("Directory sync failed: no token");
 
     const users: DirectoryUser[] = [];
-    let next: string | undefined = "https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType,city,country,officeLocation&$top=999";
+    let next: string | undefined = "https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType,assignedLicenses,city,country,officeLocation&$top=999";
     for (let i = 0; next; i++) {
       if (i === MAX_PAGES) {
         console.warn(`people sync: stopped after ${MAX_PAGES} pages`);
@@ -78,25 +78,32 @@ async function doSync(db: Db, tenantId: string, fetchUsers: FetchUsers): Promise
     const email = (clean(u.mail) || clean(u.userPrincipalName)).toLowerCase();
     // where they are, as the directory has it: city and country, else the office
     const location = [clean(u.city ?? ""), clean(u.country ?? "")].filter(Boolean).join(", ") || clean(u.officeLocation ?? "") || null;
-    return u.accountEnabled && u.userType === "Member" && id && name && email ? [{ id, name, email, location, country: clean(u.country ?? "") || null }] : [];
+    // a directory page without assignedLicenses is treated as licensed, so a restricted $select cannot hide everyone
+    const licensed = u.assignedLicenses === undefined || u.assignedLicenses.length > 0;
+    return u.accountEnabled && u.userType === "Member" && id && name && email ? [{ id, name, email, location, country: clean(u.country ?? "") || null, licensed }] : [];
   });
-  let added = 0, updated = 0;
+  let added = 0, updated = 0, skipped = all.length - members.length;
   await db.transaction(async (tx) => {
     await tx.insert(tenants).values({ id: tenantId, name: "" }).onConflictDoNothing();
     const existing = new Map(
-      (await tx.select({ aadObjectId: people.aadObjectId, name: people.name, email: people.email, location: people.location }).from(people).where(eq(people.tenantId, tenantId))).map((p) => [p.aadObjectId, p]),
+      (await tx.select({ aadObjectId: people.aadObjectId, name: people.name, email: people.email, location: people.location, licensed: people.licensed }).from(people).where(eq(people.tenantId, tenantId))).map((p) => [p.aadObjectId, p]),
     );
-    for (const { id, name, email, location } of members) {
+    for (const { id, name, email, location, licensed } of members) {
       const row = existing.get(id);
-      if (row && row.name === name && row.email === email && row.location === location) continue;
+      if (row && row.name === name && row.email === email && row.location === location && row.licensed === licensed) continue;
+      // a new unlicensed member is not added; an existing one is kept (history, roles) but marked unlicensed
+      if (!row && !licensed) {
+        skipped++;
+        continue;
+      }
       // An upsert, so a row another process inserted meanwhile is updated rather than failing the sync.
       await tx
         .insert(people)
-        .values({ id: crypto.randomUUID(), tenantId, aadObjectId: id, name, email, location })
-        .onConflictDoUpdate({ target: [people.tenantId, people.aadObjectId], set: { name, email, location } });
+        .values({ id: crypto.randomUUID(), tenantId, aadObjectId: id, name, email, location, licensed })
+        .onConflictDoUpdate({ target: [people.tenantId, people.aadObjectId], set: { name, email, location, licensed } });
       if (row) updated++;
       else added++;
-      existing.set(id, { aadObjectId: id, name, email, location });
+      existing.set(id, { aadObjectId: id, name, email, location, licensed });
     }
     // the company's default place, until an admin sets one: where most of its people are
     const [t] = await tx.select({ location: tenants.location, country: tenants.country }).from(tenants).where(eq(tenants.id, tenantId));
@@ -106,7 +113,7 @@ async function doSync(db: Db, tenantId: string, fetchUsers: FetchUsers): Promise
       if (common) await tx.update(tenants).set({ country: common, ...(city ? { location: city } : {}) }).where(eq(tenants.id, tenantId));
     }
   });
-  return { added, updated, skipped: all.length - members.length };
+  return { added, updated, skipped };
 }
 
 /** Syncs now and then every intervalMs; returns a stop function. Failures are logged, never thrown. */

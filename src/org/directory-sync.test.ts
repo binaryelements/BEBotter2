@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { testDb } from "../db/test-db.js";
 import { people } from "../db/schema.js";
 import { createDepartment, listDepartments, listPeople, setMembership, setPersonalBot, setRole } from "./directory.js";
@@ -41,6 +42,18 @@ describe("syncPeople", () => {
     expect((await listDepartments(db, T))[0].members).toHaveLength(1);
 
     expect(await syncPeople(db, T, async () => users)).toEqual({ added: 0, updated: 0, skipped: 2 });
+  });
+
+  it("marks unlicensed members and does not add a new unlicensed one", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: T });
+    const users = [user("ann", { assignedLicenses: [{ skuId: "sku-1" }] }), user("nol", { assignedLicenses: [] })];
+    expect(await syncPeople(db, T, async () => users)).toEqual({ added: 1, updated: 0, skipped: 1 });
+    expect((await listPeople(db, T)).map((p) => [p.name, p.licensed])).toEqual([["ANN", true]]);
+    const old = await upsertPerson(db, { tenantId: T, aadObjectId: "old", name: "Old" });
+    expect(await syncPeople(db, T, async () => [user("old", { assignedLicenses: [] })])).toEqual({ added: 0, updated: 1, skipped: 0 });
+    const [oldRow] = await db.select({ licensed: people.licensed }).from(people).where(eq(people.id, old.id));
+    expect(oldRow!.licensed).toBe(false);
   });
 
   it("keeps each person's place from the directory and makes the commonest one the company default", async () => {
@@ -121,7 +134,7 @@ describe("graphFetchUsers", () => {
     expect(calls[0].url).toBe("https://login.microsoftonline.com/tid-1/oauth2/v2.0/token");
     const form = new URLSearchParams(String(calls[0].init?.body));
     expect(Object.fromEntries(form)).toEqual({ client_id: "client-1", client_secret: "secret-1", grant_type: "client_credentials", scope: "https://graph.microsoft.com/.default" });
-    expect(calls[1].url).toBe("https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType,city,country,officeLocation&$top=999");
+    expect(calls[1].url).toBe("https://graph.microsoft.com/v1.0/users?$select=id,displayName,mail,userPrincipalName,accountEnabled,userType,assignedLicenses,city,country,officeLocation&$top=999");
     expect(new Headers(calls[1].init?.headers).get("authorization")).toBe("Bearer tok");
     expect(calls[2].url).toBe("https://graph.microsoft.com/v1.0/users?page2");
   });

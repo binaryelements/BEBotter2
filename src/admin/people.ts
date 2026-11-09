@@ -53,12 +53,13 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers, defaultModel: strin
       const assistants = await db.select({ owner: botDefinitions.ownerPersonId, name: botDefinitions.displayName, label: botDefinitions.label }).from(botDefinitions).where(and(eq(botDefinitions.tenantId, actor.tenantId), eq(botDefinitions.identity, "person")));
       const assistantName = new Map(assistants.filter((a) => a.owner).map((a) => [a.owner!, a.name ?? a.label]));
       const synced = typeof req.query.synced === "string" ? /^(\d+),(\d+)$/.exec(req.query.synced) : null;
-      const rows = admin ? all : all.filter((p) => p.memberships.some((m) => actor.headOf.includes(m.departmentId)));
+      const rows = (admin ? all : all.filter((p) => p.memberships.some((m) => actor.headOf.includes(m.departmentId)))).filter((p) => p.licensed);
       const csrf = csrfField(res);
       render(
         res,
         "People",
-        html`${pageHead("People", admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button class="be-btn primary">sync from Microsoft 365</button></form>` : undefined)}${
+        html`${pageHead("People", admin ? html`<form method="post" action="/admin/people/sync">${csrf}<button class="be-btn primary">sync from Microsoft 365</button></form>` : undefined)}
+<p class="muted small">Only people with a Microsoft 365 license assigned are listed.</p>${
           synced ? html`<div class="be-notice"><span>Added ${synced[1]}, updated ${synced[2]}.</span></div>` : ""
         }${
           rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>My assistant</th><th>Departments</th></tr></thead><tbody>${rows.map((p) => {
@@ -74,7 +75,7 @@ export function peopleRoutes(db: Db, fetchUsers: FetchUsers, defaultModel: strin
               : html`${p.personalBot ? "On" : "Off"}${p.personalBot && assistantName.get(p.id) ? html` · ${assistantName.get(p.id)}` : ""}`
           }</td><td>${p.memberships.filter((m) => admin || actor.headOf.includes(m.departmentId)).map((m) => `${m.departmentName}${m.isHead ? " (head)" : ""}`).join(", ")}</td></tr>`;
         })}</tbody></table>`)
-          : html`<div class="be-empty">No people yet.</div>`
+          : html`<div class="be-empty">No people with a Microsoft 365 license yet.</div>`
         }`,
       );
     }),

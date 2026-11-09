@@ -62,6 +62,7 @@ export const people = pgTable(
     email: text("email"),
     timezone: text("timezone"), // from their Teams client, e.g. Australia/Melbourne
     location: text("location"), // from the directory: "Melbourne, Australia"
+    licensed: boolean("licensed").notNull().default(true), // has a Microsoft 365 licence; unlicensed rows stay for history but are hidden from People
     createdAt: createdAt(),
   },
   (t) => [unique().on(t.tenantId, t.aadObjectId)],

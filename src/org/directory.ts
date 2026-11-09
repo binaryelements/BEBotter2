@@ -12,6 +12,7 @@ export type PersonRow = {
   email: string | null;
   role: Role;
   personalBot: boolean;
+  licensed: boolean;
   memberships: { departmentId: string; departmentName: string; isHead: boolean }[];
 };
 export type DepartmentRow = { id: string; name: string; members: { personId: string; name: string; isHead: boolean }[] };
@@ -39,13 +40,13 @@ export async function listPeople(db: Db, tenantId: string): Promise<PersonRow[]>
     .from(people)
     .leftJoin(departmentMembers, eq(departmentMembers.personId, people.id))
     .leftJoin(departments, eq(departments.id, departmentMembers.departmentId))
-    .where(eq(people.tenantId, tenantId))
+    .where(and(eq(people.tenantId, tenantId), eq(people.licensed, true)))
     .orderBy(asc(people.name), asc(people.id), asc(departments.name));
   const byId = new Map<string, PersonRow>();
   for (const { person, departmentId, departmentName, isHead } of rows) {
     let row = byId.get(person.id);
     if (!row) {
-      row = { id: person.id, name: person.name, email: person.email, role: person.role as Role, personalBot: person.personalBot, memberships: [] };
+      row = { id: person.id, name: person.name, email: person.email, role: person.role as Role, personalBot: person.personalBot, licensed: person.licensed, memberships: [] };
       byId.set(person.id, row);
     }
     if (departmentId) row.memberships.push({ departmentId, departmentName: departmentName!, isHead: isHead! });

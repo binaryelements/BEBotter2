@@ -1,7 +1,8 @@
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ensurePersonalAssistant, definitionsForChat, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
-import { chats } from "../db/schema.js";
+import { chats, people } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { createDepartment, listDepartments, listPeople, setMembership, setRole } from "../org/directory.js";
@@ -69,6 +70,17 @@ describe("people and departments screens", () => {
     expect(body).toContain(`action="/admin/people/${id.Mo}/role"`);
     expect(body).toContain(`action="/admin/people/${id.Mo}/personal-bot"`);
     expect(body).toContain('name="csrf" value="csrf-1"');
+  });
+
+  it("lists only people with a Microsoft 365 license", async () => {
+    await db.update(people).set({ licensed: false }).where(eq(people.id, id.Ola));
+    try {
+      const body = await (await get("/admin/people", "Ann")).text();
+      expect(body).not.toContain(`<td>Ola</td>`);
+      expect(body).toContain("Only people with a Microsoft 365 license");
+    } finally {
+      await db.update(people).set({ licensed: true }).where(eq(people.id, id.Ola));
+    }
   });
 
   it("escapes a person's name", async () => {
