@@ -32,6 +32,8 @@ const schema = z.object({
   AGENTMAIL_ADMIN_KEY: z.string().optional(),
   BE_HUB_MCP_URL: z.string().url().default("https://behub.a.sapautomate.com/mcp"),
   BE_HUB_API_KEY: z.string().optional(),
+  MANTIS_MCP_URL: z.string().url().default("https://mantis.a.sapautomate.com/mcp"),
+  MANTIS_MCP_SECRET: z.string().optional(),
   GRAPH_OAUTH_CONNECTION: z.string().default("graph"),
 });
 
@@ -53,6 +55,8 @@ export type Config = {
   agentmail?: { url: string; adminKey: string };
   /** BE Hub's MCP server, when an API key is configured. */
   beHub?: { url: string; apiKey: string };
+  /** Mantis fleet's MCP server, when its Basic auth header is configured. */
+  mantis?: { url: string; secret: string };
   /** The Azure Bot OAuth connection that signs a person in to Microsoft Graph. */
   graphOAuthConnection: string;
 };
@@ -86,6 +90,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     filesDir: e.FILES_DIR,
     agentmail: e.AGENTMAIL_ADMIN_KEY ? { url: e.AGENTMAIL_URL, adminKey: e.AGENTMAIL_ADMIN_KEY } : undefined,
     beHub: e.BE_HUB_API_KEY ? { url: e.BE_HUB_MCP_URL, apiKey: e.BE_HUB_API_KEY } : undefined,
+    mantis: e.MANTIS_MCP_SECRET ? { url: e.MANTIS_MCP_URL, secret: e.MANTIS_MCP_SECRET } : undefined,
     graphOAuthConnection: e.GRAPH_OAUTH_CONNECTION,
   };
 }
