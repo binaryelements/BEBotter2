@@ -110,7 +110,7 @@ const top = (max: number) => z.number().int().min(1).max(max).optional();
 const times = "ISO 8601 date and time with an offset, e.g. 2026-11-02T09:00:00Z";
 
 /** Microsoft 365 as the person talking, through Graph with their delegated token; only the tools of the given capabilities. */
-export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"]; readDocument?: (fileBase64: string, name: string) => Promise<string> }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpServerHandle {
+export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["sleep"]; readDocument?: (fileBase64: string, name: string) => Promise<string>; docx?: (markdown: string, title?: string) => Promise<Buffer> | Buffer }, ctx: Ctx, capabilities: readonly GraphCapability[]): McpServerHandle {
   const g: GraphDeps = { fetchFn: deps.fetchFn, token: () => ctx.graphToken(), ...(deps.sleep ? { sleep: deps.sleep } : {}) };
   const get = async <T>(path: string, headers?: Record<string, string>) => (await graphFetch(g, path, headers ? { headers } : {})).json() as Promise<T>;
   const post = async (path: string, json: unknown) => (await graphFetch(g, path, { method: "POST", json })).body?.cancel();
@@ -219,6 +219,16 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       if (name.includes("/") || parts.some((p) => p === "." || p === ".." || /[\\:]/.test(p))) throw new Refusal("Not done: name must be a file name and folder a path, without . or .. parts, \\ or :.");
       if (Buffer.byteLength(content) > MAX_UPLOAD) throw new Refusal("Not done: files over 4 MB cannot be saved.");
       const res = await graphFetch(g, `/me/drive/root:/${parts.map(enc).join("/")}:/content?@microsoft.graph.conflictBehavior=rename`, { method: "PUT", body: content, headers: { "Content-Type": "text/plain" } });
+      return item((await res.json()) as DriveItem);
+    }))],
+    ["files.write", tool("create_document", "Create a Word document (.docx) in a folder of the person's OneDrive from Markdown: headings, paragraphs, lists, tables, quotes and code. title is the document's title; do not repeat it as a # heading in content. They confirm it in the chat first.", { folder: z.string(), name: z.string().min(1), title: z.string().optional(), content: z.string() }, run(async ({ folder, name, title, content }) => {
+      const fileName = name.toLowerCase().endsWith(".docx") ? name : `${name}.docx`;
+      const parts = [...folder.split("/"), fileName].map((s) => s.trim()).filter(Boolean);
+      if (name.includes("/") || parts.some((p) => p === "." || p === ".." || /[\\:]/.test(p))) throw new Refusal("Not done: name must be a file name and folder a path, without . or .. parts, \\ or :.");
+      if (!deps.docx) throw new Refusal("Not done: Word documents are not available here.");
+      const bytes = await deps.docx(content, title);
+      if (bytes.length > MAX_UPLOAD) throw new Refusal("Not done: documents over 4 MB cannot be saved.");
+      const res = await graphFetch(g, `/me/drive/root:/${parts.map(enc).join("/")}:/content?@microsoft.graph.conflictBehavior=rename`, { method: "PUT", body: bytes, headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" } });
       return item((await res.json()) as DriveItem);
     }))],
     ["chats.read", tool("list_chats", "List the person's most recent Teams chats with their last message.", { top: top(25) }, run(async ({ top }) => {

@@ -27,7 +27,7 @@ const BUILT_IN: Record<string, ToolClass> = {
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
   ...Object.fromEntries(["search_mail", "list_mail", "read_mail", "read_attachment", "list_events", "find_free_time", "search_files", "read_file", "list_chats", "read_chat"].map((t) => [`mcp__m365__${t}`, "read"])),
   // Graph writes act as the person: they ask by default, and an admin may set one free per bot
-  ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file"].map((t) => [`mcp__m365__${t}`, "write"])),
+  ...Object.fromEntries(["send_mail", "reply_mail", "create_event", "respond_event", "upload_file", "create_document"].map((t) => [`mcp__m365__${t}`, "write"])),
 };
 
 const MAIL_READS = new Set(["list_inboxes", "list_messages", "read_thread", "search_mail", "get_attachment", "mark_read"]);

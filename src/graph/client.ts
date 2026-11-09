@@ -16,7 +16,7 @@ export class GraphError extends Error {
 
 /** token: asked for on every call, so a warm engine always acts with the turn running now. */
 export type GraphDeps = { fetchFn: typeof fetch; token: () => Promise<string | undefined>; sleep?: (ms: number) => Promise<void> };
-type Init = { method?: string; json?: unknown; body?: string; headers?: Record<string, string> };
+type Init = { method?: string; json?: unknown; body?: string | Uint8Array; headers?: Record<string, string> };
 
 const errorCode = async (res: Response): Promise<string> => {
   try {
@@ -36,7 +36,7 @@ export async function graphFetch(deps: GraphDeps, path: string, init: Init = {})
     deps.fetchFn(`${BASE}${path}`, {
       method: init.method ?? "GET",
       headers: { Authorization: `Bearer ${token}`, ...(json ? { "Content-Type": "application/json" } : {}), ...init.headers },
-      ...(json ? { body: JSON.stringify(init.json) } : init.body !== undefined ? { body: init.body } : {}),
+      ...(json ? { body: JSON.stringify(init.json) } : init.body !== undefined ? { body: init.body as BodyInit } : {}),
     });
   let res = await send();
   // a 401 is never retried: within a turn the token service may hand back the same token

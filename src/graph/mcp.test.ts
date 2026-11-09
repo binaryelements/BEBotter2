@@ -6,7 +6,7 @@ import { m365McpServer } from "./mcp.js";
 const TOKEN = "eyJ0b2stZ3JhcGgtc2VjcmV0";
 type Result = { isError?: boolean; content: { text: string }[] };
 type Handler = (args: Record<string, unknown>) => Promise<Result>;
-type Seen = { method: string; url: URL; headers: Record<string, string>; body?: string };
+type Seen = { method: string; url: URL; headers: Record<string, string>; body?: string; bytes?: Uint8Array };
 
 /** Graph faked at fetch: answers by "METHOD path", recording every request. */
 function graph(answers: Record<string, () => Response> = {}) {
@@ -14,7 +14,7 @@ function graph(answers: Record<string, () => Response> = {}) {
   const fetchFn = (async (u: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(u));
     const method = init.method ?? "GET";
-    seen.push({ method, url, headers: (init.headers ?? {}) as Record<string, string>, ...(typeof init.body === "string" ? { body: init.body } : {}) });
+    seen.push({ method, url, headers: (init.headers ?? {}) as Record<string, string>, ...(typeof init.body === "string" ? { body: init.body } : init.body instanceof Uint8Array ? { bytes: init.body } : {}) });
     const answer = answers[`${method} ${url.hostname === "graph.microsoft.com" ? url.pathname.replace("/v1.0", "") : url.href}`];
     return answer ? answer() : new Response(null, { status: 202 });
   }) as typeof fetch;
@@ -22,10 +22,10 @@ function graph(answers: Record<string, () => Response> = {}) {
 }
 const json = (v: unknown, status = 200) => () => new Response(JSON.stringify(v), { status });
 
-function server(fetchFn: typeof fetch, capabilities: readonly GraphCapability[] = GRAPH_CAPABILITIES, token: () => Promise<string | undefined> = async () => TOKEN, readDocument?: (pdf: string) => Promise<string>) {
+function server(fetchFn: typeof fetch, capabilities: readonly GraphCapability[] = GRAPH_CAPABILITIES, token: () => Promise<string | undefined> = async () => TOKEN, readDocument?: (pdf: string) => Promise<string>, docx?: (markdown: string, title?: string) => Buffer) {
   const signInLost = vi.fn();
   const files: Record<string, { name: string; mediaType: string; bytes: Uint8Array }> = { f1: { name: "switch.jpg", mediaType: "image/jpeg", bytes: Buffer.from("jpg") }, big: { name: "big.bin", mediaType: "application/octet-stream", bytes: Buffer.alloc(3 * 1024 * 1024 + 1) } };
-  const s = m365McpServer({ fetchFn, sleep: async () => {}, ...(readDocument ? { readDocument } : {}) }, { graphToken: token, signInLost, attachment: async (id) => files[id] }, capabilities);
+  const s = m365McpServer({ fetchFn, sleep: async () => {}, ...(readDocument ? { readDocument } : {}), ...(docx ? { docx } : {}) }, { graphToken: token, signInLost, attachment: async (id) => files[id] }, capabilities);
   const tools = (s.instance as unknown as { _registeredTools: Record<string, { handler: Handler }> })._registeredTools;
   return {
     signInLost,
@@ -44,10 +44,10 @@ describe("m365 mcp", () => {
   it("offers only the tools of the definition's capabilities", () => {
     const g = graph();
     expect(server(g.fetchFn).names).toEqual(
-      ["create_event", "find_free_time", "list_chats", "list_events", "list_mail", "read_attachment", "read_chat", "read_file", "read_mail", "reply_mail", "respond_event", "search_files", "search_mail", "send_mail", "upload_file"].sort(),
+      ["create_document", "create_event", "find_free_time", "list_chats", "list_events", "list_mail", "read_attachment", "read_chat", "read_file", "read_mail", "reply_mail", "respond_event", "search_files", "search_mail", "send_mail", "upload_file"].sort(),
     );
     expect(server(g.fetchFn, ["mail.read"]).names).toEqual(["list_mail", "read_attachment", "read_mail", "search_mail"]);
-    expect(server(g.fetchFn, ["calendar.read", "files.write"]).names).toEqual(["find_free_time", "list_events", "upload_file"]);
+    expect(server(g.fetchFn, ["calendar.read", "files.write"]).names).toEqual(["create_document", "find_free_time", "list_events", "upload_file"]);
     expect(server(g.fetchFn, []).names).toEqual([]);
   });
 
@@ -243,6 +243,24 @@ describe("m365 mcp", () => {
     expect((await s.call("upload_file", { folder: "a", name: "y:z.txt", content: "x" })).isError).toBe(true);
     expect((await s.call("upload_file", { folder: "a", name: "big.txt", content: "x".repeat(4 * 1024 * 1024 + 1) })).isError).toBe(true);
     expect(g.seen).toHaveLength(before);
+  });
+
+  it("creates a Word document from Markdown and uploads it as .docx", async () => {
+    const g = graph({
+      "PUT /me/drive/root:/Reports/Report.docx:/content": json({ id: "f4", name: "Report.docx", size: 9, webUrl: "https://files.example.test/r" }, 201),
+    });
+    const docx = vi.fn((markdown: string, _title?: string) => (markdown === "big" ? Buffer.alloc(4 * 1024 * 1024 + 1) : Buffer.from("PK docx")));
+    const s = server(g.fetchFn, ["files.write"], undefined, undefined, docx);
+    expect(out(await s.call("create_document", { folder: "/Reports/", name: "Report", title: "Quarterly report", content: "# Report\n\n- one\n- two" }))).toMatchObject({ id: "f4", name: "Report.docx" });
+    expect(docx).toHaveBeenCalledWith("# Report\n\n- one\n- two", "Quarterly report");
+    const put = g.seen.at(-1)!;
+    expect(put.method).toBe("PUT");
+    expect(put.headers["Content-Type"]).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    expect(put.bytes).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(put.bytes!).toString("utf8")).toBe("PK docx");
+    expect(put.url.searchParams.get("@microsoft.graph.conflictBehavior")).toBe("rename");
+    expect((await s.call("create_document", { folder: "a", name: "x/y.docx", content: "x" })).isError).toBe(true);
+    expect((await s.call("create_document", { folder: "a", name: "big.docx", content: "big" })).isError).toBe(true);
   });
 
   it("a download host that ignores Range is read only to about 80 KB, and its 401 is no reason to sign in again", async () => {

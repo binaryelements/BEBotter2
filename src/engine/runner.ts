@@ -58,6 +58,8 @@ export type RunnerDeps = {
   fetchFn: typeof fetch;
   /** A PDF's or Office file's text, for attachments the person's assistant opens; without it they give their details only. */
   readDocument?: (fileBase64: string, name: string) => Promise<string>;
+  /** A Word document's bytes from Markdown, for the person's create_document tool; without it that tool says so. */
+  docx?: (markdown: string, title?: string) => Promise<Buffer> | Buffer;
   /** Built-in MCP servers (knowledge, connections, routine); `confirmedBy` names who confirmed the call now running. */
   builtinServers?: (ctx: { confirmedBy: () => string | undefined }) => Record<string, McpServerConfig>;
   /** Keeps stdio MCP clients alive between turns; without it every turn starts its own. */
@@ -74,6 +76,9 @@ export type ProgressEvent = { kind: "text"; text: string } | { kind: "tool"; too
 
 const MAX_AUDIT_INPUT = 2000;
 const MAX_CARD_ARGS = 4000;
+/** A long argument (a document's content, a mail body) is shown in the card as its first part and a count; the tool still gets all of it. */
+const cardInput = (input: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(input).map(([k, v]) => [k, typeof v === "string" && v.length > 2000 ? `${v.slice(0, 2000)}\n… (${v.length - 2000} more characters)` : v]));
 const NOT_DONE = {
   denied: "Not done: declined in the chat.",
   expired: "Not done: nobody confirmed within 10 minutes. Tell the chat you did not do it.",
@@ -383,8 +388,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       if (run !== attemptNo) return stale();
     }
     try {
-      // the card shows every argument, so a call too large to show is never asked
-      if (JSON.stringify(input, null, 2).length > MAX_CARD_ARGS) {
+      // the card shows every argument (long text in its first part), so a call too large to show is never asked
+      if (JSON.stringify(cardInput(input), null, 2).length > MAX_CARD_ARGS) {
         await completeAction(db, auditId, { status: "denied" });
         releaseApprove(callId);
         return { allow: false, message: "Not done: the request was too large to show for confirmation." };
@@ -398,7 +403,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       let o: Outcome | { result: "failed" } | { result: "aborted" };
       let offAbort = () => {};
       try {
-        await turn.askConfirmation({ actionId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input });
+        await turn.askConfirmation({ actionId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input: cardInput(input) });
         // a newer message stops the wait at once, so the old turn cannot run a tool after the person has moved on
         const aborted = new Promise<{ result: "aborted" }>((resolve) => {
           if (signal.aborted) return resolve({ result: "aborted" });

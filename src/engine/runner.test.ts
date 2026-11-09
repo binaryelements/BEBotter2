@@ -410,7 +410,7 @@ describe("runTurn", () => {
   it("denies a write call too large to show without asking", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
-    const q = fakeEngine({ calls: [["mcp__tickets__close_ticket", { id: 7, note: "x".repeat(4000) }]] });
+    const q = fakeEngine({ calls: [["mcp__tickets__close_ticket", { id: 7, note: { long: "x".repeat(4000) } }]] });
     const asked: ConfirmationRequest[] = [];
     await runTurn(deps(db, q.engine), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async (r) => void asked.push(r) });
     expect(asked).toEqual([]);

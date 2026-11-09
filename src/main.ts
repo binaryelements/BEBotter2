@@ -8,6 +8,7 @@ import { dockerodeClient } from "./computer/docker.js";
 import { loadConfig } from "./config/config.js";
 import { loadEnvFile } from "./config/env-file.js";
 import { documentReader } from "./engine/read-document.js";
+import { markdownToDocx } from "./engine/docx.js";
 import { deepseekBalance } from "./engine/balances.js";
 import { startAlertScheduler } from "./alerts/alert.js";
 import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
@@ -60,6 +61,7 @@ const runnerDeps: RunnerDeps = {
   agentmailUrl: config.agentmail?.url,
   fetchFn: fetch,
   readDocument: documentReader(),
+  docx: markdownToDocx,
   mcpPool,
   // called only during turns, long after `proactive` and `app` below exist
   personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)),
