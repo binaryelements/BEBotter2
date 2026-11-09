@@ -497,6 +497,8 @@ main h2, main h3 {
 .be-table tr:last-child td { border-bottom: 0; }
 .be-table tbody tr:hover td { background: color-mix(in srgb, var(--ui-accent-soft) 45%, transparent); }
 .be-table td .nm { font-weight: 500; color: var(--ui-ink); }
+.conn-desc { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-width: 46ch; }
+@media (max-width: 820px) { .conn-desc { max-width: 100%; } }
 .be-table.lean td { border-bottom: 1px solid var(--ui-line); white-space: nowrap; }
 .be-table.lean td.w { width: 100%; }
 .be-table.lean td.n { font: 12px var(--font-mono); color: var(--ui-muted); }

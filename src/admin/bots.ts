@@ -549,7 +549,7 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
                 : c.kind === "mcp"
                   ? [["read", "read only"], ["confirm", "writes ask"], ["deny", "no access"]]
                   : [["read", "read only"], ["confirm", "change: ask"], ["free", "change: free"], ["deny", "no access"]];
-            return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted">${c.description ?? ""}</td>
+            return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted"><span class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</span></td>
 <td>${uses ? html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/permission" data-autosave>${csrf}<select class="be-select" name="mode" aria-label="This bot's access">${modes.map(([m, label]) => html`<option value="${m}" ${m === grant ? "selected" : ""}>${label}</option>`)}</select><button class="be-btn sm auto">save</button></form>` : html`<span class="muted">—</span>`}</td>
 <td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${uses ? "off" : "on"}"><button class="be-btn sm${uses ? "" : " primary"}">${uses ? "take away" : "give to this bot"}</button></form>${
             c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td>
@@ -557,12 +557,19 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
           };
           const connTable = (list: Connection[], uses: boolean) =>
             scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>This bot</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
-          const mine = conns.filter((c) => linkedIds.has(c.id));
-          const others = conns.filter((c) => !linkedIds.has(c.id) && c.status !== "revoked");
-          section = html`<h2>Connections this bot uses</h2>
+          const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
+          const needle = q.toLowerCase();
+          const matches = (c: Connection) => !needle || [c.name, c.kind, c.target, c.mode, c.status, c.description ?? ""].some((s) => s.toLowerCase().includes(needle));
+          const mineAll = conns.filter((c) => linkedIds.has(c.id));
+          const othersAll = conns.filter((c) => !linkedIds.has(c.id) && c.status !== "revoked");
+          const mine = mineAll.filter(matches);
+          const others = othersAll.filter(matches);
+          const search = html`<form class="search-form" method="get" action="/admin/bots/${def.id}" role="search"><input type="hidden" name="tab" value="connections"><input class="be-input" type="search" name="q" value="${q}" placeholder="Search name, kind, target or description…" aria-label="Search connections"><button class="be-btn">search</button>${q ? html`<a class="be-btn quiet" href="/admin/bots/${def.id}?tab=connections">clear</a>` : ""}</form>`;
+          section = html`<div class="toolbar">${search}<span class="spacer"></span><span class="muted">${mine.length + others.length} of ${mineAll.length + othersAll.length}</span></div>
+${q && !mine.length && !others.length ? html`<div class="be-empty">No connections match “${q}”. <a href="/admin/bots/${def.id}?tab=connections">clear</a></div>` : html`<h2>Connections this bot uses</h2>
 <p class="hint"><strong>This bot</strong> sets what this bot may do on each connection: read only, ask before a change, change freely, or no access. It overrides the bot's Actions rules, so one SSH host can be read-only while another is free.</p>
-${mine.length ? connTable(mine, true) : html`<div class="be-empty">none yet: ${others.length ? "give it one below" : html`add an ssh, sql, MCP or http connection on the <a href="/admin/connections#add">Connections page</a>`}, or ask the bot in chat to set one up</div>`}
-${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}
+${mine.length ? connTable(mine, true) : q ? html`<div class="be-empty">No used connections match “${q}”.</div>` : html`<div class="be-empty">none yet: ${othersAll.length ? "give it one below" : html`add an ssh, sql, MCP or http connection on the <a href="/admin/connections#add">Connections page</a>`}, or ask the bot in chat to set one up</div>`}
+${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}`}
 <h2>MCP servers</h2>
 ${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th><th></th></tr></thead><tbody>${def.mcpServers.map(
             (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ") || "none"}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td>${s.transport === "http" ? html`<form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/tools">${csrf}<button class="be-btn sm" title="connects, lists its tools on the Actions tab so you can choose which run freely">list tools</button></form>` : ""}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm danger">remove</button></form></td></tr>`,

@@ -304,6 +304,19 @@ describe("bots screen", () => {
       expect((await get("/admin/connections?q=search-me", "Hal")).status).toBe(403);
     });
 
+    it("searches the connections on a bot's Connections tab", async () => {
+      const d = await upsertDefinition(db, Buffer.alloc(32), T, { name: "conn-search-bot", label: "Connections Search", persona: "p" });
+      const a = await conn("conn-search-alpha");
+      await conn("conn-search-beta", { kind: "http", target: "https://beta.example.test", config: {} });
+      await post(`/admin/bots/${d.id}/connections/${a}/link`, "Ann", [["linked", "on"]]);
+      const hits = await (await get(`/admin/bots/${d.id}?tab=connections&q=beta`, "Ann")).text();
+      expect(hits).toContain("conn-search-beta");
+      expect(hits).not.toContain("conn-search-alpha</td>");
+      expect(hits).toContain('name="q"');
+      const none = await (await get(`/admin/bots/${d.id}?tab=connections&q=zzzz`, "Ann")).text();
+      expect(none).toContain("No connections match");
+    });
+
     it("sets a per-bot permission for one connection", async () => {
       const d = await def("helper");
       const c = await conn("granted", { mode: "change" });
