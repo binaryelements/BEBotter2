@@ -181,9 +181,22 @@ document.documentElement.classList.add("js");
 document.addEventListener("change", function (e) { var f = e.target && e.target.closest && e.target.closest("form[data-autosave]"); if (f) f.requestSubmit(); });
 document.addEventListener("keydown", function (e) {
   if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === "k") {
-    var s = document.querySelector(".search input");
+    var s = document.querySelector(".search input, .search-form input");
     if (s) { e.preventDefault(); s.focus(); s.select(); }
   }
+});
+document.querySelectorAll("form[data-connection-kind]").forEach(function (f) {
+  var k = f.querySelector("select[name=kind]");
+  if (!k) return;
+  var apply = function () {
+    var v = k.value;
+    f.querySelectorAll("[data-kind]").forEach(function (el) {
+      var kinds = (el.getAttribute("data-kind") || "").split(/\s+/).filter(Boolean);
+      el.hidden = kinds.length > 0 && kinds.indexOf(v) === -1;
+    });
+  };
+  k.addEventListener("change", apply);
+  apply();
 });
 document.querySelectorAll(".nav-item").forEach(function (a) {
   a.addEventListener("click", function () { var c = document.getElementById("nav-open"); if (c) c.checked = false; });

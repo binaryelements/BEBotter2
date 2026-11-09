@@ -158,7 +158,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
   // every connection and the bots that use it, so an admin sees who can reach what in one place
   router.get(
     "/connections",
-    wrap(async (_req, res) => {
+    wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       const [conns, links, defs] = await Promise.all([
@@ -168,8 +168,16 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
           .where(eq(botDefinitions.tenantId, actor.tenantId)),
         listDefinitions(db, actor.tenantId),
       ]);
+      const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
+      const needle = q.toLowerCase();
+      const matches = (c: Connection) => {
+        if (!needle) return true;
+        const bots = links.filter((l) => l.connectionId === c.id);
+        return [c.name, c.kind, c.target, c.description ?? "", ...bots.flatMap((b) => [b.label, b.name ?? ""])].some((s) => s.toLowerCase().includes(needle));
+      };
+      const filtered = conns.filter(matches);
       const csrf = csrfField(res);
-      const rows = conns.map((c) => {
+      const rows = filtered.map((c) => {
         const bots = links.filter((l) => l.connectionId === c.id);
         return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td>
 <td><form method="post" action="/admin/connections/${c.id}/description">${csrf}<textarea name="description" rows="3" cols="40" placeholder="what it is for, what is safe to run, what to leave alone">${c.description ?? ""}</textarea><br><button class="be-btn sm">save</button></form></td>
@@ -178,26 +186,41 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
 <td>${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</td></tr>`;
       });
       render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1><p class="meta">The systems the bots can reach, and what they may do there.</p></div><div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;">Add a connection</a></div></header>
-${conns.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>Used by</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
+<div class="toolbar"><form class="search-form" method="get" action="/admin/connections" role="search">
+<input class="be-input" type="search" name="q" value="${q}" placeholder="Search by name, kind, target or bot…" aria-label="Search connections">
+<button class="be-btn">search</button>${q ? html`<a class="be-btn quiet" href="/admin/connections">clear</a>` : ""}
+</form><span class="spacer"></span><span class="muted">${filtered.length} of ${conns.length}</span></div>
+${filtered.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>Used by</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`) : conns.length ? html`<div class="be-empty">No connections match “${q}”. <a href="/admin/connections">clear the search</a></div>` : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
 <details class="add" id="add"><summary class="be-btn">add a connection…</summary>
-<form method="post" action="/admin/connections">${csrf}
-<div class="fields">
-<label>name<span class="hint">lowercase, digits and dashes</span><input name="name" required></label>
-<label>kind<select name="kind"><option value="ssh">ssh</option><option value="sql">sql database</option><option value="mcp">MCP server</option><option value="http">http API</option></select></label>
-<label>target<span class="hint">ssh/sql: host name; mcp/http: URL</span><input name="target" required></label>
-<label>mode<select name="mode"><option value="read-only">read-only</option><option value="change">change</option></select></label>
-<label>what it is for<span class="hint">shown to the bot: what the system does, who uses it, what is safe to run, what to leave alone</span><textarea name="description" rows="4"></textarea></label>
-<label>username<span class="hint">ssh and sql</span><input name="username"></label>
-<label>port<span class="hint">blank for the usual one</span><input name="port" inputmode="numeric"></label>
+<form method="post" action="/admin/connections" data-connection-kind autocomplete="off">${csrf}
+<fieldset class="conn-group"><legend>Basics</legend><div class="fields">
+<label>name<span class="hint">lowercase, digits and dashes</span><input name="name" required autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
+<label>kind<span class="hint">what it connects to</span><select name="kind"><option value="ssh">ssh</option><option value="sql">sql database</option><option value="mcp">MCP server</option><option value="http">http API</option></select></label>
+<label>target<span class="hint">ssh/sql: host name; mcp/http: URL</span><input name="target" required autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
+<label>mode<span class="hint">read-only, or change with permission</span><select name="mode"><option value="read-only">read-only</option><option value="change">change</option></select></label>
+</div></fieldset>
+<fieldset class="conn-group" data-kind="ssh sql"><legend>Server</legend><div class="fields">
+<label>username<span class="hint">ssh and sql</span><input name="username" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
+<label>port<span class="hint">blank for the usual one</span><input name="port" inputmode="numeric" autocomplete="off"></label>
+</div></fieldset>
+<fieldset class="conn-group" data-kind="sql"><legend>Database</legend><div class="fields">
 <label>database engine<span class="hint">sql only</span><select name="engine">${SQL_ENGINES.map((e) => html`<option>${e}</option>`)}</select></label>
-<label>database<span class="hint">sql only</span><input name="database"></label>
-<label>header name<span class="hint">mcp/http: where the secret goes, e.g. Authorization</span><input name="headerName"></label>
-<label>secret<span class="hint">sql password, or the header value (e.g. Bearer …); stored encrypted, never shown again</span><input type="password" name="secret" autocomplete="off"></label>
-<label>sign in instead<span class="hint">mcp only: the server has its own login (OAuth); you sign in once after adding it, and every bot given the server shares that sign-in</span><input type="checkbox" name="oauth" value="on"></label>
+<label>database<span class="hint">sql only</span><input name="database" autocomplete="off"></label>
+</div></fieldset>
+<fieldset class="conn-group" data-kind="sql http mcp"><legend>Secret</legend><div class="fields">
+<label>secret<span class="hint">sql password, or the header value; stored encrypted, never shown again</span><input type="password" name="secret" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
+</div></fieldset>
+<fieldset class="conn-group" data-kind="http mcp"><legend>Authentication</legend><div class="fields">
+<label>header name<span class="hint">where the secret goes, e.g. Authorization</span><input name="headerName" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
 </div>
-<p>give to: ${defs.filter((d) => d.identity !== "person").map((d) => html`<label><input type="checkbox" name="definitionId" value="${d.id}"> ${d.displayName ? `${d.displayName} · ${d.label}` : d.label}</label> `)}</p>
-<p class="muted">ssh: a key pair is made for the connection; install its public key on the target, then press test.</p>
-<button class="be-btn primary">add connection</button></form></details>`);
+<label class="be-toggle" data-kind="mcp"><input type="checkbox" name="oauth" value="on"> sign in instead (OAuth)</label>
+<p class="hint" data-kind="mcp">The server has its own login: you sign in once after adding it, and every bot given the server shares that sign-in.</p>
+</fieldset>
+<label class="be-label">What it is for</label><textarea name="description" rows="4" placeholder="what the system does, who uses it, what is safe to run, what to leave alone" autocomplete="off"></textarea>
+<p class="give-to"><span>give to:</span>${defs.filter((d) => d.identity !== "person").map((d) => html`<label><input type="checkbox" name="definitionId" value="${d.id}"> ${d.displayName ? `${d.displayName} · ${d.label}` : d.label}</label>`)}</p>
+<p class="muted" data-kind="ssh">ssh: a key pair is made for the connection; install its public key on the target, then press test.</p>
+<div class="savebar"><button class="be-btn primary">add connection</button></div>
+</form></details>`);
     }),
   );
 

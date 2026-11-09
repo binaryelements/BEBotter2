@@ -277,6 +277,33 @@ describe("bots screen", () => {
       await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "off"]]);
       expect((await listConnectionsFor(db, T, d.id)).map((x) => x.id)).not.toContain(c);
     });
+    it("offers a search box and only the fields the chosen kind needs", async () => {
+      const page = await (await get("/admin/connections", "Ann")).text();
+      expect(page).toContain('class="search-form"');
+      expect(page).toContain('name="q"');
+      expect(page).toContain("data-connection-kind");
+      expect(page).toContain('data-kind="ssh sql"');
+      expect(page).toContain('data-kind="sql http mcp"');
+      expect(page).toContain('data-kind="http mcp"');
+    });
+
+    it("searches connections by name, target and the bot that uses them", async () => {
+      const d = await upsertDefinition(db, Buffer.alloc(32), T, { name: "search-helper", label: "Search Helper", persona: "p" });
+      const c = await conn("search-me");
+      await conn("other", { kind: "http", target: "https://api.example.test", config: {}, mode: "change" });
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
+      const byName = await (await get("/admin/connections?q=search-me", "Ann")).text();
+      expect(byName).toContain("search-me");
+      expect(byName).not.toContain("other</td>");
+      const byTarget = await (await get("/admin/connections?q=api.example", "Ann")).text();
+      expect(byTarget).toContain("other</td>");
+      const byBot = await (await get("/admin/connections?q=Search", "Ann")).text();
+      expect(byBot).toContain("search-me");
+      const none = await (await get("/admin/connections?q=zzzz", "Ann")).text();
+      expect(none).toContain("No connections match");
+      expect((await get("/admin/connections?q=search-me", "Hal")).status).toBe(403);
+    });
+
     it("sets a per-bot permission for one connection", async () => {
       const d = await def("helper");
       const c = await conn("granted", { mode: "change" });

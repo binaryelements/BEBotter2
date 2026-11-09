@@ -697,6 +697,14 @@ main textarea { width: 100%; min-height: 8rem; }
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px 16px; margin: 12px 0; }
 .fields label { display: flex; flex-direction: column; gap: 4px; font: 500 12px var(--font-sans); color: var(--ui-ink); }
 .fields .hint { font: 11px var(--font-mono); color: var(--ui-muted); }
+.conn-group { border: 0; padding: 0; margin: 0 0 16px; }
+.conn-group > legend { font: 600 10.5px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ui-muted); padding: 0 0 2px; }
+.conn-group .fields { margin: 0; }
+.conn-group .be-toggle { margin-top: 12px; }
+.conn-group[hidden], [data-kind][hidden] { display: none !important; }
+.give-to { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 14px 0 0; font: 500 12px var(--font-sans); color: var(--ui-ink); }
+.give-to > span { color: var(--ui-muted); }
+.give-to label { display: inline-flex; align-items: center; gap: 6px; }
 main form.be-form { max-width: 720px; }
 main form.be-form .be-label { margin: 12px 0 4px; }
 main form.inline { display: inline; }
