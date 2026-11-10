@@ -565,8 +565,8 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
                 : c.kind === "mcp"
                   ? [["read", "read only"], ["confirm", "writes ask"], ["deny", "no access"]]
                   : [["read", "read only"], ["confirm", "change: ask"], ["free", "change: free"], ["deny", "no access"]];
-            return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted"><span class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</span></td>
-<td>${uses ? html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/permission" data-autosave>${csrf}<select class="be-select" name="mode" aria-label="This bot's access">${modes.map(([m, label]) => html`<option value="${m}" ${m === grant ? "selected" : ""}>${label}</option>`)}</select><button class="be-btn sm auto">save</button></form>` : html`<span class="muted">—</span>`}</td>
+            return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td><form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/mode" data-autosave>${csrf}<input type="hidden" name="tab" value="connections"><select class="be-select" name="mode" aria-label="Connection mode" title="Read-only stops every bot changing this system; change lets each bot's permission ask or allow writes.">${(["read-only", "change"] as const).map((m) => html`<option value="${m}" ${m === c.mode ? "selected" : ""}>${m}</option>`)}</select><button class="be-btn sm auto">save</button></form></td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted"><span class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</span></td>
+<td>${uses ? html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/permission" data-autosave>${csrf}<input type="hidden" name="tab" value="connections"><select class="be-select" name="mode" aria-label="This bot's access">${modes.map(([m, label]) => html`<option value="${m}" ${m === grant ? "selected" : ""}>${label}</option>`)}</select><button class="be-btn sm auto">save</button></form>` : html`<span class="muted">—</span>`}</td>
 <td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${uses ? "off" : "on"}"><button class="be-btn sm${uses ? "" : " primary"}">${uses ? "take away" : "give to this bot"}</button></form>${
             c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td>
 <td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
@@ -854,6 +854,19 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       const mode = field(req, "mode") as ConnectionGrantMode;
       if (!["read", "confirm", "free", "deny"].includes(mode)) throw new DirectoryError("Unknown permission");
       await setConnectionGrant(db, actor.tenantId, req.params.id, req.params.connectionId, mode);
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/connections/:connectionId/mode",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await serviceBot(actor.tenantId, req.params.id);
+      const mode = field(req, "mode") as ConnectionMode;
+      if (mode !== "read-only" && mode !== "change") throw new DirectoryError("Unknown mode");
+      await setConnectionMode(db, actor.tenantId, req.params.connectionId, mode);
       res.redirect(303, back(req, req.params.id));
     }),
   );

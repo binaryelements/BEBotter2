@@ -340,6 +340,17 @@ describe("bots screen", () => {
       expect((await post(`/admin/connections/${c}/mode`, "Hal", [["mode", "change"]])).status).toBe(403);
     });
 
+    it("changes a connection's mode from the bot's Connections tab", async () => {
+      const d = await def("helper");
+      const c = await conn("bot-mode");
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
+      const res = await post(`/admin/bots/${d.id}/connections/${c}/mode`, "Ann", [["mode", "change"], ["tab", "connections"]]);
+      expect([res.status, res.headers.get("location")]).toEqual([303, `/admin/bots/${d.id}?tab=connections`]);
+      expect((await db.select().from(connections).where(eq(connections.id, c)))[0].mode).toBe("change");
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain(`/admin/bots/${d.id}/connections/${c}/mode`);
+      expect((await post(`/admin/bots/${d.id}/connections/${c}/mode`, "Hal", [["mode", "read-only"]])).status).toBe(403);
+    });
+
     it("sets a per-bot permission for one connection", async () => {
       const d = await def("helper");
       const c = await conn("granted", { mode: "change" });
