@@ -16,6 +16,7 @@ describe("cards", () => {
     expect(card.body).toEqual([
       { type: "TextBlock", text: "Iris (IT Support) wants to:", weight: "Bolder", wrap: true },
       { type: "TextBlock", text: "Reply to email", wrap: true },
+      { type: "TextBlock", text: "Check the message and recipients below before approving.", isSubtle: true, spacing: "Small", wrap: true },
       block("Message id", { spacing: "Medium" }, { weight: "Bolder" }),
       block("<m1@example.test>"),
       block("Body", { spacing: "Medium" }, { weight: "Bolder" }),
@@ -39,9 +40,28 @@ describe("cards", () => {
     const card = confirmationCard({ actionId: "a1", label: "Helper", toolName: "WebFetch", input: {} }) as any;
     expect(card.body).toEqual([
       { type: "TextBlock", text: "Helper wants to:", weight: "Bolder", wrap: true },
-      { type: "TextBlock", text: "WebFetch", wrap: true },
+      { type: "TextBlock", text: "Fetch a web page", wrap: true },
+      { type: "TextBlock", text: "This only reads the page; nothing is changed.", isSubtle: true, spacing: "Small", wrap: true },
       { type: "TextBlock", text: "Or reply yes or no in the chat.", isSubtle: true, spacing: "Medium", wrap: true },
     ]);
+  });
+
+  it("explains an SSH read in plain words before the command", () => {
+    const card = confirmationCard({
+      actionId: "a1",
+      label: "IT Support",
+      name: "Mickey",
+      toolName: "mcp__connections__ssh_read",
+      input: { name: "cvp2", command: 'asterisk -rx "core show channels concise"' },
+    }) as any;
+    expect(card.body[1]).toEqual({ type: "TextBlock", text: "Read-only SSH check on cvp2", wrap: true });
+    expect(card.body[2]).toEqual({
+      type: "TextBlock",
+      text: "Runs the command below on cvp2 and returns its output. Nothing on the server is changed.",
+      isSubtle: true,
+      spacing: "Small",
+      wrap: true,
+    });
   });
 
   it("toolWords drops the MCP prefix and underscores only", () => {

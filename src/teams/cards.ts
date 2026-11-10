@@ -32,6 +32,52 @@ export const toolLabel = (toolName: string, input?: unknown): string => {
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const keyWords = (key: string) => capital(key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase());
 
+/** What the approval is for, in plain words: a title and a sentence saying what will happen. */
+export const approval = (toolName: string, input: Record<string, unknown> = {}): { title: string; detail: string } => {
+  const name = typeof input.name === "string" ? input.name : "";
+  const on = name ? ` on ${name}` : "";
+  const method = typeof input.method === "string" ? input.method : "GET";
+  const path = typeof input.path === "string" ? input.path : "";
+  if (toolName === "mcp__connections__ssh_read")
+    return { title: `Read-only SSH check${on}`, detail: `Runs the command below${on} and returns its output. Nothing on the server is changed.` };
+  if (toolName === "mcp__connections__ssh_change")
+    return { title: `SSH change${on}`, detail: `Runs the command below${on}. It can change the server, so check it before approving.` };
+  if (toolName === "mcp__connections__http_read")
+    return { title: `Read-only request${name ? ` to ${name}` : ""}`, detail: `Sends ${method} ${path || "the request below"} and returns the result. Nothing is changed.` };
+  if (toolName === "mcp__connections__http_change")
+    return { title: `Change request${name ? ` to ${name}` : ""}`, detail: `Sends ${method} ${path || "the request below"}. It can change the external system.` };
+  if (toolName === "mcp__connections__sql_read")
+    return { title: `Read-only SQL query${on}`, detail: "Runs the query below in a read-only transaction that is rolled back. Nothing is changed." };
+  if (toolName === "mcp__connections__sql_change")
+    return { title: `SQL change${on}`, detail: "Runs the query below and commits the change." };
+  if (toolName === "mcp__connections__approve")
+    return { title: "Approve a connection for this bot", detail: "Check the connection's kind, target and mode below before approving." };
+  const conn = /^mcp__conn-(.+?)__(.+)$/.exec(toolName);
+  if (conn) return { title: `Call ${conn[2]!.replace(/_/g, " ")} on ${conn[1]}`, detail: "Review the connection's tool arguments below before approving." };
+  if (toolName.startsWith("mcp__m365__")) {
+    const t = toolName.slice("mcp__m365__".length);
+    const text: Record<string, { title: string; detail: string }> = {
+      send_mail: { title: "Send an email as you", detail: "Check the recipients and body below before approving." },
+      reply_mail: { title: "Reply to an email as you", detail: "Check the body and recipients below before approving." },
+      create_event: { title: "Create a calendar event as you", detail: "Check the time, attendees and body below before approving." },
+      respond_event: { title: "Respond to a calendar invitation as you", detail: "This sends your response to the organiser." },
+      upload_file: { title: "Save a file in your OneDrive", detail: "Check the folder, name and content below." },
+      create_document: { title: "Create a Word document in your OneDrive", detail: "The document is built from the title and content below." },
+    };
+    if (text[t]) return text[t]!;
+    return { title: capital(toolLabel(toolName, input)), detail: "Review the details below before approving." };
+  }
+  if (toolName.startsWith("mcp__mail__"))
+    return { title: capital(toolLabel(toolName, input)), detail: "Check the message and recipients below before approving." };
+  if (toolName === "mcp__computer__bash")
+    return { title: "Run a command in the bot's computer", detail: "The command runs inside the bot's own container, not on your computer. Check it before approving." };
+  if (toolName.startsWith("mcp__browser__"))
+    return { title: "Use the bot's browser", detail: "The bot drives its browser for this step. Review the arguments below." };
+  if (toolName === "WebSearch") return { title: "Search the web", detail: "This only reads search results; nothing is changed." };
+  if (toolName === "WebFetch") return { title: "Fetch a web page", detail: "This only reads the page; nothing is changed." };
+  return { title: capital(toolLabel(toolName, input)), detail: "Review the details below before approving." };
+};
+
 // RichTextBlock never renders Markdown, so text shows exactly as sent; one block per line, since a run's line breaks may not show
 const exact = (text: string, bold = false) =>
   text.split(/\r?\n/).map((line, i) => ({
@@ -41,10 +87,12 @@ const exact = (text: string, bold = false) =>
   }));
 
 export function confirmationCard({ actionId, label, name, toolName, input }: ConfirmationRequest): AdaptiveCard {
+  const why = approval(toolName, input);
   return card(
     [
       { type: "TextBlock", text: `${name ? `${name} (${label})` : label} wants to:`, weight: "Bolder", wrap: true },
-      { type: "TextBlock", text: capital(toolWords(toolName)), wrap: true },
+      { type: "TextBlock", text: why.title, wrap: true },
+      { type: "TextBlock", text: why.detail, isSubtle: true, spacing: "Small", wrap: true },
       ...Object.entries(input).flatMap(([key, value]) => [
         { ...exact(keyWords(key), true)[0], spacing: "Medium" },
         ...exact(typeof value === "string" ? value : JSON.stringify(value) ?? "null"),
