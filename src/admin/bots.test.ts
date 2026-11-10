@@ -99,7 +99,9 @@ describe("bots screen", () => {
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/admin/connections?saved=1");
     const page = await (await get("/admin/connections", "Ann")).text();
-    expect(page).toMatch(/<span class="nm">sap<\/span><\/td><td>sql<\/td><td class="conn-target"[^>]*>sql1\.example\.test<\/td><td>read-only<\/td><td>active<\/td>/);
+    expect(page).toContain('<span class="nm">sap</span>');
+    expect(page).toContain("sql1.example.test");
+    expect(page).toContain('<option value="read-only" selected>read-only</option>');
     expect(page).toContain(`/admin/bots/${d.id}?tab=connections`);
     expect(page).toContain("SAP B1 company database; look things up, never write");
     expect(page).not.toContain("pw-top");
@@ -320,6 +322,22 @@ describe("bots screen", () => {
       expect(hits).toContain('name="q"');
       const none = await (await get(`/admin/bots/${d.id}?tab=connections&q=zzzz`, "Ann")).text();
       expect(none).toContain("No connections match");
+    });
+
+    it("lets an admin change a connection's own mode and caps old write grants", async () => {
+      const d = await def("helper");
+      const c = await conn("mode-switch");
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
+      expect((await post(`/admin/connections/${c}/mode`, "Ann", [["mode", "change"]])).status).toBe(303);
+      expect((await db.select().from(connections).where(eq(connections.id, c)))[0].mode).toBe("change");
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("change: ask");
+      expect((await post(`/admin/bots/${d.id}/connections/${c}/permission`, "Ann", [["mode", "free"]])).status).toBe(303);
+      expect(await getConnectionGrant(db, d.id, c)).toBe("free");
+      expect((await post(`/admin/connections/${c}/mode`, "Ann", [["mode", "read-only"]])).status).toBe(303);
+      expect((await db.select().from(connections).where(eq(connections.id, c)))[0].mode).toBe("read-only");
+      expect(await getConnectionGrant(db, d.id, c)).toBe("read");
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("read only");
+      expect((await post(`/admin/connections/${c}/mode`, "Hal", [["mode", "change"]])).status).toBe(403);
     });
 
     it("sets a per-bot permission for one connection", async () => {

@@ -367,6 +367,15 @@ export async function connectionMcpConfigs(
   return { servers, readOnly: mcpReadOnly(active) };
 }
 
+/** An admin changes the connection's own ceiling: read-only or change. A read-only change makes every per-bot write grant read. */
+export async function setConnectionMode(db: Db, tenantId: string, id: string, mode: ConnectionMode): Promise<void> {
+  if (mode !== "read-only" && mode !== "change") fail("Unknown mode");
+  const [row] = await db.update(connections).set({ mode, updatedAt: new Date() }).where(byId(tenantId, id)).returning();
+  if (!row) fail("Connection not found");
+  if (mode === "read-only")
+    await db.update(connectionGrants).set({ mode: "read", updatedAt: new Date() }).where(and(eq(connectionGrants.connectionId, id), ne(connectionGrants.mode, "read"), ne(connectionGrants.mode, "deny")));
+}
+
 export async function revokeConnection(db: Db, tenantId: string, id: string): Promise<Connection> {
   const [row] = await db.update(connections).set({ status: "revoked", secretCipher: null, updatedAt: new Date() }).where(byId(tenantId, id)).returning();
   if (!row) fail("Connection not found");
@@ -432,13 +441,15 @@ export async function connectionGrantForTool(db: Db, tenantId: string, definitio
     name = server.slice(5);
   }
   if (!name) return undefined;
-  const [conn] = await db.select({ id: connections.id, kind: connections.kind, config: connections.config }).from(connections).where(and(eq(connections.tenantId, tenantId), eq(connections.name, name)));
+  const [conn] = await db.select({ id: connections.id, kind: connections.kind, mode: connections.mode, config: connections.config }).from(connections).where(and(eq(connections.tenantId, tenantId), eq(connections.name, name)));
   if (!conn) return undefined;
-  const mode = await getConnectionGrant(db, definitionId, conn.id);
-  if (!mode) return undefined;
+  const grant = await getConnectionGrant(db, definitionId, conn.id);
+  if (!grant) return undefined;
   if (server !== "connections") {
     const readOnly = (conn.config as { readOnlyTools?: string[] }).readOnlyTools ?? [];
     change = !readOnly.includes(tool);
   }
+  // the connection's own mode is the ceiling, even if an old grant says otherwise
+  const mode = conn.mode === "read-only" && grant !== "deny" ? "read" : grant;
   return { connectionId: conn.id, name, kind: conn.kind as ConnectionKind, mode, change };
 }

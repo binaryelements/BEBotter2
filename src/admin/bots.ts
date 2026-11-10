@@ -9,7 +9,7 @@ import {
 import { and, count, eq, gte, inArray, max, sql } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
-import { activeMcp, adminVerify, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setConnectionGrant, setDescription, setLinked } from "../connections/store.js";
+import { activeMcp, adminVerify, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setConnectionGrant, setConnectionMode, setDescription, setLinked } from "../connections/store.js";
 import type { ConnectionGrantMode, ConnectionKind, ConnectionMode } from "../connections/store.js";
 import { SQL_ENGINES } from "../connections/sql.js";
 import type { SqlRunner } from "../connections/sql.js";
@@ -185,7 +185,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
         const test = c.status === "revoked" ? "" : c.status === "blocked"
           ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm" title="forgets the pinned host key; only after you have checked the machine really changed it">reset host key</button></form>`
           : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`;
-        return html`<tr><td><span class="nm">${c.name}</span></td><td>${c.kind}</td><td class="conn-target" title="${c.target}">${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td>${c.mode}</td><td>${c.status}${signInCell(c, csrf)}</td>
+        return html`<tr><td><span class="nm">${c.name}</span></td><td>${c.kind}</td><td class="conn-target" title="${c.target}">${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td><form class="inline-edit" method="post" action="/admin/connections/${c.id}/mode" data-autosave>${csrf}<select class="be-select" name="mode" aria-label="Connection mode" title="Read-only stops every bot changing this system; change lets each bot's permission ask or allow writes.">${(["read-only", "change"] as const).map((m) => html`<option value="${m}" ${m === c.mode ? "selected" : ""}>${m}</option>`)}</select><button class="be-btn sm auto">save</button></form></td><td>${c.status}${signInCell(c, csrf)}</td>
 <td><div class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</div><details class="conn-edit"><summary>edit</summary><form method="post" action="/admin/connections/${c.id}/description">${csrf}<textarea name="description" rows="3" placeholder="what it is for, what is safe to run, what to leave alone">${c.description ?? ""}</textarea><button class="be-btn sm">save</button></form></details></td>
 <td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
 <td><div class="conn-actions">${test}${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</div></td></tr>`;
@@ -855,6 +855,18 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       if (!["read", "confirm", "free", "deny"].includes(mode)) throw new DirectoryError("Unknown permission");
       await setConnectionGrant(db, actor.tenantId, req.params.id, req.params.connectionId, mode);
       res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/connections/:id/mode",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const mode = field(req, "mode") as ConnectionMode;
+      if (mode !== "read-only" && mode !== "change") throw new DirectoryError("Unknown mode");
+      await setConnectionMode(db, actor.tenantId, req.params.id, mode);
+      res.redirect(303, "/admin/connections");
     }),
   );
 
