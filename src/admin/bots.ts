@@ -169,6 +169,9 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
         listDefinitions(db, actor.tenantId),
       ]);
       const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
+      const error = (typeof req.query.error === "string" ? req.query.error.trim() : "").slice(0, 300);
+      const saved = req.query.saved === "1";
+      const add = req.query.add === "1" || !!error;
       const needle = q.toLowerCase();
       const matches = (c: Connection) => {
         if (!needle) return true;
@@ -188,15 +191,17 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
 <td><div class="conn-actions">${test}${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</div></td></tr>`;
       });
       render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1><p class="meta">The systems the bots can reach, and what they may do there.</p></div><div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;">Add a connection</a></div></header>
+${saved ? html`<div class="be-notice good"><div class="grow"><b>Connection saved.</b><div class="meta">Press test on its row when you are ready.</div></div></div>` : ""}
+${error ? html`<div class="be-notice bad"><div class="grow"><b>Connection not saved</b><div class="meta">${error}</div></div></div>` : ""}
 <div class="toolbar"><form class="search-form" method="get" action="/admin/connections" role="search">
 <input id="connections-q" class="be-input" type="search" name="q" value="${q}" placeholder="Search by name, kind, target or bot…" aria-label="Search connections" data-live-filter="#connections-table" data-live-count="#connections-count">
 <button class="be-btn">search</button>${q ? html`<a class="be-btn quiet" href="/admin/connections">clear</a>` : ""}
 </form><span class="spacer"></span><span class="muted" id="connections-count">${filtered.length} of ${conns.length}</span></div>
 ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>Used by</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`) : conns.length ? html`<div class="be-empty">No connections match “${q}”. <a href="/admin/connections">clear the search</a></div>` : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
-<details class="add" id="add"><summary class="be-btn">add a connection…</summary>
+<details class="add" id="add"${add ? raw(" open") : ""}><summary class="be-btn">add a connection…</summary>
 <form method="post" action="/admin/connections" data-connection-kind autocomplete="off">${csrf}
 <fieldset class="conn-group"><legend>Basics</legend><div class="fields">
-<label>name<span class="hint">lowercase, digits and dashes</span><input name="name" required autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
+<label>name<span class="hint">lowercase, digits and dashes</span><input name="name" required pattern="[a-z0-9][a-z0-9-]{0,62}" title="Lowercase letters, digits and dashes, starting with a letter or digit" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
 <label>kind<span class="hint">what it connects to</span><select name="kind"><option value="ssh">ssh</option><option value="sql">sql database</option><option value="mcp">MCP server</option><option value="http">http API</option></select></label>
 <label>target<span class="hint">ssh/sql: host name; mcp/http: URL</span><input name="target" required autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
 <label>mode<span class="hint">read-only, or change with permission</span><select name="mode"><option value="read-only">read-only</option><option value="change">change</option></select></label>
@@ -252,12 +257,21 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
         const tools = await listMcpToolInfo(fetchFn, { target, headers: headerName && secret ? { [headerName]: secret } : {} }).catch(() => []);
         config = { ...(headerName ? { headerName } : {}), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) };
       }
-      const c = await createConnection(connDeps, actor.tenantId, {
-        kind, name: field(req, "name").trim(), target, mode: field(req, "mode") as ConnectionMode, description: field(req, "description"), config: config as never, secret, ...(clientSecret ? { clientSecret } : {}), personId: actor.personId, definitionIds: many(req, "definitionId"),
-      }).catch((e) => { throw e instanceof ConnectionError ? new DirectoryError(e.message) : e; });
-      if (c.kind === "ssh") return res.redirect(303, "/admin/connections");
+      let c: Connection;
+      try {
+        c = await createConnection(connDeps, actor.tenantId, {
+          kind, name: field(req, "name").trim(), target, mode: field(req, "mode") as ConnectionMode, description: field(req, "description"), config: config as never, secret, ...(clientSecret ? { clientSecret } : {}), personId: actor.personId, definitionIds: many(req, "definitionId"),
+        });
+      } catch (e) {
+        // a bad name, target or missing secret belongs on the form that was just sent, not on an error page
+        if (e instanceof ConnectionError || e instanceof DirectoryError) {
+          const message = e instanceof Error ? e.message : "Could not save the connection.";
+          return res.redirect(303, `/admin/connections?error=${encodeURIComponent(message)}&add=1`);
+        }
+        throw e;
+      }
       if (oauthOf(c)) return res.redirect(302, beginSignIn(c, oauthRedirect));
-      await testPage(res, actor, c.id); // the secret was just typed in, so a typo shows up now rather than in a bot's chat
+      return res.redirect(303, "/admin/connections?saved=1");
     }),
   );
 

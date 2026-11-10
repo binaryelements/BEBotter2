@@ -96,10 +96,8 @@ describe("bots screen", () => {
     const res = await post("/admin/connections", "Ann", [
       ["name", "sap"], ["kind", "sql"], ["target", "sql1.example.test"], ["mode", "read-only"], ["engine", "mssql"], ["database", "SBO"], ["username", "reader"], ["secret", "pw-top"], ["definitionId", d.id], ["description", "SAP B1 company database; look things up, never write"],
     ]);
-    expect(res.status).toBe(200); // the test page, straight after saving
-    const tested = await res.text();
-    expect(tested).toContain("Connected\n?\n1");
-    expect(tested).not.toContain("pw-top");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/admin/connections?saved=1");
     const page = await (await get("/admin/connections", "Ann")).text();
     expect(page).toMatch(/<span class="nm">sap<\/span><\/td><td>sql<\/td><td class="conn-target"[^>]*>sql1\.example\.test<\/td><td>read-only<\/td><td>active<\/td>/);
     expect(page).toContain(`/admin/bots/${d.id}?tab=connections`);
@@ -108,7 +106,14 @@ describe("bots screen", () => {
     const id = page.match(/\/admin\/connections\/([^/]+)\/description/)![1];
     expect((await post(`/admin/connections/${id}/description`, "Ann", [["description", "SAP B1 live company; read only"]])).status).toBe(303);
     expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("SAP B1 live company; read only");
-    expect((await post("/admin/connections", "Ann", [["name", "sap"], ["kind", "sql"], ["target", "x"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"]])).status).toBe(400);
+    const duplicate = await post("/admin/connections", "Ann", [["name", "sap"], ["kind", "sql"], ["target", "x"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"]]);
+    expect(duplicate.status).toBe(303);
+    const duplicateError = duplicate.headers.get("location")!;
+    expect(duplicateError).toContain("/admin/connections?error=");
+    const duplicatePage = await (await get(duplicateError, "Ann")).text();
+    expect(duplicatePage).toContain("Connection not saved");
+    expect(duplicatePage).toContain("already exists");
+    expect(duplicatePage).toContain('id="add" open');
     expect((await post("/admin/connections", "Hal", [["name", "x"], ["kind", "http"], ["target", "https://x.test/"], ["mode", "read-only"]])).status).toBe(403);
   });
 
