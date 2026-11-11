@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { upsertTenant } from "../org/org.js";
+import { upsertDefinition } from "../bots/definitions.js";
 import { deleteNote, KnowledgeError, listNotes, noteHistory, readNote, rollbackNote, searchNotes, writeNote } from "./store.js";
 
 describe("knowledge store", () => {
@@ -19,9 +20,27 @@ describe("knowledge store", () => {
     await writeNote(db, key, "t1", "a/one", "first", {});
     await writeNote(db, key, "t1", "a/one", "second", {});
     await writeNote(db, key, "t1", "a/zed", "other", {});
-    expect(await readNote(db, key, "t1", "a/one")).toEqual({ path: "a/one", version: 2, body: "second" });
+    expect(await readNote(db, key, "t1", "a/one")).toEqual({ path: "a/one", version: 2, body: "second", definitionId: null });
     expect((await listNotes(db, key, "t1")).map((n) => [n.path, n.version])).toEqual([["a/one", 2], ["a/zed", 1]]);
     expect(await searchNotes(db, key, "t1", "SECON")).toEqual([{ path: "a/one", snippet: "second" }]);
+  });
+
+  it("a bot sees its own notes and the shared ones, never another bot's", async () => {
+    const a = await upsertDefinition(db, key, "t1", { name: "bot-a", label: "A", persona: "p" });
+    const b = await upsertDefinition(db, key, "t1", { name: "bot-b", label: "B", persona: "p" });
+    await writeNote(db, key, "t1", "shared/x", "for everyone", {});
+    await writeNote(db, key, "t1", "mine/x", "for a", { definitionId: a.id });
+    await writeNote(db, key, "t1", "theirs/x", "for b", { definitionId: b.id });
+    const visibleToA = (await listNotes(db, key, "t1", a.id)).map((n) => n.path);
+    expect(visibleToA).toContain("mine/x");
+    expect(visibleToA).toContain("shared/x");
+    expect(visibleToA).not.toContain("theirs/x");
+    expect((await readNote(db, key, "t1", "shared/x", a.id))?.body).toBe("for everyone");
+    expect(await readNote(db, key, "t1", "theirs/x", a.id)).toBeUndefined();
+    expect(await searchNotes(db, key, "t1", "for b", 20, a.id)).toEqual([]);
+    // an admin asks with no bot and sees every note, with its owner
+    const all = (await listNotes(db, key, "t1")).filter((n) => n.path.endsWith("/x"));
+    expect(all.map((n) => [n.path, n.definitionId]).sort()).toEqual([["mine/x", a.id], ["shared/x", null], ["theirs/x", b.id]].sort());
   });
 
   it("versions increase and history is newest first with authors", async () => {

@@ -225,6 +225,13 @@
       "when": 1794300000000,
       "tag": "0031_inbound-hook",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794303600000,
+      "tag": "0032_note-owner",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, max } from "drizzle-orm";
+import { and, desc, eq, isNull, max, or } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { knowledgeVersions } from "../db/schema.js";
 import type { KnowledgeVersion } from "../db/schema.js";
@@ -18,34 +18,46 @@ function checkPath(path: string): void {
 
 const scope = (tenantId: string, path: string) => and(eq(knowledgeVersions.tenantId, tenantId), eq(knowledgeVersions.path, path));
 
-async function latestRows(db: Db, tenantId: string): Promise<KnowledgeVersion[]> {
+/** A bot sees its own notes and the company's shared ones; an admin, asking with no bot, sees every note. */
+const visible = (tenantId: string, definitionId?: string) =>
+  and(
+    eq(knowledgeVersions.tenantId, tenantId),
+    definitionId ? or(eq(knowledgeVersions.definitionId, definitionId), isNull(knowledgeVersions.definitionId)) : undefined,
+  );
+
+async function latestRows(db: Db, tenantId: string, definitionId?: string): Promise<KnowledgeVersion[]> {
   const rows = await db
     .selectDistinctOn([knowledgeVersions.path])
     .from(knowledgeVersions)
-    .where(eq(knowledgeVersions.tenantId, tenantId))
+    .where(visible(tenantId, definitionId))
     .orderBy(knowledgeVersions.path, desc(knowledgeVersions.version));
   return rows.filter((r) => !r.deleted);
 }
 
-async function latestRow(db: Db, tenantId: string, path: string): Promise<KnowledgeVersion | undefined> {
-  const [row] = await db.select().from(knowledgeVersions).where(scope(tenantId, path)).orderBy(desc(knowledgeVersions.version)).limit(1);
+async function latestRow(db: Db, tenantId: string, path: string, definitionId?: string): Promise<KnowledgeVersion | undefined> {
+  const [row] = await db
+    .select()
+    .from(knowledgeVersions)
+    .where(and(visible(tenantId, definitionId), eq(knowledgeVersions.path, path)))
+    .orderBy(desc(knowledgeVersions.version))
+    .limit(1);
   return row && !row.deleted ? row : undefined;
 }
 
-export async function listNotes(db: Db, _key: Buffer, tenantId: string): Promise<{ path: string; version: number; updatedAt: Date }[]> {
-  return (await latestRows(db, tenantId)).map((r) => ({ path: r.path, version: r.version, updatedAt: r.createdAt }));
+export async function listNotes(db: Db, _key: Buffer, tenantId: string, definitionId?: string): Promise<{ path: string; version: number; updatedAt: Date; definitionId: string | null }[]> {
+  return (await latestRows(db, tenantId, definitionId)).map((r) => ({ path: r.path, version: r.version, updatedAt: r.createdAt, definitionId: r.definitionId }));
 }
 
-export async function readNote(db: Db, key: Buffer, tenantId: string, path: string): Promise<{ path: string; version: number; body: string } | undefined> {
-  const row = await latestRow(db, tenantId, path);
-  return row && { path, version: row.version, body: decrypt(key, row.bodyCipher) };
+export async function readNote(db: Db, key: Buffer, tenantId: string, path: string, definitionId?: string): Promise<{ path: string; version: number; body: string; definitionId: string | null } | undefined> {
+  const row = await latestRow(db, tenantId, path, definitionId);
+  return row && { path, version: row.version, body: decrypt(key, row.bodyCipher), definitionId: row.definitionId };
 }
 
-export async function searchNotes(db: Db, key: Buffer, tenantId: string, query: string, limit = 20): Promise<{ path: string; snippet: string }[]> {
+export async function searchNotes(db: Db, key: Buffer, tenantId: string, query: string, limit = 20, definitionId?: string): Promise<{ path: string; snippet: string }[]> {
   const q = query.toLowerCase();
   const hits: { path: string; snippet: string }[] = [];
   // shortcut: decrypts every latest note per search; add an index when a tenant holds thousands of notes.
-  for (const r of await latestRows(db, tenantId)) {
+  for (const r of await latestRows(db, tenantId, definitionId)) {
     if (hits.length >= limit) break;
     const body = decrypt(key, r.bodyCipher);
     const at = body.toLowerCase().indexOf(q);
@@ -68,7 +80,7 @@ async function append(db: Db, key: Buffer, tenantId: string, path: string, body:
     try {
       await db.insert(knowledgeVersions).values({
         id: crypto.randomUUID(), tenantId, path, version, bodyCipher, deleted,
-        authorPersonId: author.personId, authorDefinitionId: author.definitionId, chatId: author.chatId,
+        authorPersonId: author.personId, authorDefinitionId: author.definitionId, definitionId: author.definitionId ?? null, chatId: author.chatId,
       });
       return version;
     } catch (e) {
@@ -93,9 +105,12 @@ export async function noteHistory(db: Db, key: Buffer, tenantId: string, path: s
 export async function rollbackNote(db: Db, key: Buffer, tenantId: string, path: string, version: number, author: Author): Promise<number> {
   const old = (await noteHistory(db, key, tenantId, path)).find((r) => r.version === version);
   if (!old || old.deleted) throw new KnowledgeError("No such version");
-  return writeNote(db, key, tenantId, path, old.body, author);
+  // rolling back keeps the note with whoever owns it now, unless the caller is a bot saying otherwise
+  const owner = author.definitionId ?? (await latestRow(db, tenantId, path))?.definitionId ?? undefined;
+  return writeNote(db, key, tenantId, path, old.body, { ...author, definitionId: owner });
 }
 
 export async function deleteNote(db: Db, key: Buffer, tenantId: string, path: string, author: Author): Promise<void> {
-  await append(db, key, tenantId, path, "", true, author);
+  const owner = author.definitionId ?? (await latestRow(db, tenantId, path))?.definitionId ?? undefined;
+  await append(db, key, tenantId, path, "", true, { ...author, definitionId: owner });
 }

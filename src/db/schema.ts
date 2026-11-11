@@ -406,6 +406,8 @@ export const knowledgeVersions = pgTable(
     deleted: boolean("deleted").notNull().default(false),
     authorPersonId: text("author_person_id").references(() => people.id),
     authorDefinitionId: text("author_definition_id").references(() => botDefinitions.id),
+    /** Whose note this is: a bot's runbook, or null for one the whole company shares. */
+    definitionId: text("definition_id").references(() => botDefinitions.id, { onDelete: "set null" }),
     chatId: text("chat_id"),
     createdAt: createdAt(),
   },

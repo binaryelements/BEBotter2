@@ -79,13 +79,18 @@ describe("runbooks screen", () => {
       body: new URLSearchParams({ ...data, csrf: "csrf-1" }).toString(),
     });
 
-  it("an admin uploads a markdown runbook under troubleshooting/", async () => {
-    const res = await post("/admin/runbooks/upload", "Ann", { path: "", file: "BE Voice.md", body: "# BE Voice\n\nCheck the SBC." });
+  it("an admin uploads a markdown runbook, and it belongs to the bot they picked", async () => {
+    const res = await post("/admin/runbooks/upload", "Ann", { bot: botId, path: "", file: "BE Voice.md", body: "# BE Voice\n\nCheck the SBC." });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/admin/runbooks/review?path=troubleshooting%2Fbe-voice.md");
-    expect((await readNote(db, secretsKey, T, "troubleshooting/be-voice.md"))?.body).toContain("Check the SBC.");
+    const note = await readNote(db, secretsKey, T, "troubleshooting/be-voice.md");
+    expect(note?.body).toContain("Check the SBC.");
+    expect(note?.definitionId).toBe(botId);
     expect((await listNotes(db, secretsKey, T)).map((n) => n.path)).toContain("troubleshooting/be-voice.md");
     expect(await (await get("/admin/runbooks", "Ann")).text()).toContain("troubleshooting/be-voice.md");
+    // no bot, or someone else's bot, and nothing is saved
+    expect((await post("/admin/runbooks/upload", "Ann", { path: "troubleshooting/x.md", body: "x" })).status).toBeGreaterThanOrEqual(400);
+    expect(await readNote(db, secretsKey, T, "troubleshooting/x.md")).toBeUndefined();
   });
 
   it("a head can read the list but cannot upload or review", async () => {
