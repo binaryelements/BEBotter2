@@ -19,8 +19,14 @@ export type SchedulerDeps = {
   personToken?: (chatId: string) => Promise<string | undefined>;
 };
 
-/** Runs one claimed routine headless and posts to its chat. A run that cannot happen is audited as failed, never thrown. */
-export async function runRoutine(deps: SchedulerDeps, routine: Routine): Promise<void> {
+/** What a headless run needs: a scheduled routine has it all, and so does an inbound webhook. */
+export type HeadlessRun = Pick<Routine, "id" | "tenantId" | "chatId" | "definitionId" | "createdByPersonId" | "prompt" | "background" | "quiet" | "grantPersonId">;
+
+/**
+ * Run a routine's turn headless and post the reply to its chat. A run that cannot happen is audited as failed, never thrown.
+ * A routine from the scheduler is the usual caller; an inbound webhook delivers the same shape with its own prompt.
+ */
+export async function runRoutine(deps: SchedulerDeps, routine: HeadlessRun): Promise<void> {
   const { db } = deps;
   const { tenantId, chatId, definitionId } = routine;
   const due = new Date(); // shortcut: claim time stands in for the scheduled time, which claimDue does not return

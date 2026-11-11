@@ -4,7 +4,7 @@ import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { ensurePersonalAssistant, ensurePersonalDefinition, getDefinition, listDefinitions, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
 import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
-import { createDepartment, setMembership, setRole } from "../org/directory.js";
+import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
 import { getConnectionGrant, listConnectionsFor } from "../connections/store.js";
@@ -538,6 +538,38 @@ describe("bots screen", () => {
       for (const p of ["/admin/bots", `/admin/bots/${d.id}`, "/admin/settings"]) expect(await (await get(p, "Ann")).text()).not.toContain("BEGIN OPENSSH");
     });
   });
+  it("shows whose personal assistant a bot is, and lets an admin give it an owner", async () => {
+    await setPersonalBot(db, T, id.Mo, true);
+    const pa = await ensurePersonalAssistant(db, T, id.Mo, "m-default");
+    const page = await (await get(`/admin/bots/${pa.id}`, "Ann")).text();
+    expect(page).toContain(`for Mo · `);
+    expect(page).toContain("Owner");
+    expect(page).toContain('name="ownerPersonId"');
+    const res = await post(`/admin/bots/${pa.id}`, "Ann", [["label", "My assistant"], ["persona", "p"], ["model", "m-default"], ["ownerPersonId", id.Eve]]);
+    expect(res.status).toBe(303);
+    expect((await listDefinitions(db, T)).find((d) => d.id === pa.id)?.ownerPersonId).toBe(id.Eve);
+    const [eve] = await db.select().from(people).where(eq(people.id, id.Eve));
+    expect(eve.personalBot).toBe(true);
+  });
+
+  it("gives a bot one inbound URL, pointed at one of its chats, and turns it off again", async () => {
+    const d = await upsertDefinition(db, secretsKey, T, { name: "hooked", label: "Hooked", persona: "p" });
+    await db.insert(chats).values({ id: "chat-hook", tenantId: T, conversationType: "groupChat", label: "Ops room" } as typeof chats.$inferInsert);
+    await db.insert(chatAssignments).values({ chatId: "chat-hook", definitionId: d.id } as typeof chatAssignments.$inferInsert);
+    await db.insert(chats).values({ id: "chat-elsewhere", tenantId: T, conversationType: "groupChat", label: "Elsewhere" } as typeof chats.$inferInsert);
+    expect(await (await get(`/admin/bots/${d.id}`, "Ann")).text()).toContain("Inbound webhook");
+    expect((await post(`/admin/bots/${d.id}/hook`, "Ann", [["chat", "chat-elsewhere"]])).status).toBeGreaterThanOrEqual(400);
+    expect((await post(`/admin/bots/${d.id}/hook`, "Ann", [["chat", "chat-hook"]])).status).toBe(303);
+    const [row] = await db.select().from(botDefinitions).where(eq(botDefinitions.id, d.id));
+    expect([row.inboundChatId, row.inboundBy, !!row.inboundSecret]).toEqual(["chat-hook", id.Ann, true]);
+    const page = await (await get(`/admin/bots/${d.id}`, "Ann")).text();
+    expect(page).toContain(`https://bot.example.test/hooks/${d.id}/`);
+    expect(page).toContain("Ops room");
+    await post(`/admin/bots/${d.id}/hook/off`, "Ann", []);
+    const [off] = await db.select().from(botDefinitions).where(eq(botDefinitions.id, d.id));
+    expect([off.inboundSecret, off.inboundChatId, off.inboundBy]).toEqual([null, null, null]);
+  });
+
 });
 
 describe("bot names and email addresses", () => {

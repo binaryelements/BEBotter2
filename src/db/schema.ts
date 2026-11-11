@@ -140,6 +140,12 @@ export const botDefinitions = pgTable(
     reflectionChatId: text("reflection_chat_id"),
     /** Local hour (0-23) in the tenant zone when this bot's reflection runs. */
     reflectionHour: integer("reflection_hour").notNull().default(18),
+    /** The bot's one inbound URL: an encrypted secret an outside system posts with, the chat its replies go to, and the admin who created it. */
+    inboundSecret: text("inbound_secret"),
+    inboundChatId: text("inbound_chat_id"),
+    inboundBy: text("inbound_by").references(() => people.id),
+    inboundAt: timestamp("inbound_at", { withTimezone: true }),
+    inboundHits: integer("inbound_hits").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

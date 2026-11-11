@@ -1,5 +1,5 @@
 import type { McpServerConfig } from "../engine/mcp.js";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { GRAPH_CAPABILITIES, botDefinitions, chatAssignments, chats, definitionDepartments, departments, people, tenants } from "../db/schema.js";
@@ -111,6 +111,26 @@ export async function ensurePersonalAssistant(db: Db, tenantId: string, personId
     })
     .returning();
   return row;
+}
+
+/**
+ * Point a personal assistant at the person it acts for; null leaves it unowned, which the assistants page shows and
+ * the first allowed person then adopts. One assistant per person, so a person who already has one is refused.
+ */
+export async function setAssistantOwner(db: Db, tenantId: string, definitionId: string, personId: string | null): Promise<void> {
+  if (personId) {
+    const [taken] = await db
+      .select({ id: botDefinitions.id })
+      .from(botDefinitions)
+      .where(and(eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.ownerPersonId, personId), ne(botDefinitions.id, definitionId)));
+    if (taken) throw new DirectoryError("That person already has a personal assistant");
+  }
+  const rows = await db
+    .update(botDefinitions)
+    .set({ ownerPersonId: personId, updatedAt: new Date() })
+    .where(and(eq(botDefinitions.id, definitionId), eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.identity, "person")))
+    .returning({ id: botDefinitions.id });
+  if (!rows.length) throw new DirectoryError("Personal assistant not found");
 }
 
 /** One-time: point bots whose model the engine cannot resolve at the tenant's supported default. */

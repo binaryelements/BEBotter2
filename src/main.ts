@@ -26,6 +26,7 @@ import { modelSlugs } from "./engine/providers.js";
 import { systemSsh } from "./connections/ssh.js";
 import { agentMailAdmin } from "./mail/agentmail.js";
 import { mountMailInbound } from "./mail/inbound.js";
+import { mountInboundHook } from "./hooks/inbound.js";
 import { ensureAllMailboxes, ensureMailbox } from "./mail/mailboxes.js";
 import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
@@ -33,6 +34,7 @@ import { startReflectionScheduler } from "./reflections/scheduler.js";
 import { startScheduler } from "./routines/scheduler.js";
 import { createTeamsApp, graphToken } from "./teams/app.js";
 import { personToken, sendToChat } from "./teams/proactive.js";
+import type { AdaptiveCard } from "./teams/cards.js";
 
 loadEnvFile();
 const config = loadConfig(process.env);
@@ -81,6 +83,13 @@ const burstQuietMs = Number(process.env.BURST_QUIET_MS ?? 1200);
 const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection, burstQuietMs });
 
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
+// background work outside a chat turn: routines on a schedule, and a bot's inbound webhook
+const schedulerDeps = {
+  db,
+  runTurn: turn,
+  send: (chatId: string, m: string | AdaptiveCard) => sendToChat(proactive, chatId, m),
+  personToken: (chatId: string) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)),
+};
 
 // The Agents SDK reads clientId, tenantId and clientSecret from the environment.
 startServer(app, {
@@ -89,6 +98,7 @@ startServer(app, {
     // Static product deck, public on purpose: /slides is the shareable link.
     express.use("/slides", expressStatic(fileURLToPath(new URL("./admin/assets/slides/", import.meta.url)), { maxAge: "1h", index: "index.html" }));
     mountMailInbound(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m) });
+    mountInboundHook(express, { ...schedulerDeps, secretsKey: config.secretsKey });
     // a refused Teams delivery (auth, rate limit, handler error) is otherwise invisible
     express.use("/api/messages", (req, res, next) => {
       res.on("finish", () => {
@@ -108,7 +118,7 @@ startServer(app, {
 if (mail) void ensureAllMailboxes(mail);
 startAuditPruning(db, 24 * 60 * 60 * 1000);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
-startScheduler({ db, runTurn: turn, send: (chatId, m) => sendToChat(proactive, chatId, m), personToken: (chatId) => personToken(proactive, chatId, (ctx) => graphToken(app, ctx)) });
+startScheduler(schedulerDeps);
 startReflectionScheduler({ db, engine, send: (chatId, text) => sendToChat(proactive, chatId, text) });
 if (mail) startAlertScheduler({ db, admin: mail.admin, publicUrl: config.publicUrl, ...(balance ? { balance } : {}) });
 

@@ -3,7 +3,7 @@ import { PERSONA_TEMPLATES, personaTemplate } from "../bots/templates.js";
 import express from "express";
 import type { Request, Response, Router } from "express";
 import {
-  addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setGraph, setPersona,
+  addMcpServer, allowedDepartments, botDefinitionInput, getDefinition, listDefinitions, removeMcpServer, setAllowedDepartments, setAssistantOwner, setGraph, setPersona,
   setReflectionSettings, updateDefinitionFields, upsertDefinition,
 } from "../bots/definitions.js";
 import { and, count, eq, gte, inArray, max, sql } from "drizzle-orm";
@@ -14,19 +14,19 @@ import type { ConnectionGrantMode, ConnectionKind, ConnectionMode } from "../con
 import { SQL_ENGINES } from "../connections/sql.js";
 import type { SqlRunner } from "../connections/sql.js";
 import { systemSsh } from "../connections/ssh.js";
-import type { SshRunner } from "../connections/ssh.js";
+import { newHookSecret } from "../hooks/inbound.js";import type { SshRunner } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import type { BotDefinition, Connection } from "../db/schema.js";
 import { defaultClass } from "../engine/gate.js";
 import type { ToolRule } from "../engine/gate.js";
 import { knownTools, recordTools, setToolRule, toolRulesFor, toolSource } from "../engine/tool-rules.js";
-import { decrypt } from "../secrets/cipher.js";
+import { decrypt, encrypt } from "../secrets/cipher.js";
 import { beginAction, completeAction, listActions } from "../audit/audit.js";
 import { GRAPH_CAPABILITIES, auditEvents, botDefinitions, chatAssignments, chats, connections, definitionConnections, mailboxes, people } from "../db/schema.js";
 import { MailError } from "../mail/agentmail.js";
 import { ensureMailbox, MailboxError, removeMailbox, requestMailbox, restoreMailbox } from "../mail/mailboxes.js";
 import type { MailDeps } from "../mail/mailboxes.js";
-import { DirectoryError, listDepartments } from "../org/directory.js";
+import { DirectoryError, listDepartments, setPersonalBot } from "../org/directory.js";
 import { getTenantSettings } from "../org/org.js";
 import { createRoutine, deleteRoutine, listRoutines, updateRoutine } from "../routines/store.js";
 import { addLearning, deleteLearning, listLearnings, updateLearning } from "../learnings/store.js";
@@ -481,7 +481,8 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const mb = await mailboxOf(def.id);
       const [chatCount] = await db.select({ n: count() }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
       const ownerName = def.ownerPersonId ? (await db.select({ name: people.name }).from(people).where(eq(people.id, def.ownerPersonId)))[0]?.name : undefined;
-      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${def.identity === "person" && ownerName ? `for ${ownerName} · ` : ""}${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
+      const hookSecret = def.inboundSecret ? (() => { try { return decrypt(secretsKey, def.inboundSecret!); } catch { return undefined; } })() : undefined;
+      const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${def.identity === "person" ? (ownerName ? `for ${ownerName} · ` : "unowned · ") : ""}${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
       const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
@@ -511,6 +512,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
 <label>name<span class="hint">what people call it in chat</span><input name="displayName" value="${def.displayName ?? ""}" maxlength="60"></label>
 <label>role<span class="hint">shown after the name</span><input name="label" value="${def.label}" required></label>
 <label>model<span class="hint">the provider/model this bot uses</span><select class="be-select" name="model">${modelOptions(def.model)}</select></label>
+${person ? html`<label>owner<span class="hint">the person this assistant acts for; assigning turns their assistant on</span><select class="be-select" name="ownerPersonId"><option value="">unowned</option>${ppl.map((p) => html`<option value="${p.id}" ${p.id === def.ownerPersonId ? "selected" : ""}>${p.name}</option>`)}</select></label>` : ""}
 </div>
 <p class="be-label">can use</p><p><label class="be-toggle"><input type="checkbox" name="webSearch" ${def.webSearch ? "checked" : ""}> web search and browser</label>${person ? "" : html` <label class="be-toggle"><input type="checkbox" name="computer" ${def.computer ? "checked" : ""}> a computer</label>`}</p>
 ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their own chat. Only ${ownerName ?? "the owner"} can use it.</p>` : html`<p class="be-label">who can talk to it <span class="hint">none ticked means everyone in the company</span></p><p>${depts.map((d) => html`<label class="be-toggle"><input type="checkbox" name="departments" value="${d.id}" ${allowed.includes(d.id) ? "checked" : ""}> ${d.name}</label> `)}</p>`}${hide("persona", def.persona)}`
@@ -538,11 +540,19 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
           const tile = (label: string, value: string, sub: string, valueClass = "") => html`<div class="be-tile"><div class="be-eyebrow">${label}</div><div class="v ${valueClass}">${value}</div><div class="s">${sub}</div></div>`;
           const tools = [def.webSearch ? "web search" : "", def.computer ? "computer" : "", def.mcpServers.length ? `${def.mcpServers.length} connection${def.mcpServers.length === 1 ? "" : "s"}` : "", mb?.address ? "mail" : ""].filter(Boolean);
           const listRow = (title: string, meta: string) => html`<div class="list-row"><div class="grow"><div class="name">${title}</div><div class="meta">${meta}</div></div></div>`;
-          section = html`<div class="be-tiles" style="margin-bottom:16px">${tile("Model", def.model, "the provider/model this bot uses", "sm")}${tile("Chats", String(chatCount.n), `${assigned.filter((c) => c.conversationType === "groupChat").length} group · ${assigned.filter((c) => c.conversationType === "channel").length} channel`)}${tile("Last active", last ? when(last.startedAt) : "never", lastWho ? `${lastWho}${lastChat ? ` · ${lastChat}` : ""}` : "no messages yet", "sm")}${tile("Spend, 7 days", `$${Number(spend7[0]?.total ?? 0).toFixed(2)}`, `$${Number(spendMonth[0]?.total ?? 0).toFixed(2)} this month`)}</div>
+          section = html`<div class="be-tiles" style="margin-bottom:16px">${def.identity === "person" ? tile("Owner", ownerName ?? "unowned", ownerName ? "the person this assistant acts for" : "choose one in Edit settings", "sm") : ""}${tile("Model", def.model, "the provider/model this bot uses", "sm")}${tile("Chats", String(chatCount.n), `${assigned.filter((c) => c.conversationType === "groupChat").length} group · ${assigned.filter((c) => c.conversationType === "channel").length} channel`)}${tile("Last active", last ? when(last.startedAt) : "never", lastWho ? `${lastWho}${lastChat ? ` · ${lastChat}` : ""}` : "no messages yet", "sm")}${tile("Spend, 7 days", `$${Number(spend7[0]?.total ?? 0).toFixed(2)}`, `$${Number(spendMonth[0]?.total ?? 0).toFixed(2)} this month`)}</div>
 <div class="dash-cols">
 <section class="be-card"><div class="card-head"><h2>Persona</h2><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=persona">Edit</a></div><p class="persona">${def.persona}</p><div class="bot-chips">${tools.map((t) => html`<span class="be-chip">${t}</span>`)}</div></section>
 <section class="be-card"><div class="card-head"><h2>Daily reflection</h2><span class="be-chip ${def.reflectionMode === "off" ? "" : "g"}">${def.reflectionMode === "off" ? "off" : "auto"}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=reflections">Edit</a></div><dl class="be-kv"><dt>Mode</dt><dd>${modeWords}</dd><dt>Group</dt><dd>${def.reflectionChatId ? (chatLabel.get(def.reflectionChatId) ?? "a chat") : "not set"}</dd><dt>Hour</dt><dd>${String(def.reflectionHour).padStart(2, "0")}:00</dd><dt>Last run</dt><dd>${reflection ? reflection.day : "not yet"}</dd></dl>${reflection ? html`<div class="be-notice good" style="margin-top:14px"><div class="grow"><b>${reflection.day}</b><div class="meta">${reflection.summary || reflection.willDo || "Reflection saved."}</div></div><a class="be-btn sm" href="/admin/bots/${def.id}?tab=reflections">Read</a></div>` : html`<p class="muted small" style="margin-top:14px">No reflection yet. It runs daily at ${String(def.reflectionHour).padStart(2, "0")}:00 in the company time zone.</p>`}</section>
 </div>
+<section class="be-card" style="margin-top:16px"><div class="card-head"><h2>Inbound webhook</h2><span class="be-chip ${def.inboundSecret ? "g" : ""}">${def.inboundSecret ? "on" : "off"}</span></div>
+<p class="muted small">One URL an outside system can POST to — an email notification, a monitor, a form. What arrives runs as a turn on this bot and the reply is posted to the chat below.</p>
+${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` : ""}
+${assigned.length
+  ? html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/hook">${csrf}<input type="hidden" name="tab" value="overview"><label>posts to <select class="be-select" name="chat">${assigned.map((c) => html`<option value="${c.id}" ${c.id === def.inboundChatId ? "selected" : ""}>${chatLabel.get(c.id) ?? c.label ?? c.id}</option>`)}</select></label><button class="be-btn sm primary">${def.inboundSecret ? "save" : "create URL"}</button></form>`
+  : html`<div class="be-notice bad"><div class="grow"><b>No chat yet</b><div class="meta">Assign this bot to a chat on the Chats tab; its reply needs somewhere to go.</div></div></div>`}
+${def.inboundSecret ? html`<div class="bot-foot" style="margin-top:10px"><span class="muted small">${def.inboundHits} received${def.inboundAt ? ` · last ${when(def.inboundAt)}` : ""}</span><form method="post" action="/admin/bots/${def.id}/hook/rotate">${csrf}<button class="be-btn sm" title="replaces the secret; the old URL stops working">new URL</button></form><form method="post" action="/admin/bots/${def.id}/hook/off">${csrf}<button class="be-btn sm">turn off</button></form></div>` : ""}
+</section>
 <div class="bot-grid" style="margin-top:16px">
 <section class="be-card"><div class="card-head"><h2>Learnings</h2><span class="be-chip">${learnings.length}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=learnings">Open</a></div><p class="muted small">Short rules that are in every reply.</p><div class="list">${learnings.slice(0, 3).map((l) => listRow(l.text, l.source === "reflection" ? "daily reflection" : "taught by an admin"))}${learnings.length ? "" : html`<div class="be-empty">Nothing learnt yet.</div>`}</div></section>
 <section class="be-card"><div class="card-head"><h2>Memory</h2><span class="be-chip">${memory.length}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=memory">Search</a></div><p class="muted small">The long tail. Retrieved when relevant, never all at once.</p><div class="list">${memory.slice(0, 3).map((m) => listRow(m.text, `${m.kind} · importance ${m.importance}`))}${memory.length ? "" : html`<div class="be-empty">Nothing remembered yet.</div>`}</div></section>
@@ -704,9 +714,61 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
           displayName: "displayName" in ((req.body as object) ?? {}) ? field(req, "displayName") : undefined, label: field(req, "label").trim(), persona: field(req, "persona"), model: field(req, "model").trim(),
           webSearch: field(req, "webSearch") === "on", computer: field(req, "computer") === "on",
         });
+        // only the overview form carries it, so saving the persona tab leaves the owner alone
+        if ("ownerPersonId" in ((req.body as object) ?? {})) {
+          const owner = field(req, "ownerPersonId").trim() || null;
+          await setAssistantOwner(db, actor.tenantId, id, owner);
+          if (owner) await setPersonalBot(db, actor.tenantId, owner, true);
+        }
         onSaved?.(id);
       }
       res.redirect(303, back(req, id));
+    }),
+  );
+
+  // the bot's one inbound URL: create it (or keep the secret), point the replies at a chat, rotate it, or turn it off
+  router.post(
+    "/bots/:id/hook",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const id = req.params.id;
+      const def = await getDefinition(db, actor.tenantId, id);
+      if (!def) return page(res, 404, "Bot not found.");
+      const chatId = field(req, "chat").trim();
+      const [mine] = await db.select({ id: chatAssignments.chatId }).from(chatAssignments).where(and(eq(chatAssignments.definitionId, id), eq(chatAssignments.chatId, chatId)));
+      if (!mine) throw new DirectoryError("Pick a chat this bot is assigned to");
+      await db
+        .update(botDefinitions)
+        .set({ inboundChatId: chatId, inboundBy: actor.personId, ...(def.inboundSecret ? {} : { inboundSecret: encrypt(secretsKey, newHookSecret()), inboundHits: 0 }) })
+        .where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, actor.tenantId)));
+      res.redirect(303, `/admin/bots/${id}`);
+    }),
+  );
+
+  router.post(
+    "/bots/:id/hook/rotate",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await db
+        .update(botDefinitions)
+        .set({ inboundSecret: encrypt(secretsKey, newHookSecret()), inboundHits: 0, inboundAt: null })
+        .where(and(eq(botDefinitions.id, req.params.id), eq(botDefinitions.tenantId, actor.tenantId)));
+      res.redirect(303, `/admin/bots/${req.params.id}`);
+    }),
+  );
+
+  router.post(
+    "/bots/:id/hook/off",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await db
+        .update(botDefinitions)
+        .set({ inboundSecret: null, inboundChatId: null, inboundBy: null, inboundAt: null, inboundHits: 0 })
+        .where(and(eq(botDefinitions.id, req.params.id), eq(botDefinitions.tenantId, actor.tenantId)));
+      res.redirect(303, `/admin/bots/${req.params.id}`);
     }),
   );
 
