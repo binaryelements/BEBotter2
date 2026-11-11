@@ -11,7 +11,7 @@ export type OAuthConfig = { clientId: string; authorizationEndpoint: string; tok
 /** The callback a server that registers only loopback addresses (Wasabi's, for one) accepts; nothing listens there, the person copies the address. */
 export const LOOPBACK_REDIRECT = "http://127.0.0.1:8976/callback";
 /** What the connection's secret holds once signed in; `expiresAt` 0 means the server gave no lifetime. */
-type Tokens = { access: string; refresh?: string; expiresAt: number; clientSecret?: string };
+type Tokens = { access: string; refresh?: string; expiresAt: number; issuedAt?: number; clientSecret?: string };
 type Deps = { db: Db; secretsKey: Buffer; fetchFn: typeof fetch };
 
 export class OAuthError extends Error {}
@@ -123,12 +123,38 @@ async function tokenRequest(fetchFn: typeof fetch, oauth: OAuthConfig, resource:
   if (!r!.ok || typeof json.access_token !== "string") fail(`The sign-in server refused: ${typeof json.error === "string" ? json.error : r!.status}`);
   return json;
 }
-const toTokens = (json: Record<string, unknown>, previous?: Tokens): Tokens => ({
-  access: json.access_token as string,
-  ...(typeof json.refresh_token === "string" ? { refresh: json.refresh_token } : previous?.refresh ? { refresh: previous.refresh } : {}),
-  expiresAt: typeof json.expires_in === "number" ? Date.now() + json.expires_in * 1000 : 0,
-  ...(previous?.clientSecret ? { clientSecret: previous.clientSecret } : {}),
-});
+/** A JWT's `exp`, in ms; servers that send no expires_in usually still carry one. */
+function jwtExpiry(token: string): number {
+  const part = token.split(".")[1];
+  if (!part) return 0;
+  try {
+    const claims = JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as { exp?: unknown };
+    return typeof claims.exp === "number" ? claims.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** expires_in is a number, a numeric string or absent; anything else falls back to the token's own exp. */
+function lifetimeOf(json: Record<string, unknown>, access: string): number {
+  const raw = json.expires_in ?? json.expiresIn;
+  const seconds = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  if (Number.isFinite(seconds) && seconds > 0) return Date.now() + seconds * 1000;
+  return jwtExpiry(access);
+}
+
+const toTokens = (json: Record<string, unknown>, previous?: Tokens): Tokens => {
+  const access = json.access_token as string;
+  // a refresh response may leave out expires_in; the previous token's lifetime must not outlive the new one
+  const expiresAt = lifetimeOf(json, access);
+  return {
+    access,
+    ...(typeof json.refresh_token === "string" ? { refresh: json.refresh_token } : previous?.refresh ? { refresh: previous.refresh } : {}),
+    expiresAt: expiresAt || jwtExpiry(access),
+    issuedAt: Date.now(),
+    ...(previous?.clientSecret ? { clientSecret: previous.clientSecret } : {}),
+  };
+};
 const tokensOf = (deps: Pick<Deps, "secretsKey">, c: Connection): Tokens | undefined => (c.secretCipher ? (JSON.parse(decrypt(deps.secretsKey, c.secretCipher)) as Tokens) : undefined);
 const saveTokens = (deps: Deps, c: Connection, t: Tokens) =>
   deps.db.update(connections).set({ secretCipher: encrypt(deps.secretsKey, JSON.stringify(t)), status: "active", updatedAt: new Date() }).where(and(eq(connections.id, c.id), eq(connections.tenantId, c.tenantId)));
@@ -154,7 +180,12 @@ export async function accessToken(deps: Deps, c: Connection): Promise<string> {
   const oauth = oauthOf(c) ?? fail(`${c.name} is not an OAuth connection`);
   const t = tokensOf(deps, c);
   if (!t?.access) fail(`${c.name} needs a sign-in`);
-  if (!t!.expiresAt || t!.expiresAt - Date.now() > 60_000) return t!.access;
+  // servers that say nothing about lifetime (an opaque token, no expires_in) still expire; assume the usual hour,
+  // counting from when the secret was saved for tokens written before issuedAt existed
+  const assumed = 55 * 60_000;
+  const issued = t!.issuedAt ?? c.updatedAt.getTime();
+  const expiresAt = t!.expiresAt || issued + assumed;
+  if (!expiresAt || expiresAt - Date.now() > 60_000) return t!.access;
   const back = () => deps.db.update(connections).set({ status: "pending", updatedAt: new Date() }).where(eq(connections.id, c.id));
   if (!t!.refresh) {
     await back();

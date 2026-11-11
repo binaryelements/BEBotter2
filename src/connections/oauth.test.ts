@@ -20,6 +20,7 @@ function fakeServer() {
   const calls: { url: string; body: string }[] = [];
   let issued = 0;
   let refuseRefresh = false;
+  let stringExpiry = false;
   let loopbackOnly = false;
   const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -40,11 +41,11 @@ function fakeServer() {
         if (createHash("sha256").update(p.get("code_verifier")!).digest("base64url") !== fakeServer.challenge) return Response.json({ error: "invalid_grant" }, { status: 400 });
       } else if (p.get("grant_type") !== "refresh_token" || p.get("refresh_token") !== "refresh-1" || refuseRefresh) return Response.json({ error: "invalid_grant" }, { status: 400 });
       issued += 1;
-      return Response.json({ access_token: `access-${issued}`, refresh_token: "refresh-1", expires_in: 3600, token_type: "bearer" });
+      return Response.json({ access_token: `access-${issued}`, refresh_token: "refresh-1", expires_in: stringExpiry ? "3600" : 3600, token_type: "bearer" });
     }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
-  return { fetchFn, calls, refuse: () => (refuseRefresh = true), loopbackOnly: () => (loopbackOnly = true) };
+  return { fetchFn, calls, refuse: () => (refuseRefresh = true), loopbackOnly: () => (loopbackOnly = true), stringExpiry: () => (stringExpiry = true) };
 }
 fakeServer.challenge = "";
 
@@ -81,6 +82,22 @@ describe("mcp OAuth sign-in", () => {
     expect(url.searchParams.get("redirect_uri")).toBe(LOOPBACK_REDIRECT);
     fakeServer.challenge = url.searchParams.get("code_challenge")!;
     expect((await finishSignIn(deps, "t1", url.searchParams.get("state")!, "code-1")).status).toBe("active");
+  });
+
+  it("keeps a lifetime the server sent as text, and refreshes a token that carried none once it is old", async () => {
+    server.stringExpiry();
+    const oauth = await discover(server.fetchFn, MCP, REDIRECT);
+    const c = await createConnection({ db, secretsKey: key, ssh: fakeSsh() }, "t1", { kind: "mcp", name: "wasabi", target: MCP, mode: "read-only", config: { oauth, readOnlyTools: [] } as never, personId, definitionIds: [defId] });
+    const url = new URL(beginSignIn(c, REDIRECT));
+    fakeServer.challenge = url.searchParams.get("code_challenge")!;
+    await finishSignIn(deps, "t1", url.searchParams.get("state")!, "code-1");
+    const stored = JSON.parse(decrypt(key, (await row()).secretCipher!));
+    // "3600" counts, so the token expires in about an hour rather than never
+    expect(stored.expiresAt).toBeGreaterThan(Date.now() + 3_500_000);
+
+    // an opaque token with no expires_in and no exp claim: 56 minutes old is stale on the usual hour
+    await db.update(connections).set({ secretCipher: encrypt(key, JSON.stringify({ access: "access-1", refresh: "refresh-1", expiresAt: 0, issuedAt: Date.now() - 56 * 60_000 })) }).where(eq(connections.id, c.id));
+    expect(await accessToken(deps, await row())).toBe("access-2");
   });
 
   it("an OAuth connection waits pending for the sign-in, then holds tokens the engine sends as a bearer header, refreshing them when stale", async () => {
