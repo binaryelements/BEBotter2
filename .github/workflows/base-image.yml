@@ -19,7 +19,6 @@ on:
       - master
     paths:
       - Dockerfile.base
-      - .github/workflows/base-image.yml
   workflow_dispatch:
 
 permissions:
