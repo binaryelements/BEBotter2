@@ -42,10 +42,12 @@ Done on staging, **not yet on production**. Without it, choosing My assistant on
 On the Entra app:
 1. Expose an API: Application ID URI `api://botid-<client ID>`; scope `access_as_user` (admins and users); authorised clients `1fec8e78-bce4-4aaf-ab1b-5451cc387264` and `5e3ce6c0-2b1f-4285-8d4b-75ee78787346`.
 2. Authentication: Web redirect URI `https://token.botframework.com/.auth/web/redirect` (next to the admin callback `<URL>/admin/auth/callback`).
-3. API permissions, Microsoft Graph delegated: `User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Files.ReadWrite.All Chat.Read offline_access openid profile`, then grant admin consent. (People sync separately needs application `User.Read.All`.)
+3. API permissions, Microsoft Graph delegated: `User.Read Mail.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Files.ReadWrite Files.ReadWrite.All Chat.Read Chat.ReadWrite offline_access openid profile`, then grant admin consent. (People sync separately needs application `User.Read.All`.)
 4. A client secret for the connection below.
 
-On the Azure Bot, Configuration, OAuth connection named exactly `graph` (`GRAPH_OAUTH_CONNECTION` overrides the name): Azure Active Directory v2, the client ID and secret, token exchange URL `api://botid-<client ID>`, the tenant ID, the scopes above.
+On the Azure Bot, Configuration, OAuth connection named exactly `graph` (`GRAPH_OAUTH_CONNECTION` overrides the name): Azure Active Directory v2, the client ID and secret, **token exchange URL `https://token.botframework.com/.auth/web/redirect`** (not the api:// URI), the tenant ID, the scopes above, then press Apply — the blade does not save the connection until it is pressed.
+
+A client instance, start to finish, is `docs/client-setup.md`.
 
 The Teams package must carry `webApplicationInfo` with the same client ID and resource (version 1.1.0 does; the staging package swaps the id).
 
