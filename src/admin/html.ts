@@ -191,7 +191,7 @@ document.querySelectorAll("form[data-connection-kind]").forEach(function (f) {
   var apply = function () {
     var v = k.value;
     f.querySelectorAll("[data-kind]").forEach(function (el) {
-      var kinds = (el.getAttribute("data-kind") || "").split(/\s+/).filter(Boolean);
+      var kinds = (el.getAttribute("data-kind") || "").split(" ").filter(Boolean);
       el.hidden = kinds.length > 0 && kinds.indexOf(v) === -1;
     });
   };
