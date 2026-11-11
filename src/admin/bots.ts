@@ -546,12 +546,11 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
 <section class="be-card"><div class="card-head"><h2>Daily reflection</h2><span class="be-chip ${def.reflectionMode === "off" ? "" : "g"}">${def.reflectionMode === "off" ? "off" : "auto"}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=reflections">Edit</a></div><dl class="be-kv"><dt>Mode</dt><dd>${modeWords}</dd><dt>Group</dt><dd>${def.reflectionChatId ? (chatLabel.get(def.reflectionChatId) ?? "a chat") : "not set"}</dd><dt>Hour</dt><dd>${String(def.reflectionHour).padStart(2, "0")}:00</dd><dt>Last run</dt><dd>${reflection ? reflection.day : "not yet"}</dd></dl>${reflection ? html`<div class="be-notice good" style="margin-top:14px"><div class="grow"><b>${reflection.day}</b><div class="meta">${reflection.summary || reflection.willDo || "Reflection saved."}</div></div><a class="be-btn sm" href="/admin/bots/${def.id}?tab=reflections">Read</a></div>` : html`<p class="muted small" style="margin-top:14px">No reflection yet. It runs daily at ${String(def.reflectionHour).padStart(2, "0")}:00 in the company time zone.</p>`}</section>
 </div>
 <section class="be-card" style="margin-top:16px"><div class="card-head"><h2>Inbound webhook</h2><span class="be-chip ${def.inboundSecret ? "g" : ""}">${def.inboundSecret ? "on" : "off"}</span></div>
-<p class="muted small">One URL an outside system can POST to — an email notification, a monitor, a form. What arrives runs as a turn on this bot and the reply is posted to the chat below.</p>
+<p class="muted small">One URL an outside system can POST to — an email notification, a monitor, a form. What arrives is handed to this bot like a message: posted in every chat it is in${assigned.length ? ` (${assigned.length})` : ", so assign it to a chat first"}.</p>
 ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` : ""}
-${assigned.length
-  ? html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/hook">${csrf}<input type="hidden" name="tab" value="overview"><label>posts to <select class="be-select" name="chat">${assigned.map((c) => html`<option value="${c.id}" ${c.id === def.inboundChatId ? "selected" : ""}>${chatLabel.get(c.id) ?? c.label ?? c.id}</option>`)}</select></label><button class="be-btn sm primary">${def.inboundSecret ? "save" : "create URL"}</button></form>`
-  : html`<div class="be-notice bad"><div class="grow"><b>No chat yet</b><div class="meta">Assign this bot to a chat on the Chats tab; its reply needs somewhere to go.</div></div></div>`}
-${def.inboundSecret ? html`<div class="bot-foot" style="margin-top:10px"><span class="muted small">${def.inboundHits} received${def.inboundAt ? ` · last ${when(def.inboundAt)}` : ""}</span><form method="post" action="/admin/bots/${def.id}/hook/rotate">${csrf}<button class="be-btn sm" title="replaces the secret; the old URL stops working">new URL</button></form><form method="post" action="/admin/bots/${def.id}/hook/off">${csrf}<button class="be-btn sm">turn off</button></form></div>` : ""}
+<div class="bot-foot" style="margin-top:10px">${def.inboundSecret
+  ? html`<span class="muted small">${def.inboundHits} received${def.inboundAt ? ` · last ${when(def.inboundAt)}` : ""}</span><form method="post" action="/admin/bots/${def.id}/hook/rotate">${csrf}<button class="be-btn sm" title="replaces the secret; the old URL stops working">new URL</button></form><form method="post" action="/admin/bots/${def.id}/hook/off">${csrf}<button class="be-btn sm">turn off</button></form>`
+  : html`<form method="post" action="/admin/bots/${def.id}/hook">${csrf}<button class="be-btn sm primary">create URL</button></form>`}</div>
 </section>
 <div class="bot-grid" style="margin-top:16px">
 <section class="be-card"><div class="card-head"><h2>Learnings</h2><span class="be-chip">${learnings.length}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=learnings">Open</a></div><p class="muted small">Short rules that are in every reply.</p><div class="list">${learnings.slice(0, 3).map((l) => listRow(l.text, l.source === "reflection" ? "daily reflection" : "taught by an admin"))}${learnings.length ? "" : html`<div class="be-empty">Nothing learnt yet.</div>`}</div></section>
@@ -726,7 +725,7 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
     }),
   );
 
-  // the bot's one inbound URL: create it (or keep the secret), point the replies at a chat, rotate it, or turn it off
+  // the bot's one inbound URL: create it (or keep the secret), rotate it, or turn it off
   router.post(
     "/bots/:id/hook",
     wrap(async (req, res) => {
@@ -735,12 +734,9 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       const id = req.params.id;
       const def = await getDefinition(db, actor.tenantId, id);
       if (!def) return page(res, 404, "Bot not found.");
-      const chatId = field(req, "chat").trim();
-      const [mine] = await db.select({ id: chatAssignments.chatId }).from(chatAssignments).where(and(eq(chatAssignments.definitionId, id), eq(chatAssignments.chatId, chatId)));
-      if (!mine) throw new DirectoryError("Pick a chat this bot is assigned to");
       await db
         .update(botDefinitions)
-        .set({ inboundChatId: chatId, inboundBy: actor.personId, ...(def.inboundSecret ? {} : { inboundSecret: encrypt(secretsKey, newHookSecret()), inboundHits: 0 }) })
+        .set({ inboundBy: actor.personId, ...(def.inboundSecret ? {} : { inboundSecret: encrypt(secretsKey, newHookSecret()), inboundHits: 0 }) })
         .where(and(eq(botDefinitions.id, id), eq(botDefinitions.tenantId, actor.tenantId)));
       res.redirect(303, `/admin/bots/${id}`);
     }),

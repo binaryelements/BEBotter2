@@ -2,17 +2,16 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import express from "express";
 import type { Application } from "express";
 import { eq, sql } from "drizzle-orm";
+import { beginAction, completeAction } from "../audit/audit.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions } from "../db/schema.js";
-import { runRoutine } from "../routines/scheduler.js";
-import type { SchedulerDeps } from "../routines/scheduler.js";
+import { botDefinitions, chatAssignments } from "../db/schema.js";
 import { decrypt } from "../secrets/cipher.js";
 
 /**
- * A bot's one inbound URL: an outside system (an email notification, a monitor, a form) posts to it, the bot runs a
- * turn on what arrived, and the reply goes to the chat the admin picked. The secret is in the path, over https.
+ * A bot's one inbound URL, like its mailbox: an outside system (an email notification, a monitor, a form) posts to it
+ * and the message is handed to the bot, in every chat the bot is in. The secret is in the path, over https.
  */
-export type InboundHookDeps = SchedulerDeps & { db: Db; secretsKey: Buffer };
+export type InboundHookDeps = { db: Db; secretsKey: Buffer; send: (chatId: string, message: string) => Promise<void> };
 
 /** A fresh secret for a bot's inbound URL; the caller stores it encrypted. */
 export const newHookSecret = (): string => randomBytes(24).toString("base64url");
@@ -21,7 +20,7 @@ const digest = (s: string) => createHash("sha256").update(s).digest();
 const same = (a: string, b: string): boolean => timingSafeEqual(digest(a), digest(b));
 
 export type HookPayload = { text: string; from?: string; subject?: string };
-export type HookResult = { status: number; message?: string; run?: () => Promise<void> };
+export type HookResult = { status: number; message?: string; deliver?: () => Promise<void> };
 
 const word = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/\r\n?/g, "\n").trim().slice(0, max) : "");
 
@@ -37,23 +36,20 @@ export function readPayload(body: unknown): HookPayload | undefined {
   return { text, ...(from ? { from } : {}), ...(subject ? { subject } : {}) };
 }
 
-/** The prompt the bot wakes up to; short, so the payload itself is what it reads. */
-export function hookPrompt(p: HookPayload): string {
-  return [
-    "An outside system posted this to your inbound webhook.",
-    "Do what it asks. If it is only a notification, reply with what needs attention in a line or two, or \"Nothing to do.\".",
-    p.from ? `From: ${p.from}` : "",
-    p.subject ? `Subject: ${p.subject}` : "",
-    "",
-    p.text,
-  ].filter((l) => l !== "").join("\n").slice(0, 4000);
+/** What the bot's people see: like the mail notice, sender and subject first, then the message itself. */
+export function hookNotice(p: HookPayload): string {
+  const origin = p.from || "an outside system";
+  const head = p.subject ? `Webhook from ${origin}: ${p.subject}` : `Webhook from ${origin}`;
+  return `${head}\n\n${p.text}`.slice(0, 9000);
 }
 
-/** Verifies the URL and the body, then hands back the run to start once the caller has answered 202. */
+const errName = (e: unknown) => (e instanceof Error ? e.name : "error");
+
+/** Verifies the URL and the body, then hands back the delivery to start once the caller has answered 202. */
 export async function receiveHook(deps: InboundHookDeps, id: string, secret: string, body: unknown): Promise<HookResult> {
   const [def] = await deps.db.select().from(botDefinitions).where(eq(botDefinitions.id, id));
-  // unknown bot, no URL made, or nowhere to answer: nothing for the sender to retry
-  if (!def || !def.inboundSecret || !def.inboundChatId || !def.inboundBy) return { status: 404 };
+  // unknown bot or no URL made: nothing for the sender to retry
+  if (!def || !def.inboundSecret) return { status: 404 };
   let stored: string;
   try {
     stored = decrypt(deps.secretsKey, def.inboundSecret);
@@ -67,21 +63,45 @@ export async function receiveHook(deps: InboundHookDeps, id: string, secret: str
     .update(botDefinitions)
     .set({ inboundAt: new Date(), inboundHits: sql`${botDefinitions.inboundHits} + 1` })
     .where(eq(botDefinitions.id, def.id));
+  const text = hookNotice(payload);
   return {
     status: 202,
-    run: () =>
-      runRoutine(deps, {
-        id: `hook-${def.id}`,
-        tenantId: def.tenantId,
-        chatId: def.inboundChatId!,
-        definitionId: def.id,
-        createdByPersonId: def.inboundBy!,
-        prompt: hookPrompt(payload),
-        background: true,
-        quiet: false,
-        grantPersonId: null,
-      }),
+    deliver: async () => {
+      const chats = await deps.db.select({ chatId: chatAssignments.chatId }).from(chatAssignments).where(eq(chatAssignments.definitionId, def.id));
+      for (const { chatId } of chats) {
+        // one chat's failure (Teams or audit) never stops the notices to the others
+        let status: "done" | "failed" = "done";
+        try {
+          await deps.send(chatId, text);
+        } catch (e) {
+          status = "failed";
+          console.error("inbound hook:", errName(e));
+        }
+        try {
+          const auditId = await beginAction(deps.db, { tenantId: def.tenantId, chatId, definitionId: def.id, kind: "message", summary: `Webhook from ${payload.from || "an outside system"}${payload.subject ? `: ${payload.subject}` : ""}`.slice(0, 200) });
+          await completeAction(deps.db, auditId, { status });
+        } catch (e) {
+          console.error("inbound hook:", errName(e));
+        }
+      }
+    },
   };
+}
+
+/** Mounts `POST /hooks/:id/:secret`; the message is posted as the bot, so the sender never waits on Teams. */
+export function mountInboundHook(app: Application, deps: InboundHookDeps): void {
+  app.post("/hooks/:id/:secret", (req, res) => {
+    void bodyOf(req)
+      .then((body) => receiveHook(deps, req.params.id ?? "", req.params.secret ?? "", body))
+      .then((r) => {
+        res.sendStatus(r.status);
+        if (r.deliver) void r.deliver().catch((e) => console.error(`inbound hook ${req.params.id}:`, errName(e)));
+      })
+      .catch((e) => {
+        console.error(`inbound hook ${req.params.id}:`, errName(e));
+        if (!res.headersSent) res.sendStatus(500);
+      });
+  });
 }
 
 /**
@@ -103,20 +123,4 @@ async function bodyOf(req: express.Request): Promise<unknown> {
   }
   // a form body, or a parser earlier in the chain left something usable
   return req.body && typeof req.body === "object" && Object.keys(req.body as object).length ? req.body : undefined;
-}
-
-/** Mounts `POST /hooks/:id/:secret`; an answer is posted as a turn, so the sender never waits for the model. */
-export function mountInboundHook(app: Application, deps: InboundHookDeps): void {
-  app.post("/hooks/:id/:secret", (req, res) => {
-    void bodyOf(req)
-      .then((body) => receiveHook(deps, req.params.id ?? "", req.params.secret ?? "", body))
-      .then((r) => {
-        res.sendStatus(r.status);
-        if (r.run) void r.run().catch((e) => console.error(`inbound hook ${req.params.id}:`, e instanceof Error ? e.message : "error"));
-      })
-      .catch((e) => {
-        console.error(`inbound hook ${req.params.id}:`, e instanceof Error ? e.message : "error");
-        if (!res.headersSent) res.sendStatus(500);
-      });
-  });
 }

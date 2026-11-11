@@ -558,22 +558,20 @@ describe("bots screen", () => {
     expect(eve.personalBot).toBe(true);
   });
 
-  it("gives a bot one inbound URL, pointed at one of its chats, and turns it off again", async () => {
+  it("gives a bot one inbound URL to hand messages to it, and turns it off again", async () => {
     const d = await upsertDefinition(db, secretsKey, T, { name: "hooked", label: "Hooked", persona: "p" });
     await db.insert(chats).values({ id: "chat-hook", tenantId: T, conversationType: "groupChat", label: "Ops room" } as typeof chats.$inferInsert);
     await db.insert(chatAssignments).values({ chatId: "chat-hook", definitionId: d.id } as typeof chatAssignments.$inferInsert);
-    await db.insert(chats).values({ id: "chat-elsewhere", tenantId: T, conversationType: "groupChat", label: "Elsewhere" } as typeof chats.$inferInsert);
     expect(await (await get(`/admin/bots/${d.id}`, "Ann")).text()).toContain("Inbound webhook");
-    expect((await post(`/admin/bots/${d.id}/hook`, "Ann", [["chat", "chat-elsewhere"]])).status).toBeGreaterThanOrEqual(400);
-    expect((await post(`/admin/bots/${d.id}/hook`, "Ann", [["chat", "chat-hook"]])).status).toBe(303);
+    expect((await post(`/admin/bots/${d.id}/hook`, "Ann", [])).status).toBe(303);
     const [row] = await db.select().from(botDefinitions).where(eq(botDefinitions.id, d.id));
-    expect([row.inboundChatId, row.inboundBy, !!row.inboundSecret]).toEqual(["chat-hook", id.Ann, true]);
+    expect([!!row.inboundSecret, row.inboundBy]).toEqual([true, id.Ann]);
     const page = await (await get(`/admin/bots/${d.id}`, "Ann")).text();
     expect(page).toContain(`https://bot.example.test/hooks/${d.id}/`);
-    expect(page).toContain("Ops room");
+    expect(page).toContain("posted in every chat it is in");
     await post(`/admin/bots/${d.id}/hook/off`, "Ann", []);
     const [off] = await db.select().from(botDefinitions).where(eq(botDefinitions.id, d.id));
-    expect([off.inboundSecret, off.inboundChatId, off.inboundBy]).toEqual([null, null, null]);
+    expect([off.inboundSecret, off.inboundBy]).toEqual([null, null]);
   });
 
 });

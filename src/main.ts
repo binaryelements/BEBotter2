@@ -103,7 +103,7 @@ startServer(app, {
     // Static product deck, public on purpose: /slides is the shareable link.
     express.use("/slides", expressStatic(fileURLToPath(new URL("./admin/assets/slides/", import.meta.url)), { maxAge: "1h", index: "index.html" }));
     mountMailInbound(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m) });
-    mountInboundHook(express, { ...schedulerDeps, secretsKey: config.secretsKey });
+    mountInboundHook(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m) });
     // a refused Teams delivery (auth, rate limit, handler error) is otherwise invisible
     express.use("/api/messages", (req, res, next) => {
       res.on("finish", () => {

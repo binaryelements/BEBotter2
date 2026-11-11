@@ -1,16 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import express from "express";
+import { eq } from "drizzle-orm";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import { testDb } from "../db/test-db.js";
 import { botDefinitions } from "../db/schema.js";
-import { eq } from "drizzle-orm";
 import { setRole } from "../org/directory.js";
 import { saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import type { AdaptiveCard } from "../teams/cards.js";
-import type { RunTurnInput } from "../engine/runner.js";
 import { encrypt } from "../secrets/cipher.js";
 import { serve } from "../admin/test-server.js";
-import { hookPrompt, mountInboundHook, readPayload, receiveHook } from "./inbound.js";
+import { hookNotice, mountInboundHook, readPayload, receiveHook } from "./inbound.js";
 
 const key = Buffer.alloc(32, 5);
 
@@ -20,44 +18,43 @@ async function setup() {
   const admin = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" });
   await setRole(db, "t1", admin.id, "admin");
   const def = await upsertDefinition(db, key, "t1", { name: "ops", label: "Ops", persona: "p" });
-  await upsertChat(db, { id: "c1", tenantId: "t1", conversationType: "groupChat" });
-  await saveConversationReference(db, "c1", { conversation: { id: "c1" } });
-  await assignToChat(db, "c1", def.id);
-  const sent: [string, string | AdaptiveCard][] = [];
-  const turns: RunTurnInput[] = [];
-  const runTurn = vi.fn(async (turn: RunTurnInput) => {
-    turns.push(turn);
-    return { text: "Nothing to do.", costUsd: 0, sessionId: "s", changed: false, auditId: "none", timings: { receivedAt: new Date().toISOString(), tools: 0 } };
-  });
-  const deps = { db, secretsKey: key, runTurn, send: async (chatId: string, m: string | AdaptiveCard) => void sent.push([chatId, m]) };
+  for (const id of ["c1", "c2"]) {
+    await upsertChat(db, { id, tenantId: "t1", conversationType: "groupChat" });
+    await saveConversationReference(db, id, { conversation: { id } });
+    await assignToChat(db, id, def.id);
+  }
+  const sent: [string, string][] = [];
+  const deps = { db, secretsKey: key, send: async (chatId: string, m: string) => void sent.push([chatId, m]) };
   const hook = async (secret = "s3cret") => {
-    await db.update(botDefinitions).set({ inboundSecret: encrypt(key, secret), inboundChatId: "c1", inboundBy: admin.id }).where(eq(botDefinitions.id, def.id));
+    await db.update(botDefinitions).set({ inboundSecret: encrypt(key, secret), inboundBy: admin.id }).where(eq(botDefinitions.id, def.id));
     return secret;
   };
-  return { db, def, admin, deps, sent, turns, hook };
+  return { db, def, admin, deps, sent, hook };
 }
 
 describe("inbound webhook", () => {
-  it("runs a turn with what arrived and answers in the chat the admin picked", async () => {
+  it("hands what arrived to the bot in every chat it is in, with sender and subject", async () => {
     const s = await setup();
     const secret = await s.hook();
     const r = await receiveHook(s.deps, s.def.id, secret, { from: "fax@eml.binaryelements.com", subject: "Fax sent", text: "1 page to 07 4920 6200 at 12:25" });
     expect(r.status).toBe(202);
-    await r.run!();
-    expect(s.turns).toHaveLength(1);
-    expect(s.turns[0].text).toContain("1 page to 07 4920 6200 at 12:25");
-    expect(s.turns[0].text).toContain("From: fax@eml.binaryelements.com");
-    expect(s.sent).toEqual([["c1", "**Ops**\n\nNothing to do."]]);
+    await r.deliver!();
+    const want = "Webhook from fax@eml.binaryelements.com: Fax sent\n\n1 page to 07 4920 6200 at 12:25";
+    expect(s.sent).toEqual([["c1", want], ["c2", want]]);
+    const [row] = await s.db.select().from(botDefinitions).where(eq(botDefinitions.id, s.def.id));
+    expect([row.inboundHits, row.inboundAt instanceof Date]).toEqual([1, true]);
   });
 
-  it("takes a plain-text body and counts what it received", async () => {
+  it("takes a plain-text body, and posts it with no sender named", async () => {
     const s = await setup();
     const secret = await s.hook();
     const r = await receiveHook(s.deps, s.def.id, secret, "the backup finished");
     expect(r.status).toBe(202);
-    const [row] = await s.db.select().from(botDefinitions).where(eq(botDefinitions.id, s.def.id));
-    expect(row.inboundHits).toBe(1);
-    expect(row.inboundAt).toBeInstanceOf(Date);
+    await r.deliver!();
+    expect(s.sent.map(([id, m]) => [id, m])).toEqual([
+      ["c1", "Webhook from an outside system\n\nthe backup finished"],
+      ["c2", "Webhook from an outside system\n\nthe backup finished"],
+    ]);
   });
 
   it("refuses a wrong secret, an unknown bot, a bot with no URL, and an empty body", async () => {
@@ -91,7 +88,8 @@ describe("hook endpoint", () => {
   });
 });
 
-describe("hook payload", () => {  it("reads text, message, body or content, and keeps from and subject", () => {
+describe("hook payload", () => {
+  it("reads text, message, body or content, and keeps from and subject", () => {
     expect(readPayload({ text: "a" })).toEqual({ text: "a" });
     expect(readPayload({ message: "b" })).toEqual({ text: "b" });
     expect(readPayload({ body: "c", from: "x@y", subject: "s" })).toEqual({ text: "c", from: "x@y", subject: "s" });
@@ -100,10 +98,9 @@ describe("hook payload", () => {  it("reads text, message, body or content, and 
     expect(readPayload("  plain  ")).toEqual({ text: "plain" });
   });
 
-  it("tells the bot this came from outside, and stays inside the routine prompt limit", () => {
-    const p = hookPrompt({ text: "x".repeat(9000), subject: "s" });
-    expect(p).toContain("inbound webhook");
-    expect(p).toContain("Subject: s");
-    expect(p.length).toBeLessThanOrEqual(4000);
+  it("writes the notice the bot's people read, and keeps it a sane length", () => {
+    expect(hookNotice({ text: "body" })).toBe("Webhook from an outside system\n\nbody");
+    expect(hookNotice({ text: "body", from: "a@b", subject: "s" })).toBe("Webhook from a@b: s\n\nbody");
+    expect(hookNotice({ text: "x".repeat(9000) }).length).toBeLessThanOrEqual(9000);
   });
 });
