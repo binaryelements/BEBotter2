@@ -129,10 +129,15 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
     const e = err as { name?: string; message?: string; statusCode?: number; code?: unknown; cause?: unknown };
     // the SDK wraps any throw from a sign-in handler as FailedToSignIn; `graph` is our only handler
     if (e?.code === FAILED_TO_SIGN_IN || String(e?.message ?? "").startsWith("[handler:graph]")) {
-      // the code alone says only "failed to sign in"; the message and cause say why (a missing connection, a refused exchange)
-      const cause = e?.cause instanceof Error ? `${e.cause.name}: ${e.cause.message}` : typeof e?.cause === "string" ? e.cause : "";
+      // the code alone says only "failed to sign in"; the SDK keeps the real error on innerException, not cause
+      const chain = (err: unknown, depth = 0): string => {
+        if (!err || depth > 2) return "";
+        const x = err as { message?: string; statusCode?: number; innerException?: unknown };
+        const own = [x.statusCode ? String(x.statusCode) : "", String(x.message ?? "")].filter(Boolean).join(" ");
+        return [own, chain(x.innerException, depth + 1)].filter(Boolean).join(" <- ");
+      };
       const invoke = ctx.activity.type === "invoke" ? ` ${ctx.activity.name ?? "invoke"}` : "";
-      console.error(`sign-in failed in ${ctx.activity.conversation?.id ?? "?"}${invoke}: ${String(e?.code ?? "unknown")} ${String(e?.message ?? "").slice(0, 300)}${cause ? ` (${cause.slice(0, 300)})` : ""}`);
+      console.error(`sign-in failed in ${ctx.activity.conversation?.id ?? "?"}${invoke}: ${chain(e).slice(0, 600)}`);
       if (ctx.activity.type === "message") await ctx.sendActivity(signInFailed).catch(() => console.error("sign-in failure reply not sent"));
       return;
     }
