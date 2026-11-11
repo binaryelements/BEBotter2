@@ -72,8 +72,6 @@ const mostCommon = (values: (string | null)[]): string | undefined => {
 
 async function doSync(db: Db, tenantId: string, fetchUsers: FetchUsers): Promise<SyncCounts> {
   const all = await fetchUsers();
-  // who the directory still knows at all, whatever their account type: someone absent from here has left
-  const present = new Set(all.map((u) => clean(u.id)).filter(Boolean));
   const members = all.flatMap((u) => {
     const id = clean(u.id);
     const name = clean(u.displayName) || clean(u.userPrincipalName);
@@ -107,9 +105,10 @@ async function doSync(db: Db, tenantId: string, fetchUsers: FetchUsers): Promise
       else added++;
       existing.set(id, { aadObjectId: id, name, email, location, licensed });
     }
-    // anyone the directory no longer lists — a row first seen in a Teams message, a departed account — is not
-    // someone an admin can manage here, so it leaves the People page and keeps its history
-    const listed = [...present];
+    // anyone the directory does not list as a usable member — a row first seen in a Teams message, an unlicensed
+    // shared account, a guest, a departed account — is not someone an admin can manage here, so it leaves the
+    // People page and keeps its history
+    const listed = members.map((m) => m.id);
     await tx
       .update(people)
       .set({ licensed: false })

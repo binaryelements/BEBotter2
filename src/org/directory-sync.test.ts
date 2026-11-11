@@ -102,10 +102,12 @@ describe("syncPeople", () => {
       { ...user("x"), id: undefined } as unknown as DirectoryUser,
     ];
     expect(await syncPeople(db, T, async () => users)).toEqual({ added: 1, updated: 0, skipped: 4 });
-    const people = await listPeople(db, T);
-    expect(people.find((p) => p.name === "ann@example.test")?.email).toBe("ann@example.test");
-    expect(people.find((p) => p.id === kept.id)?.email).toBe("kept@example.test");
-    expect(people).toHaveLength(2);
+    const listed = await listPeople(db, T);
+    expect(listed.find((p) => p.name === "ann@example.test")?.email).toBe("ann@example.test");
+    expect(listed).toHaveLength(1);
+    // a directory entry with no address keeps the one already stored, but is not a person the page can list
+    const [keptRow] = await db.select({ email: people.email, licensed: people.licensed }).from(people).where(eq(people.id, kept.id));
+    expect(keptRow).toEqual({ email: "kept@example.test", licensed: false });
   });
 
   it("a second sync while one runs shares its result and writes nothing twice", async () => {
