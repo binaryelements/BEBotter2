@@ -293,6 +293,12 @@ describe("bots screen", () => {
       expect(page).toContain('data-kind="ssh sql"');
       expect(page).toContain('data-kind="sql http mcp"');
       expect(page).toContain('data-kind="http mcp"');
+      // the script that shows a kind's fields, as the browser gets it (a template string once ate the \s of its split)
+      const arg = page.match(/data-kind"\) \|\| ""\)\.split\((.+?)\)\.filter\(Boolean\)/)?.[1];
+      expect(arg).toBeDefined();
+      const kindsOf = new Function("s", `return s.split(${arg}).filter(Boolean)`) as (s: string) => string[];
+      expect(kindsOf("sql http mcp")).toEqual(["sql", "http", "mcp"]);
+      expect(kindsOf("ssh sql")).toEqual(["ssh", "sql"]);
     });
 
     it("searches connections by name, target and the bot that uses them", async () => {
