@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assignToChat, ensurePersonalDefinition, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, ensurePersonalAssistant, ensurePersonalDefinition, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import type * as auditModule from "../audit/audit.js";
 import { eq } from "drizzle-orm";
 import { beginAction, completeAction, recordSent } from "../audit/audit.js";
@@ -13,7 +13,7 @@ import type { RunTurnInput } from "../engine/runner.js";
 import { setAllowedDepartments } from "../bots/definitions.js";
 import { auditEvents, botDefinitions, chatAssignments, chats } from "../db/schema.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
-import { recordChatOwner, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import { recordChatOwner, saveConversationReference, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { SLOW_NOTE, addressedByName, choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
 import { confirmerPolicy } from "../admin/access.js";
 import type { IncomingMessage } from "./handlers.js";
@@ -836,6 +836,34 @@ describe("choosing the bot in a one-to-one chat", () => {
     await handleMessage(s.deps, { ...msg("groupChat"), text: "are you there", mentioned: true, from: { aadObjectId: "u1", name: "Ann" } }, s.io);
     expect(s.runTurn).toHaveBeenCalledTimes(1);
     expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("naming your own assistant in a group chat runs it as you and answers in your own chat", async () => {
+    const s = await chat();
+    await setPersonalBot(s.db, "t1", s.ann.id, true);
+    const pa = await ensurePersonalAssistant(s.db, "t1", s.ann.id, "m");
+    await s.db.update(botDefinitions).set({ displayName: "Beiqing" }).where(eq(botDefinitions.id, pa.id));
+    await upsertChat(s.db, { id: "own", tenantId: "t1", conversationType: "personal" });
+    await recordChatOwner(s.db, "own", s.ann.id);
+    await saveConversationReference(s.db, "own", { conversation: { id: "own" } });
+    const toMe: unknown[][] = [];
+    const deps = { ...s.deps, sendTo: async (chatId: string, m: unknown) => void toMe.push([chatId, m]), personTokenFor: async () => "graph-token" };
+    await handleMessage(deps, { ...msg("groupChat"), text: "beiqing, set a reminder for me to call reception" }, s.io);
+    expect(s.sent).toEqual([]);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+    expect((s.runTurn.mock.calls[0] as unknown as [RunTurnInput])[0].definition.id).toBe(pa.id);
+    expect(toMe).toEqual([["own", "**Beiqing · My assistant**\n\nreply"]]);
+  });
+
+  it("naming your own assistant in a group chat without a one-to-one chat says where to start", async () => {
+    const s = await chat();
+    await setPersonalBot(s.db, "t1", s.ann.id, true);
+    const pa = await ensurePersonalAssistant(s.db, "t1", s.ann.id, "m");
+    await s.db.update(botDefinitions).set({ displayName: "Beiqing" }).where(eq(botDefinitions.id, pa.id));
+    const deps = { ...s.deps, sendTo: async () => {}, personTokenFor: async () => "graph-token" };
+    await handleMessage(deps, { ...msg("groupChat"), text: "beiqing, are you there" }, s.io);
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(s.sent).toEqual(["Message me in a one-to-one chat once, and I can do that for you privately from any chat."]);
   });
 
   it("in a group chat it hears without answering, then answers a mention or its name with what it heard", async () => {

@@ -80,7 +80,12 @@ const fetchUsers = graphFetchUsers(config);
 const turn = (t: Parameters<typeof runTurn>[1]) => runTurn(runnerDeps, t);
 // a person typing a second thought gets it taken with the first: the first reply stops and one turn answers both
 const burstQuietMs = Number(process.env.BURST_QUIET_MS ?? 1200);
-const app = createTeamsApp({ db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection, burstQuietMs });
+const app = createTeamsApp({
+  db, runTurn: turn, confirmations, botName: config.botName, defaultModel: config.defaultModel, graphConnection: config.graphOAuthConnection, burstQuietMs,
+  // a personal assistant named in a group chat answers in its owner's own chat; both need the adapter, which exists by the time either is called
+  sendTo: (chatId, m) => sendToChat({ db, adapter: app.adapter, botAppId: config.teams.clientId }, chatId, m),
+  personTokenFor: (chatId) => personToken({ db, adapter: app.adapter, botAppId: config.teams.clientId }, chatId, (ctx) => graphToken(app, ctx)),
+});
 
 const proactive = { db, adapter: app.adapter, botAppId: config.teams.clientId };
 // background work outside a chat turn: routines on a schedule, and a bot's inbound webhook

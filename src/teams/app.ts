@@ -6,6 +6,7 @@ import type { RunResult, RunTurnInput } from "../engine/runner.js";
 import { findPersonId } from "../org/org.js";
 import { incomingAttachments } from "./attachments.js";
 import { resultCard } from "./cards.js";
+import type { AdaptiveCard } from "./cards.js";
 import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, signInFailed } from "./handlers.js";
 import type { TeamsStream } from "./handlers.js";
 
@@ -17,6 +18,10 @@ export type TeamsAppDeps = {
   defaultModel: string;
   /** Wait this long after a message for the person to finish typing; a later one stops the reply and is taken with it. */
   burstQuietMs?: number;
+  /** Posts to another chat: a personal assistant asked in a group answers in its owner's own one-to-one chat. */
+  sendTo?: (chatId: string, message: string | AdaptiveCard) => Promise<void>;
+  /** That chat owner's Graph token, outside the current turn. */
+  personTokenFor?: (chatId: string) => Promise<string | undefined>;
   /** The Azure Bot OAuth connection behind the `graph` sign-in. */
   graphConnection: string;
 };

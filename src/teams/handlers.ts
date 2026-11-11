@@ -243,6 +243,10 @@ export type HandlerDeps = {
   confirmations?: Confirmations;
   /** Wait this long after a message for the person to finish typing; a later one stops the reply and is taken with it. */
   burstQuietMs?: number;
+  /** Posts to another chat: a personal assistant asked in a group answers in its owner's own one-to-one chat. */
+  sendTo?: (chatId: string, message: string | AdaptiveCard) => Promise<void>;
+  /** That chat owner's Graph token, outside the current turn. */
+  personTokenFor?: (chatId: string) => Promise<string | undefined>;
 };
 
 export const signInFailed = "Sign-in didn't work. Say anything to try again.";
@@ -274,6 +278,27 @@ export async function handleMessage(
   const person = await upsertPerson(db, { tenantId: msg.tenantId, aadObjectId: msg.from.aadObjectId, name: msg.from.name, ...(msg.from.timezone ? { timezone: msg.from.timezone } : {}) });
   await upsertChat(db, { id: msg.chatId, tenantId: msg.tenantId, conversationType: msg.conversationType, ...(msg.name ? { name: msg.name } : {}) });
   await saveConversationReference(db, msg.chatId, msg.conversationReference);
+  // a personal assistant named in a group chat does the work as its owner, and answers only in their own chat
+  if (msg.conversationType !== "personal" && deps.sendTo) {
+    const mine = await personalAssistantNamed(db, msg, person.id);
+    if (mine) {
+      const [own] = await db
+        .select({ id: chats.id, reference: chats.conversationReference })
+        .from(chats)
+        .where(and(eq(chats.tenantId, msg.tenantId), eq(chats.conversationType, "personal"), eq(chats.ownerPersonId, person.id), isNotNull(chats.conversationReference)))
+        .limit(1);
+      if (!own?.reference) return void (await io.send("Message me in a one-to-one chat once, and I can do that for you privately from any chat."));
+      const sendTo = deps.sendTo;
+      const privateIo: TeamsIo = {
+        send: async (text) => void (await sendTo(own.id, text)),
+        update: async () => {},
+        sendCard: async (card) => void (await sendTo(own.id, card)),
+        ...(deps.personTokenFor ? { graphToken: () => deps.personTokenFor!(own.id) } : {}),
+      };
+      // replayed as if it had been said in that chat: same owner, same privacy, same tools
+      return void (await handleMessage(deps, { ...msg, chatId: own.id, conversationType: "personal", conversationReference: own.reference }, privateIo));
+    }
+  }
   let [definition] = await definitionsForChat(db, msg.chatId);
   if (msg.conversationType === "personal") {
     await recordChatOwner(db, msg.chatId, person.id);
@@ -493,6 +518,14 @@ const nameRe = (d: { displayName: string | null; label: string }): RegExp | unde
 };
 /** "Mickey, …" or "hey mickey …": the message starts with the bot's name (its display name, or its label). */
 export const addressedByName = (text: string, d: { displayName: string | null; label: string }): boolean => !!nameRe(d)?.test(text);
+
+/** The sender's own personal assistant, when the message names it — the one bot that may be called from any chat. */
+async function personalAssistantNamed(db: Db, msg: IncomingMessage, personId: string) {
+  const [me] = await db.select({ on: people.personalBot }).from(people).where(and(eq(people.id, personId), eq(people.tenantId, msg.tenantId)));
+  if (!me?.on) return undefined;
+  const mine = (await listDefinitions(db, msg.tenantId)).find((d) => d.identity === "person" && d.ownerPersonId === personId);
+  return mine && addressedByName(msg.text, mine) ? mine : undefined;
+}
 /** A typed answer to a confirmation card. Short and unambiguous; anything longer is a normal message. */
 const YES = /^(?:yes|y|yeah|yep|yup|ok|okay|sure|confirm|confirmed|do it|go ahead|please do|please)\b/i;
 const NO = /^(?:no|n|nope|nah|cancel|decline|don't|do not|stop|leave it)\b/i;
