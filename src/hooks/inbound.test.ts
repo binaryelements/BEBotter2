@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import express from "express";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import { testDb } from "../db/test-db.js";
 import { botDefinitions } from "../db/schema.js";
@@ -8,7 +9,8 @@ import { saveConversationReference, upsertChat, upsertPerson, upsertTenant } fro
 import type { AdaptiveCard } from "../teams/cards.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { encrypt } from "../secrets/cipher.js";
-import { hookPrompt, readPayload, receiveHook } from "./inbound.js";
+import { serve } from "../admin/test-server.js";
+import { hookPrompt, mountInboundHook, readPayload, receiveHook } from "./inbound.js";
 
 const key = Buffer.alloc(32, 5);
 
@@ -69,8 +71,27 @@ describe("inbound webhook", () => {
   });
 });
 
-describe("hook payload", () => {
-  it("reads text, message, body or content, and keeps from and subject", () => {
+describe("hook endpoint", () => {
+  it("takes JSON a global parser already read, plain text it did not, and refuses a wrong or unknown URL", async () => {
+    const s = await setup();
+    const secret = await s.hook();
+    const app = express();
+    app.use(express.json()); // the Teams SDK installs this before every route
+    mountInboundHook(app, s.deps);
+    const { url, close } = await serve(app);
+    try {
+      const send = (path: string, type: string, body: string) => fetch(`${url}/hooks/${path}`, { method: "POST", headers: { "content-type": type }, body });
+      expect((await send(`${s.def.id}/${secret}`, "application/json", JSON.stringify({ text: "a fax went out" }))).status).toBe(202);
+      expect((await send(`${s.def.id}/${secret}`, "text/plain", "the backup finished")).status).toBe(202);
+      expect((await send(`${s.def.id}/wrong`, "application/json", '{"text":"x"}')).status).toBe(401);
+      expect((await send("nope/nope", "application/json", '{"text":"x"}')).status).toBe(404);
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("hook payload", () => {  it("reads text, message, body or content, and keeps from and subject", () => {
     expect(readPayload({ text: "a" })).toEqual({ text: "a" });
     expect(readPayload({ message: "b" })).toEqual({ text: "b" });
     expect(readPayload({ body: "c", from: "x@y", subject: "s" })).toEqual({ text: "c", from: "x@y", subject: "s" });

@@ -31,21 +31,23 @@ describe("syncPeople", () => {
     ];
     expect(await syncPeople(db, T, async () => users)).toEqual({ added: 1, updated: 1, skipped: 2 });
 
-    const people = await listPeople(db, T);
-    const a = people.find((p) => p.id === ann.id)!;
+    const listed = await listPeople(db, T);
+    const a = listed.find((p) => p.id === ann.id)!;
     expect(a).toMatchObject({ name: "ANN", email: "ann@example.test", role: "admin", personalBot: true });
     expect(a.memberships).toMatchObject([{ departmentId: sales, isHead: true }]);
-    expect(people.find((p) => p.name === "bob@example.test")?.email).toBe("bob@example.test");
-    expect(people.some((p) => p.id === gone.id)).toBe(true);
-    expect(people.map((p) => p.name)).not.toContain("GUEST");
-    expect(people.map((p) => p.name)).not.toContain("OFF");
+    expect(listed.find((p) => p.name === "bob@example.test")?.email).toBe("bob@example.test");
+    // kept, with its history, but off the page: the directory no longer knows this account
+    const [goneRow] = await db.select({ licensed: people.licensed }).from(people).where(eq(people.id, gone.id));
+    expect(goneRow).toEqual({ licensed: false });
+    expect(listed.some((p) => p.id === gone.id)).toBe(false);
+    expect(listed.map((p) => p.name)).not.toContain("GUEST");
+    expect(listed.map((p) => p.name)).not.toContain("OFF");
     expect((await listDepartments(db, T))[0].members).toHaveLength(1);
 
     expect(await syncPeople(db, T, async () => users)).toEqual({ added: 0, updated: 0, skipped: 2 });
   });
 
-  it("marks unlicensed members and does not add a new unlicensed one", async () => {
-    const db = await testDb();
+  it("marks unlicensed members and does not add a new unlicensed one", async () => {    const db = await testDb();
     await upsertTenant(db, { id: T });
     const users = [user("ann", { assignedLicenses: [{ skuId: "sku-1" }] }), user("nol", { assignedLicenses: [] })];
     expect(await syncPeople(db, T, async () => users)).toEqual({ added: 1, updated: 0, skipped: 1 });
@@ -54,6 +56,16 @@ describe("syncPeople", () => {
     expect(await syncPeople(db, T, async () => [user("old", { assignedLicenses: [] })])).toEqual({ added: 0, updated: 1, skipped: 0 });
     const [oldRow] = await db.select({ licensed: people.licensed }).from(people).where(eq(people.id, old.id));
     expect(oldRow!.licensed).toBe(false);
+  });
+
+  it("drops a person only ever seen in Teams off the list when the directory does not list them", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: T });
+    const ghost = await upsertPerson(db, { tenantId: T, aadObjectId: "ghost", name: "" });
+    expect((await listPeople(db, T)).map((p) => [p.name, p.licensed])).toEqual([["", true]]);
+    await syncPeople(db, T, async () => [user("ann", { assignedLicenses: [{ skuId: "sku-1" }] })]);
+    const rows = await db.select({ id: people.id, licensed: people.licensed }).from(people);
+    expect(rows.find((r) => r.id === ghost.id)?.licensed).toBe(false);
   });
 
   it("keeps each person's place from the directory and makes the commonest one the company default", async () => {

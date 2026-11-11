@@ -14,6 +14,12 @@ describe("org", () => {
     expect(b.id).toBe(a.id);
     expect(b.name).toBe("Ann Lee");
   });
+  it("keeps a known name when a message arrives without one", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" });
+    expect((await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "" })).name).toBe("Ann");
+  });
   it("stores a conversation reference on a chat", async () => {
     const db = await testDb();
     await upsertTenant(db, { id: "t1" });

@@ -20,10 +20,13 @@ export async function upsertPerson(
   { tenantId, aadObjectId, name, timezone }: { tenantId: string; aadObjectId: string; name: string; timezone?: string },
 ): Promise<Person> {
   const tz = timezone && validTimeZone(timezone) ? timezone : undefined;
+  // a message with no display name must not wipe the name the directory gave
+  const patch = { ...(name.trim() ? { name } : {}), ...(tz ? { timezone: tz } : {}) };
   const [row] = await db
     .insert(people)
     .values({ id: crypto.randomUUID(), tenantId, aadObjectId, name, ...(tz ? { timezone: tz } : {}) })
-    .onConflictDoUpdate({ target: [people.tenantId, people.aadObjectId], set: { name, ...(tz ? { timezone: tz } : {}) } })
+    // aadObjectId repeats the conflict key, so a patch with nothing in it is still a valid statement
+    .onConflictDoUpdate({ target: [people.tenantId, people.aadObjectId], set: { aadObjectId, ...patch } })
     .returning();
   // the company's time zone, until an admin sets one: the first person's, since UTC is nobody's
   if (tz) await db.update(tenants).set({ timezone: tz }).where(and(eq(tenants.id, tenantId), eq(tenants.timezone, "UTC")));

@@ -84,22 +84,39 @@ export async function receiveHook(deps: InboundHookDeps, id: string, secret: str
   };
 }
 
+/**
+ * The body as posted. The Teams SDK installs express.json() for every route, so a JSON body is already parsed (and the
+ * stream used up); anything else is still on the stream and is read here, then tried as JSON.
+ */
+async function bodyOf(req: express.Request): Promise<unknown> {
+  if (String(req.headers["content-type"] ?? "").includes("json")) return req.body;
+  if (typeof req.body === "string") return req.body;
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.from(chunk as Buffer));
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  // a form body, or a parser earlier in the chain left something usable
+  return req.body && typeof req.body === "object" && Object.keys(req.body as object).length ? req.body : undefined;
+}
+
 /** Mounts `POST /hooks/:id/:secret`; an answer is posted as a turn, so the sender never waits for the model. */
 export function mountInboundHook(app: Application, deps: InboundHookDeps): void {
-  app.post(
-    "/hooks/:id/:secret",
-    express.json({ limit: "64kb" }),
-    express.text({ limit: "64kb", type: ["text/*", "application/x-www-form-urlencoded"] }),
-    (req, res) => {
-      void receiveHook(deps, req.params.id ?? "", req.params.secret ?? "", req.body)
-        .then((r) => {
-          res.sendStatus(r.status);
-          if (r.run) void r.run().catch((e) => console.error(`inbound hook ${req.params.id}:`, e instanceof Error ? e.message : "error"));
-        })
-        .catch((e) => {
-          console.error(`inbound hook ${req.params.id}:`, e instanceof Error ? e.message : "error");
-          res.sendStatus(500);
-        });
-    },
-  );
+  app.post("/hooks/:id/:secret", (req, res) => {
+    void bodyOf(req)
+      .then((body) => receiveHook(deps, req.params.id ?? "", req.params.secret ?? "", body))
+      .then((r) => {
+        res.sendStatus(r.status);
+        if (r.run) void r.run().catch((e) => console.error(`inbound hook ${req.params.id}:`, e instanceof Error ? e.message : "error"));
+      })
+      .catch((e) => {
+        console.error(`inbound hook ${req.params.id}:`, e instanceof Error ? e.message : "error");
+        if (!res.headersSent) res.sendStatus(500);
+      });
+  });
 }
