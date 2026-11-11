@@ -18,7 +18,44 @@ export async function personToken(deps: ProactiveDeps, chatId: string, getToken:
   await deps.adapter.continueConversation(deps.botAppId, reference as Reference, async (ctx) => {
     token = await getToken(ctx);
   });
-  return token;
+  // the token service only has a token once the person has signed in; a turn that signed in through Teams SSO leaves one here
+  return token ?? cachedToken(chatId);
+}
+
+/**
+ * The last token a turn obtained for a chat, kept until it expires. Teams SSO hands the bot a token per message and the
+ * token service does not always keep it for a later, headless lookup; a routine an hour after the owner last spoke then
+ * has something to act with. A longer gap still needs the owner to message the bot once.
+ */
+const lastToken = new Map<string, { token: string; expiresAt: number }>();
+const JWT_GRACE_MS = 60_000;
+
+export function rememberToken(chatId: string, token: string | undefined): void {
+  if (!token) return;
+  const exp = tokenExpiry(token);
+  if (exp) lastToken.set(chatId, { token, expiresAt: exp });
+}
+
+export function cachedToken(chatId: string, now = Date.now()): string | undefined {
+  const held = lastToken.get(chatId);
+  if (!held) return undefined;
+  if (held.expiresAt - JWT_GRACE_MS <= now) {
+    lastToken.delete(chatId);
+    return undefined;
+  }
+  return held.token;
+}
+
+/** The `exp` claim in seconds, when the token is a JWT. */
+function tokenExpiry(token: string): number | undefined {
+  const part = token.split(".")[1];
+  if (!part) return undefined;
+  try {
+    const claims = JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as { exp?: unknown };
+    return typeof claims.exp === "number" ? claims.exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function sendToChat(

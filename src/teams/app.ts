@@ -9,6 +9,7 @@ import { resultCard } from "./cards.js";
 import type { AdaptiveCard } from "./cards.js";
 import { choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, signInFailed } from "./handlers.js";
 import type { TeamsStream } from "./handlers.js";
+import { rememberToken } from "./proactive.js";
 
 export type TeamsAppDeps = {
   db: Db;
@@ -204,7 +205,15 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         sendCard: (card) => retryNetwork(async () => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card))))),
         // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
         ...(conversationType === "personal" ? { stream: teamsStream(ctx) } : {}),
-        ...(signedIn ? { graphToken: () => graphToken(app, ctx), signOut: () => app.authorization.signOut(ctx, state, "graph") } : {}),
+        ...(signedIn ? {
+          graphToken: async () => {
+            const token = await graphToken(app, ctx);
+            // kept for a headless routine an hour later; the token service does not always have it
+            if (conversation?.id) rememberToken(conversation.id, token);
+            return token;
+          },
+          signOut: () => app.authorization.signOut(ctx, state, "graph"),
+        } : {}),
       },
     );
   };
