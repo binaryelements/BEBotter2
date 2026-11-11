@@ -7,9 +7,16 @@ name: base image
 # Runs only when the base itself changes, never on an ordinary source push. After
 # a rebuild, bump the tag in Dockerfile (bebotter2-base:1 -> :2): docker build
 # reuses a local image with the same tag and only pulls a tag it has never seen.
+#
+# The package must stay public: the Coolify host pulls it anonymously. A workflow
+# token cannot change a package's visibility (the API answers 404), so the last
+# step here fails loudly if the image is not pullable without a token.
 
 on:
   push:
+    branches:
+      - deploy/coolify-prod
+      - master
     paths:
       - Dockerfile.base
       - .github/workflows/base-image.yml
@@ -41,7 +48,7 @@ jobs:
             ghcr.io/binaryelements/bebotter2-base:${{ github.sha }}
       # the Coolify host builds without registry credentials, so the package has
       # to be readable anonymously; it holds the runtime, never a secret
-      - name: make the base image public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api -X PATCH /orgs/binaryelements/packages/container/bebotter2-base -f visibility=public
+      - name: check the image pulls without a token
+        run: |
+          docker logout ghcr.io
+          docker pull ghcr.io/binaryelements/bebotter2-base:${{ github.sha }}
