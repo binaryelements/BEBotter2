@@ -24,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -35,6 +34,8 @@ jobs:
           context: .
           file: Dockerfile.base
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/binaryelements/BEBotter2
           tags: |
             ghcr.io/binaryelements/bebotter2-base:1
             ghcr.io/binaryelements/bebotter2-base:${{ github.sha }}
