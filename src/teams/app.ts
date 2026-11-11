@@ -126,10 +126,13 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
   });
   // the SDK default posts "please fix the source code" into the chat and logs nothing we can see; handlers already tell the user
   app.adapter.onTurnError = async (ctx, err) => {
-    const e = err as { name?: string; message?: string; statusCode?: number; code?: unknown };
+    const e = err as { name?: string; message?: string; statusCode?: number; code?: unknown; cause?: unknown };
     // the SDK wraps any throw from a sign-in handler as FailedToSignIn; `graph` is our only handler
     if (e?.code === FAILED_TO_SIGN_IN || String(e?.message ?? "").startsWith("[handler:graph]")) {
-      console.error(`sign-in failed in ${ctx.activity.conversation?.id ?? "?"}: ${String(e?.code ?? "unknown")}`);
+      // the code alone says only "failed to sign in"; the message and cause say why (a missing connection, a refused exchange)
+      const cause = e?.cause instanceof Error ? `${e.cause.name}: ${e.cause.message}` : typeof e?.cause === "string" ? e.cause : "";
+      const invoke = ctx.activity.type === "invoke" ? ` ${ctx.activity.name ?? "invoke"}` : "";
+      console.error(`sign-in failed in ${ctx.activity.conversation?.id ?? "?"}${invoke}: ${String(e?.code ?? "unknown")} ${String(e?.message ?? "").slice(0, 300)}${cause ? ` (${cause.slice(0, 300)})` : ""}`);
       if (ctx.activity.type === "message") await ctx.sendActivity(signInFailed).catch(() => console.error("sign-in failure reply not sent"));
       return;
     }
