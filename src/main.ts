@@ -15,6 +15,7 @@ import { graphFetchUsers, startPeopleSync } from "./org/directory-sync.js";
 import { backfillBotModels, backfillPersonalAssistants } from "./bots/definitions.js";
 import { ensureBeHubConnection } from "./connections/be-hub.js";
 import { ensureMantisConnection } from "./connections/mantis.js";
+import { ensureProxmoxConnections } from "./connections/proxmox.js";
 import { getTenantSettings, setTenantSettings } from "./org/org.js";
 import { connect } from "./db/client.js";
 import { tenants } from "./db/schema.js";
@@ -41,6 +42,7 @@ for (const t of await db.select({ id: tenants.id }).from(tenants)) {
   await backfillPersonalAssistants(db, t.id, config.defaultModel).catch((e) => console.error(`personal assistants for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
   if (config.beHub) await ensureBeHubConnection(db, config.secretsKey, t.id, config.beHub).catch((e) => console.error(`be-hub connection for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
   if (config.mantis) await ensureMantisConnection(db, config.secretsKey, t.id, config.mantis).catch((e) => console.error(`mantis connection for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
+  await ensureProxmoxConnections(db, config.secretsKey, t.id).catch((e) => console.error(`proxmox connections for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
   const settings = await getTenantSettings(db, t.id).catch(() => undefined);
   if (settings && !settings.alertEmails && config.adminEmails.length) await setTenantSettings(db, t.id, { ...settings, alertEmails: config.adminEmails.join(",") }).catch((e) => console.error(`alert recipients for tenant ${t.id}:`, e instanceof Error ? e.message : "error"));
 }
