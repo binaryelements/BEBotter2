@@ -28,8 +28,11 @@ RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
 # given. Chromium must be the build the app's own @playwright/mcp asks for, so keep
 # this version equal to the "@playwright/mcp" dependency in package.json.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npm install -g @playwright/mcp@0.0.83 @modelcontextprotocol/server-filesystem@2.1.0 \
-    && node "$(npm root -g)/@playwright/mcp/cli.js" install --with-deps --no-shell chromium \
+ARG PLAYWRIGHT_MCP=0.0.83
+# the playwright-core @playwright/mcp@0.0.83 depends on; its cli is what downloads
+ARG PLAYWRIGHT_CORE=1.64.0-alpha-1790635538000
+RUN npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP}" @modelcontextprotocol/server-filesystem@2.1.0 "playwright-core@${PLAYWRIGHT_CORE}" \
+    && node "$(npm root -g)/playwright-core/cli.js" install --with-deps --no-shell chromium \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /srv/files
