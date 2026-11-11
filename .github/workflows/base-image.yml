@@ -1,0 +1,46 @@
+name: base image
+
+# Builds Dockerfile.base: LibreOffice, headless Chromium and the global MCP
+# servers, none of which change when the bot's source does. App deployments start
+# from the published image instead of reinstalling them every time.
+#
+# Runs only when the base itself changes, never on an ordinary source push. After
+# a rebuild, bump the tag in Dockerfile (bebotter2-base:1 -> :2): docker build
+# reuses a local image with the same tag and only pulls a tag it has never seen.
+
+on:
+  push:
+    paths:
+      - Dockerfile.base
+      - .github/workflows/base-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.base
+          push: true
+          tags: |
+            ghcr.io/binaryelements/bebotter2-base:1
+            ghcr.io/binaryelements/bebotter2-base:${{ github.sha }}
+      # the Coolify host builds without registry credentials, so the package has
+      # to be readable anonymously; it holds the runtime, never a secret
+      - name: make the base image public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X PATCH /orgs/binaryelements/packages/container/bebotter2-base -f visibility=public

@@ -1,0 +1,36 @@
+# The heavy, rarely changing half of the bot image.
+#
+# LibreOffice, headless Chromium and the globally installed MCP servers cost
+# several minutes to install and about a gigabyte to export on every deploy.
+# None of them changes when the bot's TypeScript changes, so they live here and
+# are built once by .github/workflows/base-image.yml, which publishes the result
+# to ghcr.io/binaryelements/bebotter2-base. Dockerfile starts from that image and
+# only adds the source.
+#
+# After changing this file, wait for the workflow, then bump the tag in Dockerfile
+# (bebotter2-base:1 -> :2). docker build reuses a local image with the same tag
+# and only pulls a tag the host has never seen.
+
+FROM node:24-bookworm-slim
+
+# The tools the bot shells out to. LibreOffice turns Office attachments into PDFs
+# for the document reader; poppler-utils reads PDFs; openssh-client runs the SSH
+# connections.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      openssh-client poppler-utils \
+      libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
+      fonts-dejavu-core fonts-liberation2 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
+
+# The bots' browser (src/engine/browser.ts) and the filesystem server a bot can be
+# given. Chromium must be the build the app's own @playwright/mcp asks for, so keep
+# this version equal to the "@playwright/mcp" dependency in package.json.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npm install -g @playwright/mcp@0.0.83 @modelcontextprotocol/server-filesystem@2.1.0 \
+    && node "$(npm root -g)/@playwright/mcp/cli.js" install --with-deps --no-shell chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /srv/files
+WORKDIR /app
