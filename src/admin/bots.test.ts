@@ -9,6 +9,7 @@ import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
 import { getConnectionGrant, listConnectionsFor } from "../connections/store.js";
 import { fakeSsh } from "../connections/ssh.js";
+import { encrypt } from "../secrets/cipher.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
 import { addLearning, listLearnings } from "../learnings/store.js";
 import { createProposal, listProposals, saveReflection } from "../reflections/store.js";
@@ -351,6 +352,24 @@ describe("bots screen", () => {
       expect((await post(`/admin/bots/${d.id}/connections/${c}/mode`, "Hal", [["mode", "read-only"]])).status).toBe(403);
     });
 
+    it("unblocks a blocked connection by pinning the current host key", async () => {
+      const c = await conn("unblock-me", { status: "blocked", mode: "read-only", secretCipher: encrypt(secretsKey, "key"), hostKey: "ssh-ed25519 OLD" });
+      const res = await post(`/admin/connections/${c}/unblock`, "Ann", []);
+      expect([res.status, res.headers.get("location")]).toEqual([303, "/admin/connections?unblocked=1"]);
+      const [row] = await db.select().from(connections).where(eq(connections.id, c));
+      expect(row.status).toBe("active");
+      expect(row.hostKey).toBe("ssh-ed25519 AAAAfake");
+    });
+
+    it("offers write: no confirmation on an MCP connection", async () => {
+      const d = await def("helper");
+      const c = await conn("mcp-free", { kind: "mcp", target: "https://mcp.example.test/mcp", config: { headerName: "Authorization", readOnlyTools: [] }, mode: "change" });
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("write: no confirmation");
+      expect((await post(`/admin/bots/${d.id}/connections/${c}/permission`, "Ann", [["mode", "free"]])).status).toBe(303);
+      expect(await getConnectionGrant(db, d.id, c)).toBe("free");
+    });
+
     it("sets a per-bot permission for one connection", async () => {
       const d = await def("helper");
       const c = await conn("granted", { mode: "change" });
@@ -360,7 +379,7 @@ describe("bots screen", () => {
       expect(page).toContain("change: ask");
       expect((await post(`/admin/bots/${d.id}/connections/${c}/permission`, "Ann", [["mode", "free"]])).status).toBe(303);
       expect(await getConnectionGrant(db, d.id, c)).toBe("free");
-      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("change: free");
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("write: no confirmation");
       expect((await post(`/admin/bots/${d.id}/connections/${c}/permission`, "Ann", [["mode", "nonsense"]])).status).toBe(400);
     });
 
@@ -377,9 +396,9 @@ describe("bots screen", () => {
       const h = await conn("revhttp", { kind: "http", target: "https://x.example.test", config: {}, publicKey: null });
       expect(await (await post(`/admin/connections/${h}/revoke`, "Ann", [["confirm", "yes"]])).text()).toContain("Revoke the token at its source");
     });
-    it("reset host key is offered on the Connections page for a blocked connection and moves it back to pending", async () => {
+    it("offers unblock for a blocked connection and the reset route clears the pin", async () => {
       const c = await conn("blk", { status: "blocked", hostKey: "k" });
-      expect(await (await get("/admin/connections", "Ann")).text()).toContain(`/admin/connections/${c}/reset-host-key`);
+      expect(await (await get("/admin/connections", "Ann")).text()).toContain(`/admin/connections/${c}/unblock`);
       const r = await post(`/admin/connections/${c}/reset-host-key`, "Ann", []);
       expect([r.status, r.headers.get("location")]).toEqual([303, "/admin/connections"]);
       const [row] = await db.select().from(connections).where(eq(connections.id, c));

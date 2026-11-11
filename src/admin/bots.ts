@@ -170,8 +170,10 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
       ]);
       const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
       const error = (typeof req.query.error === "string" ? req.query.error.trim() : "").slice(0, 300);
+      const unblockError = (typeof req.query.unblockError === "string" ? req.query.unblockError.trim() : "").slice(0, 300);
       const saved = req.query.saved === "1";
-      const add = req.query.add === "1" || !!error;
+      const unblocked = req.query.unblocked === "1";
+      const add = req.query.add === "1";
       const needle = q.toLowerCase();
       const matches = (c: Connection) => {
         if (!needle) return true;
@@ -183,7 +185,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
       const rows = filtered.map((c) => {
         const bots = links.filter((l) => l.connectionId === c.id);
         const test = c.status === "revoked" ? "" : c.status === "blocked"
-          ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm" title="forgets the pinned host key; only after you have checked the machine really changed it">reset host key</button></form>`
+          ? html`<form method="post" action="/admin/connections/${c.id}/unblock">${csrf}<button class="be-btn sm" title="forgets the old pin, tests the connection and pins the current host key">unblock</button></form>`
           : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`;
         return html`<tr><td><span class="nm">${c.name}</span></td><td>${c.kind}</td><td class="conn-target" title="${c.target}">${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td><form class="inline-edit" method="post" action="/admin/connections/${c.id}/mode" data-autosave>${csrf}<select class="be-select" name="mode" aria-label="Connection mode" title="Read-only stops every bot changing this system; change lets each bot's permission ask or allow writes.">${(["read-only", "change"] as const).map((m) => html`<option value="${m}" ${m === c.mode ? "selected" : ""}>${m}</option>`)}</select><button class="be-btn sm auto">save</button></form></td><td>${c.status}${signInCell(c, csrf)}</td>
 <td><div class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</div><details class="conn-edit"><summary>edit</summary><form method="post" action="/admin/connections/${c.id}/description">${csrf}<textarea name="description" rows="3" placeholder="what it is for, what is safe to run, what to leave alone">${c.description ?? ""}</textarea><button class="be-btn sm">save</button></form></details></td>
@@ -192,6 +194,8 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
       });
       render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1><p class="meta">The systems the bots can reach, and what they may do there.</p></div><div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;">Add a connection</a></div></header>
 ${saved ? html`<div class="be-notice good"><div class="grow"><b>Connection saved.</b><div class="meta">Press test on its row when you are ready.</div></div></div>` : ""}
+${unblocked ? html`<div class="be-notice good"><div class="grow"><b>Connection unblocked.</b><div class="meta">The current host key was pinned and the connection was tested.</div></div></div>` : ""}
+${unblockError ? html`<div class="be-notice bad"><div class="grow"><b>Could not unblock</b><div class="meta">${unblockError}</div></div></div>` : ""}
 ${error ? html`<div class="be-notice bad"><div class="grow"><b>Connection not saved</b><div class="meta">${error}</div></div></div>` : ""}
 <div class="toolbar"><form class="search-form" method="get" action="/admin/connections" role="search">
 <input id="connections-q" class="be-input" type="search" name="q" value="${q}" placeholder="Search by name, kind, target or bot…" aria-label="Search connections" data-live-filter="#connections-table" data-live-count="#connections-count">
@@ -563,12 +567,12 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
               c.mode === "read-only"
                 ? [["read", "read only"], ["deny", "no access"]]
                 : c.kind === "mcp"
-                  ? [["read", "read only"], ["confirm", "writes ask"], ["deny", "no access"]]
-                  : [["read", "read only"], ["confirm", "change: ask"], ["free", "change: free"], ["deny", "no access"]];
+                  ? [["read", "read only"], ["confirm", "writes ask"], ["free", "write: no confirmation"], ["deny", "no access"]]
+                  : [["read", "read only"], ["confirm", "change: ask"], ["free", "write: no confirmation"], ["deny", "no access"]];
             return html`<tr><td>${c.name}</td><td>${c.kind}</td><td>${c.target}</td><td><form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/mode" data-autosave>${csrf}<input type="hidden" name="tab" value="connections"><select class="be-select" name="mode" aria-label="Connection mode" title="Read-only stops every bot changing this system; change lets each bot's permission ask or allow writes.">${(["read-only", "change"] as const).map((m) => html`<option value="${m}" ${m === c.mode ? "selected" : ""}>${m}</option>`)}</select><button class="be-btn sm auto">save</button></form></td><td>${c.status}${signInCell(c, csrf)}</td><td class="muted"><span class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</span></td>
 <td>${uses ? html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/permission" data-autosave>${csrf}<input type="hidden" name="tab" value="connections"><select class="be-select" name="mode" aria-label="This bot's access">${modes.map(([m, label]) => html`<option value="${m}" ${m === grant ? "selected" : ""}>${label}</option>`)}</select><button class="be-btn sm auto">save</button></form>` : html`<span class="muted">—</span>`}</td>
 <td><form method="post" action="/admin/bots/${def.id}/connections/${c.id}/link">${csrf}<input type="hidden" name="linked" value="${uses ? "off" : "on"}"><button class="be-btn sm${uses ? "" : " primary"}">${uses ? "take away" : "give to this bot"}</button></form>${
-            c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/reset-host-key">${csrf}<button class="be-btn sm">reset host key</button></form>` : ""}</td>
+            c.status === "blocked" ? html`<form method="post" action="/admin/connections/${c.id}/unblock">${csrf}<button class="be-btn sm" title="forgets the old pin, tests the connection and pins the current host key">unblock</button></form>` : ""}</td>
 <td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
           };
           const connTable = (list: Connection[], uses: boolean) =>
@@ -905,6 +909,23 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
           ? html`<p>Remove this line from the target's authorized_keys:</p><pre>${c.publicKey}</pre>`
           : html`<p>Revoke the token at its source.</p>`
       }<p><a href="/admin/connections">Back</a></p>`);
+    }),
+  );
+
+  router.post(
+    "/connections/:connectionId/unblock",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      try {
+        // the admin has checked the machine; forget the old pin, then pin and approve the current key
+        await resetHostKey(db, actor.tenantId, req.params.connectionId);
+        await adminVerify(connDeps, actor.tenantId, req.params.connectionId, actor.personId);
+      } catch (e) {
+        if (e instanceof ConnectionError) return res.redirect(303, `/admin/connections?unblockError=${encodeURIComponent(e.message)}`);
+        throw e;
+      }
+      res.redirect(303, "/admin/connections?unblocked=1");
     }),
   );
 
