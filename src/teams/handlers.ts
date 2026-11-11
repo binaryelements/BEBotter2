@@ -322,13 +322,13 @@ export async function handleMessage(
       definition = usable[0];
     }
   }
-  // a group chat the bot was added to but nobody assigned: the name it was addressed by picks the bot,
-  // and the chat keeps it, so the rest of the conversation reaches it instead of the message going nowhere
-  if (!definition && msg.conversationType !== "personal") {
+  // a company bot named in a group chat takes the chat over, as naming one does in a one-to-one chat: the chat then
+  // keeps it, so "Jimmy, are you there?" reaches Jimmy whether or not anyone had assigned the chat before
+  if (msg.conversationType !== "personal") {
     const group = (await listDefinitions(db, msg.tenantId)).filter((d) => d.identity !== "person");
-    const named = group.find((d) => addressedByName(msg.text, d)) ?? (msg.mentioned && group.length === 1 ? group[0] : undefined);
-    if (named && (await mayUseDefinition(db, msg.tenantId, person.id, named.id))) {
-      await assignToChat(db, msg.chatId, named.id);
+    const named = group.find((d) => addressedByName(msg.text, d)) ?? (msg.mentioned && group.length === 1 && !definition ? group[0] : undefined);
+    if (named && named.id !== definition?.id && (await mayUseDefinition(db, msg.tenantId, person.id, named.id))) {
+      await setChatDefinition(db, msg.tenantId, msg.chatId, named.id);
       definition = named;
     }
   }

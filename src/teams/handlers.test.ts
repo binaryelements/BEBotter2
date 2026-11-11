@@ -830,6 +830,19 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(await s.assigned()).toEqual([a.id]);
   });
 
+  it("in a group chat, naming another company bot switches the chat to it", async () => {
+    const s = await chat();
+    const it = await s.service("it", "IT Support");
+    const jimmy = await s.service("jimmy", "Quotation Specialist");
+    await s.db.update(botDefinitions).set({ displayName: "Jimmy" }).where(eq(botDefinitions.id, jimmy.id));
+    await upsertChat(s.db, { id: "c1", tenantId: "t1", conversationType: "groupChat" });
+    await setChatDefinition(s.db, "t1", "c1", it.id);
+    await handleMessage(s.deps, { ...msg("groupChat"), text: "jimmy, are you there?", from: { aadObjectId: "u1", name: "Ann" } }, s.io);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+    expect((s.runTurn.mock.calls[0] as unknown as [RunTurnInput])[0].definition.id).toBe(jimmy.id);
+    expect(await s.assigned()).toEqual([jimmy.id]);
+  });
+
   it("takes an @mention in an unassigned group chat when the tenant has only one company bot", async () => {
     const s = await chat();
     const a = await s.service("it", "IT Support");
