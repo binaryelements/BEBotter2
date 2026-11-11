@@ -297,6 +297,16 @@ export async function handleMessage(
       definition = usable[0];
     }
   }
+  // a group chat the bot was added to but nobody assigned: the name it was addressed by picks the bot,
+  // and the chat keeps it, so the rest of the conversation reaches it instead of the message going nowhere
+  if (!definition && msg.conversationType !== "personal") {
+    const group = (await listDefinitions(db, msg.tenantId)).filter((d) => d.identity !== "person");
+    const named = group.find((d) => addressedByName(msg.text, d)) ?? (msg.mentioned && group.length === 1 ? group[0] : undefined);
+    if (named && (await mayUseDefinition(db, msg.tenantId, person.id, named.id))) {
+      await assignToChat(db, msg.chatId, named.id);
+      definition = named;
+    }
+  }
   // A confirmation is a question: a typed yes/no answers it, and other messages do not queue behind the waiting turn.
   const pending = deps.confirmations?.pendingFor(msg.chatId, person.id, definition?.id);
   if (pending) {

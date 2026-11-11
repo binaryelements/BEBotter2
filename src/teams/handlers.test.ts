@@ -816,6 +816,28 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(s.runTurn).not.toHaveBeenCalled();
   });
 
+  it("answers in a group chat it was only added to when the message starts with its name, and keeps the chat", async () => {
+    const s = await chat();
+    const a = await s.service("it", "IT Support");
+    await s.db.update(botDefinitions).set({ displayName: "Mickey" }).where(eq(botDefinitions.id, a.id));
+    const group = (text: string, mentioned: boolean) => handleMessage(s.deps, { ...msg("groupChat"), text, mentioned, from: { aadObjectId: "u1", name: "Ann" } }, s.io);
+    // nobody assigned the chat, and this is not addressed to the bot: heard, not answered
+    await group("the printer is down", false);
+    expect(s.runTurn).not.toHaveBeenCalled();
+    expect(s.sent).toEqual([]);
+    await group("Mickey, did the fax go through?", false);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+    expect(await s.assigned()).toEqual([a.id]);
+  });
+
+  it("takes an @mention in an unassigned group chat when the tenant has only one company bot", async () => {
+    const s = await chat();
+    const a = await s.service("it", "IT Support");
+    await handleMessage(s.deps, { ...msg("groupChat"), text: "are you there", mentioned: true, from: { aadObjectId: "u1", name: "Ann" } }, s.io);
+    expect(s.runTurn).toHaveBeenCalledTimes(1);
+    expect(await s.assigned()).toEqual([a.id]);
+  });
+
   it("in a group chat it hears without answering, then answers a mention or its name with what it heard", async () => {
     const s = await chat();
     const a = await s.service("it", "IT Support");
