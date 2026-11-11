@@ -21,6 +21,9 @@ const BUILT_IN: Record<string, ToolClass> = {
   mcp__routine__cancel_reminder: "read", // only this chat's own one-offs
   // Martin's call: anyone's teaching applies at once; admins review and undo on the bot's Learnings tab
   ...Object.fromEntries(["learn", "learnings", "update_learning", "forget"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
+  // memory is the bot's own store, with no outside effect: saving what it was told should never need a card
+  ...Object.fromEntries(["remember", "recall"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
+  ...Object.fromEntries(["activity", "conversation", "learnings", "memory", "remember", "update_memory", "forget_memory", "learn", "update_learning", "forget"].map((t) => [`mcp__reflection__${t}`, "read" as const])),
   mcp__routine__post: "read",
   mcp__bots__tell_bot: "read", // the told bot's own tools ask their own confirmations
   mcp__attachments__read_attachment: "read",
