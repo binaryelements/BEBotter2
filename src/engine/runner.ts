@@ -26,6 +26,7 @@ import { assistantRequests, chats, departmentMembers, mailboxes, people, session
 import { getTenantSettings } from "../org/org.js";
 import type { TenantSettings } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
+import { readMailAttachment } from "../mail/attachment.js";
 import type { BotDefinition, Person, TurnTimings } from "../db/schema.js";
 
 export type { TurnTimings };
@@ -481,7 +482,12 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       signal,
       onEvent,
       tools,
-      callTool: (name, args, callSignal) => (registry ? registry.call(name, args, callSignal ?? signal) : Promise.resolve({ text: "No tool runtime.", isError: true })),
+      callTool: async (name, args, callSignal) => {
+        if (!registry) return { text: "No tool runtime.", isError: true };
+        const result = await registry.call(name, args, callSignal ?? signal);
+        // the bot's own mailbox hands back files as base64: read them the way chat and Outlook files are read
+        return name === "mcp__mail__get_attachment" ? readMailAttachment(result, deps.readDocument) : result;
+      },
       authoriseTool,
       completeTool,
       onAttemptStart: resetTimings,
