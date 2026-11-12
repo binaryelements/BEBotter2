@@ -5,3 +5,6 @@ dist
 coverage
 tmp-*
 *.log
+**/node_modules
+console/ui/dist
+dist-console

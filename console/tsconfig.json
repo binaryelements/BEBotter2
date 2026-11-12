@@ -1,0 +1,6 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "rootDir": "..", "outDir": "../dist-console" },
+  "include": ["server"],
+  "exclude": ["**/*.test.ts"]
+}

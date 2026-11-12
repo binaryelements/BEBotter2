@@ -1,0 +1,2 @@
+# Its own root: the pages install and build apart from the engine's packages (../../package.json).
+packages: []

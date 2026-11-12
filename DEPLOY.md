@@ -15,6 +15,12 @@ queued it; the second call answers "Deployment already queued for this commit"
 and the duplicate waits in the queue behind the real build, which is most of why
 a deploy that should take minutes can take tens of minutes.
 
+## The admin console
+
+The new React admin is a separate app with its own image (`console/Dockerfile`),
+served under `/admin/console` on the same address. It deploys without restarting
+the engine. Setup, watch paths and rules are in `console/README.md`.
+
 ## The base image
 
 `Dockerfile` starts from `ghcr.io/binaryelements/bebotter2-base:1`, which holds
