@@ -25,7 +25,7 @@ describe("routine mcp", () => {
 
   it("remind creates a one-off routine for this chat and refuses past times", async () => {
     const t = toolsOf(routineMcpServer({ db }, ctx));
-    expect(Object.keys(t)).toEqual(["remind", "reminders", "cancel_reminder", "background"]);
+    expect(Object.keys(t)).toEqual(["remind", "schedule", "reminders", "cancel_reminder", "background"]);
     const at = new Date(Date.now() + 3600_000).toISOString();
     expect((await t.remind.handler({ at, prompt: "call back" })).isError).toBeUndefined();
     const [r] = await listRoutines(db, "t1");
@@ -51,7 +51,7 @@ describe("routine mcp", () => {
   it("post exists only when a post callback is given, and then background does not", async () => {
     const posted: string[] = [];
     const t = toolsOf(routineMcpServer({ db }, { ...ctx, post: async (x) => void posted.push(x) }));
-    expect(Object.keys(t)).toEqual(["remind", "reminders", "cancel_reminder", "post"]);
+    expect(Object.keys(t)).toEqual(["remind", "schedule", "reminders", "cancel_reminder", "post"]);
     await t.post.handler({ text: "hi" });
     expect(posted).toEqual(["hi"]);
   });
@@ -67,17 +67,33 @@ describe("routine mcp", () => {
     const listed = (await t.reminders.handler({})).content[0]!.text;
     expect(listed).toContain(mine.id);
     expect(listed).not.toContain(other.id);
-    expect(listed).not.toContain(cron.id);
-    for (const id of [other.id, cron.id]) expect((await t.cancel_reminder.handler({ id })).isError).toBe(true);
+    expect(listed).toContain(cron.id);
+    // another chat's is not this chat's to cancel; this chat's own routine is
+    expect((await t.cancel_reminder.handler({ id: other.id })).isError).toBe(true);
+    expect((await t.cancel_reminder.handler({ id: cron.id })).isError).toBeUndefined();
     expect((await t.cancel_reminder.handler({ id: mine.id })).isError).toBeUndefined();
     const left = (await listRoutines(db, "t1")).map((r) => r.id);
     expect(left).not.toContain(mine.id);
-    expect(left).toEqual(expect.arrayContaining([other.id, cron.id]));
-    for (const r of [other, cron]) await deleteRoutine(db, "t1", r.id);
+    expect(left).not.toContain(cron.id);
+    expect(left).toContain(other.id);
+    await deleteRoutine(db, "t1", other.id); // cron was cancelled above
+  });
+
+  it("schedule saves a recurring routine for this chat, ten at most, and refuses a bad cron", async () => {
+    const t = toolsOf(routineMcpServer({ db }, ctx));
+    expect((await t.schedule.handler({ schedule: "0 7 * * *", prompt: "morning sweep" })).isError).toBeUndefined();
+    const saved = (await listRoutines(db, "t1")).find((r) => r.schedule === "0 7 * * *")!;
+    expect(saved).toMatchObject({ chatId: "c1", prompt: "morning sweep", enabled: true, createdByPersonId: ctx.personId });
+    expect(saved.runAt).toBeNull(); // the scheduler works the next run out from the cron
+    expect((await t.schedule.handler({ schedule: "every morning", prompt: "x" })).isError).toBe(true);
+    while ((await listRoutines(db, "t1")).filter((r) => r.schedule).length < 10)
+      await createRoutine(db, "t1", { definitionId: ctx.definitionId, chatId: "c1", prompt: "x", schedule: "0 1 * * *", createdByPersonId: ctx.personId });
+    expect((await t.schedule.handler({ schedule: "0 2 * * *", prompt: "x" })).isError).toBe(true);
   });
 
   it("remind refuses past 50 pending reminders in the chat", async () => {
     const t = toolsOf(routineMcpServer({ db }, ctx));
+    for (const r of await listRoutines(db, "t1")) await deleteRoutine(db, "t1", r.id);
     const runAt = new Date(Date.now() + 3600_000);
     while ((await listRoutines(db, "t1")).length < 50) await createRoutine(db, "t1", { definitionId: ctx.definitionId, chatId: "c1", prompt: "x", runAt, createdByPersonId: ctx.personId });
     const r = await t.remind.handler({ at: runAt.toISOString(), prompt: "one more" });

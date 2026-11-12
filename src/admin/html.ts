@@ -223,6 +223,34 @@ document.addEventListener("click", function (e) {
   var d = document.querySelector("details.notif[open]");
   if (d && !d.contains(e.target)) d.open = false;
 });
+// an autosaved form posts in the background: the page stays put, a toast says it saved, and a refusal falls back to
+// the normal submit so the error page is shown
+function beToast(text) {
+  var box = document.querySelector(".be-toasts");
+  if (!box) { box = document.createElement("div"); box.className = "be-toasts"; box.setAttribute("role", "status"); document.body.appendChild(box); }
+  var t = document.createElement("div"); t.className = "be-toast good";
+  var s = document.createElement("span"); s.textContent = text;
+  var x = document.createElement("button"); x.type = "button"; x.className = "be-toast-x"; x.setAttribute("aria-label", "dismiss"); x.textContent = "\u00d7";
+  x.onclick = function () { t.remove(); };
+  t.appendChild(s); t.appendChild(x); box.appendChild(t);
+  setTimeout(function () { t.remove(); }, 1500);
+}
+document.addEventListener("submit", function (e) {
+  var f = e.target;
+  if (!f || !f.getAttribute || !f.getAttribute("data-autosave")) return;
+  e.preventDefault();
+  var body = new FormData(f);
+  fetch(f.getAttribute("action") || location.href, { method: "POST", body: body, credentials: "same-origin", redirect: "manual" })
+    .then(function (r) {
+      // a 303 back to the page is success; anything else goes to the error page
+      if (r.type === "opaqueredirect" || r.status === 0 || (r.status >= 200 && r.status < 400)) {
+        f.classList.add("saved");
+        setTimeout(function () { f.classList.remove("saved"); }, 1200);
+        beToast("Saved");
+      } else f.submit();
+    })
+    .catch(function () { f.submit(); });
+});
 document.querySelectorAll("table.be-table").forEach(function (t) {
   var heads = Array.from(t.querySelectorAll("thead th")).map(function (th) { return th.textContent.trim(); });
   if (!heads.length) return;

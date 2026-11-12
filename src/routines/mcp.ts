@@ -15,6 +15,7 @@ const fail = (e: unknown) => {
 const OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 const MAX_PENDING = 50;
 const MAX_BACKGROUND = 3;
+const MAX_SCHEDULES = 10;
 const MAX_AHEAD_MS = 366 * 24 * 3600_000;
 
 export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpServerHandle {
@@ -39,19 +40,35 @@ export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpServerHandle {
         }
       },
     ),
-    tool("reminders", "List the reminders and background jobs still waiting in this chat, with their ids.", {}, async () => {
+    tool(
+      "schedule",
+      "Create a recurring routine in this chat: `prompt` is what you are asked to do each time and `schedule` is a cron expression in the company's time zone (five fields: minute hour day month weekday, e.g. \"0 7 * * *\" for 7am every day, \"*/30 * * * *\" every half hour). It runs unattended, with nobody to answer a confirmation, so schedule only work that needs no approval: checks, reads and reports. A write during a run is denied. Tell the person what you scheduled and when it first runs, and that an admin can change or remove it on the admin site.",
+      { schedule: z.string(), prompt: z.string(), quiet: z.boolean().optional() },
+      async ({ schedule, prompt, quiet }) => {
+        try {
+          const mine = (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled && r.schedule !== null);
+          if (mine.length >= MAX_SCHEDULES) throw new DirectoryError(`This chat already has ${MAX_SCHEDULES} recurring routines`);
+          const r = await createRoutine(deps.db, ctx.tenantId, { definitionId: ctx.definitionId, chatId: ctx.chatId, prompt, schedule, quiet: quiet ?? false, createdByPersonId: ctx.personId });
+          return ok(`Recurring routine ${r.id} saved (${schedule}). ${r.runAt ? `Next run ${r.runAt.toISOString()}.` : ""}`);
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    ),
+    tool("reminders", "List the reminders, background jobs and recurring routines in this chat, with their ids.", {}, async () => {
       try {
-        const waiting = await pendingHere();
+        const waiting = (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled);
         if (!waiting.length) return ok("Nothing is waiting in this chat");
-        return ok(waiting.map((r) => `${r.id} | ${r.runAt?.toISOString() ?? ""} | ${r.background ? "background job" : "reminder"} | ${r.prompt.slice(0, 200)}`).join("\n"));
+        return ok(waiting.map((r) => `${r.id} | ${r.schedule ? `every ${r.schedule}` : (r.runAt?.toISOString() ?? "")} | ${r.background ? "background job" : r.schedule ? "recurring" : "reminder"} | ${r.prompt.slice(0, 200)}`).join("\n"));
       } catch (e) {
         return fail(e);
       }
     }),
-    tool("cancel_reminder", "Cancel a reminder or background job in this chat, by the id `reminders` lists. Recurring routines are an admin's to change on the admin site.", { id: z.string() }, async ({ id }) => {
+    tool("cancel_reminder", "Cancel a reminder, background job or recurring routine in this chat, by the id `reminders` lists. Nothing from another chat can be cancelled.", { id: z.string() }, async ({ id }) => {
       try {
-        // only a one-off waiting in this chat: another chat's reminders, and an admin's recurring routines, are not this chat's to cancel
-        if (!(await pendingHere()).some((r) => r.id === id)) throw new DirectoryError("No such reminder waiting in this chat");
+        // only something of this chat's: another chat's reminders and routines are not this chat's to cancel
+        const mine = (await listRoutines(deps.db, ctx.tenantId, ctx.definitionId)).filter((r) => r.chatId === ctx.chatId && r.enabled).some((r) => r.id === id);
+        if (!mine) throw new DirectoryError("No such reminder in this chat");
         await deleteRoutine(deps.db, ctx.tenantId, id);
         return ok("Cancelled");
       } catch (e) {

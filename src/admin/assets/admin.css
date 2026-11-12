@@ -810,6 +810,9 @@ main .error {
   margin-bottom: 16px;
 }
 
+/* a form that just saved in the background flashes its own outline, since the page does not reload */
+form.saved { outline: 2px solid var(--ui-good); outline-offset: 3px; border-radius: 8px; }
+
 /* ---------- toasts ---------- */
 .be-toasts {
   position: fixed;
