@@ -146,6 +146,11 @@ export const botDefinitions = pgTable(
     inboundBy: text("inbound_by").references(() => people.id),
     inboundAt: timestamp("inbound_at", { withTimezone: true }),
     inboundHits: integer("inbound_hits").notNull().default(0),
+    /** An email to the bot's mailbox: notify posts a notice only; act also runs a turn in mailChatId with mailInstruction, as the admin who switched it on. */
+    mailMode: text("mail_mode").notNull().default("notify"), // notify | act
+    mailChatId: text("mail_chat_id"),
+    mailInstruction: text("mail_instruction").notNull().default(""),
+    mailBy: text("mail_by").references(() => people.id),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -232,6 +232,13 @@
       "when": 1794303600000,
       "tag": "0032_note-owner",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794470006828,
+      "tag": "0033_mail-actions",
+      "breakpoints": true
     }
   ]
 }

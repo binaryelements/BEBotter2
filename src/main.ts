@@ -31,7 +31,7 @@ import { ensureAllMailboxes, ensureMailbox } from "./mail/mailboxes.js";
 import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startReflectionScheduler } from "./reflections/scheduler.js";
-import { startScheduler } from "./routines/scheduler.js";
+import { runRoutine, startScheduler } from "./routines/scheduler.js";
 import { createTeamsApp, graphToken } from "./teams/app.js";
 import { personToken, sendToChat } from "./teams/proactive.js";
 import type { AdaptiveCard } from "./teams/cards.js";
@@ -102,7 +102,7 @@ startServer(app, {
   beforeListen: (express) => {
     // Static product deck, public on purpose: /slides is the shareable link.
     express.use("/slides", expressStatic(fileURLToPath(new URL("./admin/assets/slides/", import.meta.url)), { maxAge: "1h", index: "index.html" }));
-    mountMailInbound(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m) });
+    mountMailInbound(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m), run: (r) => runRoutine(schedulerDeps, r) });
     mountInboundHook(express, { db, secretsKey: config.secretsKey, send: (chatId, m) => sendToChat(proactive, chatId, m) });
     // a refused Teams delivery (auth, rate limit, handler error) is otherwise invisible
     express.use("/api/messages", (req, res, next) => {

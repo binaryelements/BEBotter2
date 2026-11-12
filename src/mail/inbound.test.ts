@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as audit from "../audit/audit.js";
 import { auditEvents, botDefinitions, chatAssignments, chats, mailboxes } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
-import { upsertTenant } from "../org/org.js";
+import { upsertPerson, upsertTenant } from "../org/org.js";
+import type { HeadlessRun } from "../routines/scheduler.js";
 import { encrypt } from "../secrets/cipher.js";
+import { eq } from "drizzle-orm";
 import { mountMailInbound } from "./inbound.js";
 
 const auditBroken = { chat: "" };
@@ -33,10 +35,11 @@ async function setup() {
   }
   await db.insert(mailboxes).values({ definitionId: "d1", tenantId: "t1", agent: "bb2-d1", address: "ada@mail.test", status: "active", webhookSecretCipher: encrypt(secretsKey, SECRET) });
   const sent: [string, string][] = [];
+  const runs: HeadlessRun[] = [];
   // json first, like startServer, so the test proves the route still sees the raw bytes
   const app = express();
   app.use(express.json());
-  mountMailInbound(app, { db, secretsKey, send: async (c, m) => void sent.push([c, m]), now: () => NOW });
+  mountMailInbound(app, { db, secretsKey, send: async (c, m) => void sent.push([c, m]), run: async (r) => void runs.push(r), now: () => NOW });
   server = app.listen(0);
   const port = (server.address() as { port: number }).port;
   const post = async (event: object, o: { secret?: string; ts?: string } = {}) => {
@@ -48,7 +51,7 @@ async function setup() {
     await new Promise((r) => setTimeout(r, 50));
     return r.status;
   };
-  return { db, sent, post };
+  return { db, sent, runs, post };
 }
 
 const event = (o: { id?: string; from?: string; subject?: string; agent?: string } = {}) => ({
@@ -66,6 +69,28 @@ describe("mail inbound", () => {
     const rows = await db.select().from(auditEvents);
     expect(rows).toHaveLength(2);
     expect(rows[0]!.summary).toBe("Email from bob@example.com: Invoice attached");
+  });
+
+  it("act mode starts one turn in the chosen chat, with cards on and no web; automatic mail and the 11th in an hour only notify", async () => {
+    const { db, sent, runs, post } = await setup();
+    await post(event({ id: "notify" }));
+    expect(runs).toEqual([]); // notify is the default: today's behaviour
+
+    const ann = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "aad-ann", name: "Ann" })).id;
+    await db.update(botDefinitions).set({ mailMode: "act", mailChatId: "c2", mailInstruction: "Draft the quote and propose the reply.", mailBy: ann }).where(eq(botDefinitions.id, "d1"));
+    await post(event({ id: "act", subject: "Quote\nfor 20 seats" }));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ id: "mail:act", tenantId: "t1", definitionId: "d1", chatId: "c2", createdByPersonId: ann, grantPersonId: null, background: false, quiet: false, noWeb: true });
+    const { prompt } = runs[0]!;
+    for (const part of ["ada@mail.test", "From: bob@example.com", "Subject: Quote for 20 seats", "Message id: m1", "Standing instruction from Ann: Draft the quote and propose the reply."]) expect(prompt).toContain(part);
+    expect(prompt).not.toContain("SECRET BODY");
+    expect(sent).toHaveLength(4); // the notice still goes to both chats each time
+
+    for (const from of ["no-reply@shop.example", "MAILER-DAEMON@mx.example", "Shop <donotreply@shop.example>"]) await post(event({ id: from, from }));
+    expect(runs).toHaveLength(1);
+    for (let i = 2; i <= 12; i++) await post(event({ id: `n${i}` }));
+    expect(runs).toHaveLength(10);
+    expect(sent).toHaveLength(4 + 2 * 14);
   });
 
   it("rejects a bad signature and posts nothing", async () => {

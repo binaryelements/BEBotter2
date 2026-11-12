@@ -43,6 +43,7 @@ import { chatNames } from "./chat-names.js";
 import { capabilityWords, chatTypeWords, cronWords, whenFor, whenIn } from "./words.js";
 import { toolWords } from "../teams/cards.js";
 
+const mailModes = ["notify", "act"] as const;
 const field = (req: Request, name: string) => {
   const v = (req.body as Record<string, unknown> | undefined)?.[name];
   return typeof v === "string" ? v : "";
@@ -564,7 +565,17 @@ ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` 
         } else if (tab === "persona") {
           section = settings("persona");
         } else if (tab === "email") {
-          section = await mailSectionFor(res, def.id);
+          // only a live mailbox can receive, so the choice of what an email starts shows only then
+          const incoming = mb?.status !== "active" ? "" : html`<h2>Incoming email</h2>
+<p class="hint">Notify: the bot says an email arrived in each of its chats. Act: it also reads the email and follows the instruction below in one chat. Anything that changes something, a reply to the sender included, still asks with a card there. Anyone who knows the address can start this, so keep the instruction narrow.</p>
+<form class="be-form" method="post" action="/admin/bots/${def.id}/mail-mode">${csrf}
+<div class="fields">
+<label>when an email arrives<select class="be-select" name="mailMode">${mailModes.map((m) => html`<option value="${m}" ${m === def.mailMode ? "selected" : ""}>${m === "notify" ? "notify only" : "act on it"}</option>`)}</select></label>
+<label>chat<span class="hint">where the bot works on the email and posts its draft; one of this bot's chats</span><select class="be-select" name="mailChatId"><option value="">none</option>${assigned.map((c) => html`<option value="${c.id}" ${c.id === def.mailChatId ? "selected" : ""}>${chatLabel.get(c.id) ?? c.label ?? c.id.slice(-12)}</option>`)}</select></label>
+</div>
+<label>instruction<span class="hint">what to do with each email, for example: When a customer asks for a quote, read the email and its attachments, draft the quote, post the draft here and propose the reply.</span><textarea class="be-input" name="mailInstruction" rows="4" maxlength="2000">${def.mailInstruction}</textarea></label>
+<button class="be-btn primary">save</button></form>`;
+          section = html`${await mailSectionFor(res, def.id)}${incoming}`;
         } else if (tab === "actions") {
           section = await actionsSectionFor(res, def, linked);
         } else if (tab === "connections") {
@@ -1101,6 +1112,36 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       await decideProposal(db, actor.tenantId, req.params.id, req.params.pid, "rejected", actor.personId);
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/mail-mode",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const mode = field(req, "mailMode") || "notify";
+      if (!(mailModes as readonly string[]).includes(mode)) throw new DirectoryError("Unknown email mode");
+      const chatId = field(req, "mailChatId") || null;
+      const instruction = field(req, "mailInstruction").trim().slice(0, 2000);
+      if (chatId) {
+        const [chat] = await db
+          .select({ id: chats.id })
+          .from(chatAssignments)
+          .innerJoin(chats, eq(chats.id, chatAssignments.chatId))
+          .where(and(eq(chatAssignments.definitionId, req.params.id), eq(chatAssignments.chatId, chatId), eq(chats.tenantId, actor.tenantId)));
+        if (!chat) throw new DirectoryError("The chat must be one of this bot's chats");
+      }
+      if (mode === "act" && !chatId) throw new DirectoryError("Choose the chat the bot works in, or use notify only");
+      if (mode === "act" && !instruction) throw new DirectoryError("Say what the bot should do with an email, or use notify only");
+      // the turn runs as whoever switched it on, so that admin is recorded with the setting
+      const [row] = await db
+        .update(botDefinitions)
+        .set({ mailMode: mode, mailChatId: chatId, mailInstruction: instruction, mailBy: mode === "act" ? actor.personId : null, updatedAt: new Date() })
+        .where(and(eq(botDefinitions.id, req.params.id), eq(botDefinitions.tenantId, actor.tenantId)))
+        .returning({ id: botDefinitions.id });
+      if (!row) throw new DirectoryError("Bot not found");
       res.redirect(303, back(req, req.params.id));
     }),
   );

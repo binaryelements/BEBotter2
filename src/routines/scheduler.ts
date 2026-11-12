@@ -20,7 +20,10 @@ export type SchedulerDeps = {
 };
 
 /** What a headless run needs: a scheduled routine has it all, and so does an inbound webhook. */
-export type HeadlessRun = Pick<Routine, "id" | "tenantId" | "chatId" | "definitionId" | "createdByPersonId" | "prompt" | "background" | "quiet" | "grantPersonId">;
+export type HeadlessRun = Pick<Routine, "id" | "tenantId" | "chatId" | "definitionId" | "createdByPersonId" | "prompt" | "background" | "quiet" | "grantPersonId"> & {
+  /** No web search or browsing in this run: its prompt came from outside the company, and a page fetch is a read that needs no card. */
+  noWeb?: boolean;
+};
 
 /**
  * Run a routine's turn headless and post the reply to its chat. A run that cannot happen is audited as failed, never thrown.
@@ -74,7 +77,7 @@ export async function runRoutine(deps: SchedulerDeps, routine: HeadlessRun): Pro
       result = await deps.runTurn({
         tenantId,
         chatId,
-        definition,
+        definition: routine.noWeb ? { ...definition, webSearch: false } : definition,
         person: creator,
         text: routine.prompt,
         receivedAt: due,

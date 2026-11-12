@@ -501,6 +501,20 @@ describe("bots screen", () => {
       expect(saved?.reflectionHour).toBe(7);
       expect((await post(`/admin/bots/${d.id}/reflection`, "Hal", [["reflectionMode", "off"], ["reflectionHour", "7"]])).status).toBe(403);
     });
+    it("acting on incoming email needs one of the bot's chats and an instruction, and records the admin who switched it on", async () => {
+      const d = await def("helper");
+      await db.insert(chats).values({ id: "chat-quotes", tenantId: T, conversationType: "groupChat", label: "Quotes" } as typeof chats.$inferInsert);
+      await db.insert(chatAssignments).values({ chatId: "chat-quotes", definitionId: d.id } as typeof chatAssignments.$inferInsert);
+      const save = (who: string, chat: string, text = "Draft the quote.") => post(`/admin/bots/${d.id}/mail-mode`, who, [["mailMode", "act"], ["mailChatId", chat], ["mailInstruction", text]]).then((r) => r.status);
+      expect(await save("Ann", "nope")).toBe(400);
+      expect(await save("Ann", "")).toBe(400);
+      expect(await save("Ann", "chat-quotes", " ")).toBe(400);
+      expect(await save("Hal", "chat-quotes")).toBe(403);
+      expect(await save("Ann", "chat-quotes")).toBe(303);
+      expect(await getDefinition(db, T, d.id)).toMatchObject({ mailMode: "act", mailChatId: "chat-quotes", mailInstruction: "Draft the quote.", mailBy: id.Ann });
+      expect((await post(`/admin/bots/${d.id}/mail-mode`, "Ann", [["mailMode", "notify"]])).status).toBe(303);
+      expect(await getDefinition(db, T, d.id)).toMatchObject({ mailMode: "notify", mailBy: null });
+    });
     it("lists what is waiting or repeating, and folds one-offs that already ran away", async () => {
       const d = await def("helper");
       const chatId = "chat-r2";
@@ -866,6 +880,8 @@ describe("bot page tabs and arming", () => {
       for (const [other, m] of Object.entries(section)) if (other !== tab && m !== "Persona text.") expect(page).not.toContain(m);
       expect(page).toContain(`class="active" aria-current="page">${tab}</a>`);
     }
+    // a bot with a live mailbox is offered the choice of what an email starts
+    expect(await get(`/admin/bots/${botId}?tab=email`)).toContain('name="mailMode"');
     const first = await get(`/admin/bots/${botId}`);
     expect(first).toContain('class="active" aria-current="page">overview</a>');
     expect(first).toContain("be-pagehead");

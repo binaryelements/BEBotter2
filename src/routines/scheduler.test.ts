@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginAction, completeAction, listActions } from "../audit/audit.js";
 import { assignToChat, ensurePersonalDefinition, setAllowedDepartments, setChatDefinition, upsertDefinition } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
+import { botDefinitions } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { Engine } from "../engine/engine.js";
@@ -138,6 +140,15 @@ describe("scheduler", () => {
     stop = startScheduler({ db, runTurn: r.run, send }, 5, due);
     await vi.waitFor(() => expect(sent).toEqual([["c2", "**Ops**\n\nAll good."]]));
     expect(r.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("a run marked noWeb gets the bot without web search, however the bot is set up", async () => {
+    await db.update(botDefinitions).set({ webSearch: true }).where(eq(botDefinitions.id, defId));
+    const r = fakeRunTurn();
+    const r1 = await routine();
+    await runRoutine({ db, runTurn: r.run, send }, r1);
+    await runRoutine({ db, runTurn: r.run, send }, { ...r1, noWeb: true });
+    expect(r.turns.map((t) => t.definition.webSearch)).toEqual([true, false]);
   });
 
   it("a routine with no conversation reference is recorded failed without a run", async () => {
