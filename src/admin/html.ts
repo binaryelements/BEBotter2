@@ -237,7 +237,7 @@ function beToast(text) {
 }
 document.addEventListener("submit", function (e) {
   var f = e.target;
-  if (!f || !f.getAttribute || !f.getAttribute("data-autosave")) return;
+  if (!f || !f.hasAttribute || !f.hasAttribute("data-autosave")) return;
   e.preventDefault();
   var body = new FormData(f);
   fetch(f.getAttribute("action") || location.href, { method: "POST", body: body, credentials: "same-origin", redirect: "manual" })
