@@ -151,6 +151,8 @@ export type TeamsIo = {
   send: (text: string) => Promise<string | undefined>; // resolves to the activity id when there is one
   update: (activityId: string, text: string) => Promise<void>;
   sendCard: (card: AdaptiveCard) => Promise<void>;
+  /** "… is typing": sent when the bot is about to answer, never for a message it only hears. */
+  typing?: () => Promise<void>;
   /** A reply typed out as it is written (one-to-one chats); end's text is the whole final message. */
   stream?: TeamsStream;
   /** The sender's Graph token, asked for per call; present only on a turn that signed in. */
@@ -370,6 +372,7 @@ export async function handleMessage(
   const graphToken = definition.identity === "person" ? io.graphToken : undefined;
   // the route was chosen before the assignment or flag changed; the next message goes through sign-in
   if (definition.identity === "person" && !graphToken) return void (await io.send("Say that again, please."));
+  void io.typing?.();
   await submitBurst(`${msg.chatId}:${definition.id}:${person.id}`, msg, deps.burstQuietMs ?? 0, async (batch, signal) => {
     const latest = batch[batch.length - 1]!;
     // everything the person said while the bot was busy goes to the model as one message

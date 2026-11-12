@@ -111,7 +111,8 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
   // the `graph` handler signs a person in (Teams SSO, else the OAuth card) on routes that ask for it; storage holds a pending sign-in's message
   // shortcut: MemoryStorage loses a pending sign-in on restart and keeps per-conversation turn state without bound; upgrade to Postgres-backed storage when that matters
   const app = new AgentApplication<TurnState>({
-    adapter: new CloudAdapter(), startTypingTimer: true, removeRecipientMention: true, longRunningMessages: true,
+    // the typing indicator is sent only when the bot is actually going to answer (handlers), not for every message it hears
+    adapter: new CloudAdapter(), startTypingTimer: false, removeRecipientMention: true, longRunningMessages: true,
     storage: new MemoryStorage(),
     authorization: {
       graph: {
@@ -203,6 +204,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
           await ctx.updateActivity(activity);
         }),
         sendCard: (card) => retryNetwork(async () => void (await ctx.sendActivity(MessageFactory.attachment(CardFactory.adaptiveCard(card))))),
+        typing: () => retryNetwork(async () => void (await ctx.sendActivity({ type: "typing" } as never))),
         // Teams streams in one-to-one chats only; the stream replies to the user's message even on this continued turn
         ...(conversationType === "personal" ? { stream: teamsStream(ctx) } : {}),
         ...(signedIn ? {

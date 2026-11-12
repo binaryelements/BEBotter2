@@ -830,6 +830,19 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(await s.assigned()).toEqual([a.id]);
   });
 
+  it("says it is typing only for a message it will answer", async () => {
+    const s = await chat();
+    const a = await s.service("it", "IT Support");
+    await upsertChat(s.db, { id: "g1", tenantId: "t1", conversationType: "groupChat" });
+    await setChatDefinition(s.db, "t1", "g1", a.id);
+    const typing = vi.fn(async () => undefined);
+    const io = { ...s.io, typing };
+    await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1", text: "the printer is down", mentioned: false }, io);
+    expect(typing).not.toHaveBeenCalled();
+    await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1", text: "IT Support, the printer is down", mentioned: false }, io);
+    expect(typing).toHaveBeenCalledTimes(1);
+  });
+
   it("in a group chat, naming another company bot switches the chat to it", async () => {
     const s = await chat();
     const it = await s.service("it", "IT Support");
