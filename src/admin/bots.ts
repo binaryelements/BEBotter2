@@ -572,8 +572,8 @@ ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` 
 <div class="fields">
 <label>when an email arrives<select class="be-select" name="mailMode">${mailModes.map((m) => html`<option value="${m}" ${m === def.mailMode ? "selected" : ""}>${m === "notify" ? "notify only" : "act on it"}</option>`)}</select></label>
 <label>chat<span class="hint">where the bot works on the email and posts its draft; one of this bot's chats</span><select class="be-select" name="mailChatId"><option value="">none</option>${assigned.map((c) => html`<option value="${c.id}" ${c.id === def.mailChatId ? "selected" : ""}>${chatLabel.get(c.id) ?? c.label ?? c.id.slice(-12)}</option>`)}</select></label>
+<label class="wide">instruction<span class="hint">What the bot should do with each email. For example: when a customer asks for a quote, read the email and its attachments, draft the quote, post the draft here and propose the reply.</span><textarea class="be-input" name="mailInstruction" rows="4" maxlength="2000">${def.mailInstruction}</textarea></label>
 </div>
-<label>instruction<span class="hint">what to do with each email, for example: When a customer asks for a quote, read the email and its attachments, draft the quote, post the draft here and propose the reply.</span><textarea class="be-input" name="mailInstruction" rows="4" maxlength="2000">${def.mailInstruction}</textarea></label>
 <button class="be-btn primary">save</button></form>`;
           section = html`${await mailSectionFor(res, def.id)}${incoming}`;
         } else if (tab === "actions") {
