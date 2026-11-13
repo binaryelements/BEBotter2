@@ -44,7 +44,7 @@ describe("m365 mcp", () => {
   it("offers only the tools of the definition's capabilities", () => {
     const g = graph();
     expect(server(g.fetchFn).names).toEqual(
-      ["create_document", "create_event", "find_free_time", "list_chats", "list_events", "list_mail", "read_attachment", "read_chat", "read_file", "read_mail", "reply_mail", "respond_event", "search_files", "search_mail", "send_mail", "upload_file"].sort(),
+      ["create_document", "create_event", "find_free_time", "forward_mail", "list_chats", "list_events", "list_mail", "read_attachment", "read_chat", "read_file", "read_mail", "reply_mail", "respond_event", "search_files", "search_mail", "send_mail", "upload_file"].sort(),
     );
     expect(server(g.fetchFn, ["mail.read"]).names).toEqual(["list_mail", "read_attachment", "read_mail", "search_mail"]);
     expect(server(g.fetchFn, ["calendar.read", "files.write"]).names).toEqual(["create_document", "find_free_time", "list_events", "upload_file"]);
@@ -138,6 +138,15 @@ describe("m365 mcp", () => {
       }
     }
     expect(g.seen).toHaveLength(0);
+  });
+
+  it("forwards an email with its original body and attachments", async () => {
+    const g = graph();
+    const s = server(g.fetchFn);
+    const r = await s.call("forward_mail", { id: "m1", to: ["bea@example.test"], comment: "fyi" });
+    expect(r.isError).toBeUndefined();
+    expect(g.seen[0]).toMatchObject({ method: "POST", url: new URL("https://graph.microsoft.com/v1.0/me/messages/m1/forward") });
+    expect(JSON.parse(g.seen[0]!.body!)).toEqual({ comment: "fyi", toRecipients: [{ emailAddress: { address: "bea@example.test" } }] });
   });
 
   it("send and reply post to Graph as the person, with files from the chat along; an unknown or oversize file is refused before anything is sent", async () => {

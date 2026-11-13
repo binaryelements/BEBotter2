@@ -166,6 +166,10 @@ export function m365McpServer(deps: { fetchFn: typeof fetch; sleep?: GraphDeps["
       await post(`/me/messages/${idPart(id)}/${all ? "replyAll" : "reply"}`, { comment: body, ...("attachments" in extra ? { message: extra } : {}) });
       return "Sent.";
     }))],
+    ["mail.send", tool("forward_mail", "Forward an email as the person, with everything it carried: the original body and all its attachments arrive with it. comment is optional text above the forwarded message. They confirm it in the chat first.", { id: z.string().min(1), to: z.array(z.string()).min(1), comment: z.string().optional() }, run(async ({ id, to, comment }) => {
+      await post(`/me/messages/${idPart(id)}/forward`, { comment: comment ?? "", toRecipients: recipients(to) });
+      return `Forwarded to ${to.join(", ")}.`;
+    }))],
     ["calendar.read", tool("list_events", `List the person's calendar between from and to, at most 31 days apart (${times}). Times come back in UTC.`, { from: z.string(), to: z.string() }, run(async ({ from, to }) => {
       const [a, b] = span(from, to, 31);
       // shortcut: the first 100 events only, no paging; page if a month holds more
