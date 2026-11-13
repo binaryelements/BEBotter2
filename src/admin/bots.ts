@@ -103,7 +103,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
   const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "learnings", "memory", "reflections", "chats", "m365"] as const;
   type Tab = (typeof TABS)[number];
   // Personal acts as the person: it has no mailbox or connections, and only it has Microsoft 365 capabilities
-  const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" && t !== "connections" : t !== "m365"));
+  const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" : t !== "m365"));
   const csrfField = (res: Response, tab?: Tab) => html`<input type="hidden" name="csrf" value="${adminOf(res).csrf}">${tab ? html`<input type="hidden" name="tab" value="${tab}">` : ""}`;
   // the configured models, plus the current one if it is no longer offered, so a save never silently changes it
   const modelOptions = (current: string) => {
@@ -861,7 +861,6 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      await serviceBot(actor.tenantId, req.params.id);
       const headerName = field(req, "headerName").trim();
       const headerValue = field(req, "headerValue");
       if (!headerName !== !headerValue) throw new DirectoryError("Header name and value go together");
@@ -890,7 +889,6 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      await serviceBot(actor.tenantId, req.params.id);
       await discoverTools(actor.tenantId, req.params.id, req.params.name, false);
       res.redirect(303, `/admin/bots/${req.params.id}?tab=actions`);
     }),
@@ -912,7 +910,6 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      await serviceBot(actor.tenantId, req.params.id);
       await setLinked(db, actor.tenantId, req.params.id, req.params.connectionId, field(req, "linked") === "on");
       res.redirect(303, back(req, req.params.id));
     }),
@@ -923,7 +920,6 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      await serviceBot(actor.tenantId, req.params.id);
       const mode = field(req, "mode") as ConnectionGrantMode;
       if (!["read", "confirm", "free", "deny"].includes(mode)) throw new DirectoryError("Unknown permission");
       await setConnectionGrant(db, actor.tenantId, req.params.id, req.params.connectionId, mode);
@@ -936,7 +932,6 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
     wrap(async (req, res) => {
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
-      await serviceBot(actor.tenantId, req.params.id);
       const mode = field(req, "mode") as ConnectionMode;
       if (mode !== "read-only" && mode !== "change") throw new DirectoryError("Unknown mode");
       await setConnectionMode(db, actor.tenantId, req.params.connectionId, mode);

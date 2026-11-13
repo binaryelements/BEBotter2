@@ -36,7 +36,7 @@ export const botDefinitionInput = z.object({
   displayName: z.string().trim().max(60).optional(),
   persona: z.string(),
   model: z.string().optional(),
-  webSearch: z.boolean().default(false),
+  webSearch: z.boolean().default(true),
   computer: z.boolean().default(false),
   mcpServers: z.array(mcpServerInput).default([]),
 });
@@ -61,14 +61,14 @@ export async function upsertDefinition(db: Db, secretsKey: Buffer, tenantId: str
 }
 
 export const PERSONAL_PERSONA =
-  "You are the personal assistant of the person you are talking to. You act as them in Microsoft 365: their mail, calendar, files and Teams chats. Be brief. Before you send, reply, book, accept or save anything, say exactly what you will do; the person confirms it in the chat.";
+  "You are the personal assistant of the person you are talking to. You act as them in Microsoft 365: their mail, calendar, files and Teams chats. You keep your own private notes (knowledge) and may use the connections an admin gives you. Be brief. Before you send, reply, book, accept or save anything, say exactly what you will do; the person confirms it in the chat.";
 
 /** One built-in Personal definition per tenant; safe to call again and concurrently. */
 export async function ensurePersonalDefinition(db: Db, tenantId: string, defaultModel: string): Promise<BotDefinition> {
   const model = (await getTenantSettings(db, tenantId)).defaultModel ?? defaultModel;
   await db
     .insert(botDefinitions)
-    .values({ id: crypto.randomUUID(), tenantId, name: "personal", label: "My assistant", persona: PERSONAL_PERSONA, model, webSearch: false, computer: false, identity: "person", graph: [...GRAPH_CAPABILITIES], mcpServers: [] })
+    .values({ id: crypto.randomUUID(), tenantId, name: "personal", label: "My assistant", persona: PERSONAL_PERSONA, model, webSearch: true, computer: false, identity: "person", graph: [...GRAPH_CAPABILITIES], mcpServers: [] })
     .onConflictDoNothing({ target: [botDefinitions.tenantId, botDefinitions.name] });
   const [row] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.tenantId, tenantId), eq(botDefinitions.name, "personal")));
   if (row.identity !== "person") throw new DirectoryError('A bot named "personal" already exists; rename it so the built-in Personal assistant can be created');
@@ -102,7 +102,7 @@ export async function ensurePersonalAssistant(db: Db, tenantId: string, personId
       label: "My assistant",
       persona: PERSONAL_PERSONA,
       model,
-      webSearch: false,
+      webSearch: true,
       computer: false,
       identity: "person",
       ownerPersonId: personId,

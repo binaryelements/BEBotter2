@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BE Teammate v2 — admin mockup</title>
+<style>
+  :root {
+    --font: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --bg: #0a0d12; --panel: #0d1117; --panel-2: #10151c; --ink: #d7dde5; --muted: #7d8794; --muted-2: #5f6b78;
+    --line: #1b222b; --line-2: #2a333f; --accent: #5fd3f0; --accent-2: #22d3ee; --accent-soft: #0d2229;
+    --good: #43d17a; --good-soft: #0f2a1a; --warn: #f5b942; --warn-soft: #16140c; --bad: #ff6b6b; --bad-soft: #1a0f0f;
+    --sidebar: #070b11; --sidebar-ink: #cbd5e1; --sidebar-muted: #5b6675; --hover: rgba(255,255,255,.05); --active: rgba(34,211,238,.12);
+    --radius: 12px; --radius-sm: 8px; --shadow: 0 1px 2px rgba(0,0,0,.4);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+  a { color: inherit; text-decoration: none; }
+  .app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+
+  /* side rail */
+  .rail { background: var(--sidebar); border-right: 1px solid var(--line); padding: 18px 12px; display: flex; flex-direction: column; gap: 22px; position: sticky; top: 0; height: 100vh; }
+  .brand { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+  .brand b { letter-spacing: .14em; font-size: 13px; }
+  .brand span { font-size: 9.5px; letter-spacing: .22em; color: var(--sidebar-muted); }
+  .nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav .label { font-size: 10px; letter-spacing: .16em; color: var(--sidebar-muted); padding: 10px 10px 4px; }
+  .nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--sidebar-ink); font-size: 13.5px; }
+  .nav a .ico { width: 18px; height: 18px; opacity: .8; }
+  .nav a:hover { background: var(--hover); }
+  .nav a.on { background: var(--active); color: #a5f3fc; }
+  .rail .me { margin-top: auto; display: flex; align-items: center; gap: 10px; padding: 10px; border-top: 1px solid var(--line); }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: #1f2a37; color: #cbd5e1; display: grid; place-items: center; font-size: 11px; font-weight: 600; flex: none; }
+
+  /* top bar */
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .top { display: flex; align-items: center; gap: 16px; padding: 14px 26px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); z-index: 20; }
+  .top h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  .top .sub { color: var(--muted); font-size: 12.5px; }
+  .search { margin-left: auto; display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; width: 320px; color: var(--muted); }
+  .search input { border: 0; background: transparent; color: var(--ink); outline: none; width: 100%; font: inherit; }
+  .kbd { border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 5px; font-size: 10.5px; color: var(--muted-2); }
+  .iconbtn { width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); display: grid; place-items: center; cursor: pointer; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); position: absolute; margin: -12px 0 0 12px; }
+
+  .body { padding: 24px 26px 80px; }
+  .screens > section { display: none; }
+  .screens > section.on { display: block; }
+  .switcher { display: flex; gap: 6px; padding: 10px 26px; border-bottom: 1px solid var(--line); }
+  .switcher button { font: inherit; font-size: 12.5px; color: var(--muted); background: transparent; border: 1px solid transparent; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .switcher button.on { color: #a5f3fc; background: var(--accent-soft); border-color: #0e3a44; }
+
+  /* primitives */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  .pad { padding: 18px; }
+  .head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .head h2 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: .01em; }
+  .head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); color: var(--muted); border-radius: 999px; padding: 2px 9px; font-size: 11.5px; white-space: nowrap; }
+  .chip.g { color: var(--good); border-color: #1c4a30; background: var(--good-soft); }
+  .chip.w { color: var(--warn); border-color: #4a3a16; background: var(--warn-soft); }
+  .chip.b { color: var(--bad); border-color: #4a2020; background: var(--bad-soft); }
+  .chip.c { color: var(--accent); border-color: #123c46; background: var(--accent-soft); }
+  .btn { font: inherit; font-size: 13px; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); cursor: pointer; }
+  .btn:hover { border-color: #3a4553; }
+  .btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #06232a; font-weight: 600; }
+  .btn.sm { padding: 5px 10px; font-size: 12px; border-radius: 7px; }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .select { font: inherit; font-size: 12.5px; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line-2); border-radius: 7px; padding: 5px 8px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12.5px; }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .grid { display: grid; gap: 16px; }
+  .cols-2 { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
+  .stack { display: flex; flex-direction: column; gap: 16px; }
+
+  /* kpis */
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .kpi .v { font-size: 26px; font-weight: 600; letter-spacing: -.02em; }
+  .kpi .l { font-size: 10.5px; letter-spacing: .14em; color: var(--muted); text-transform: uppercase; }
+  .kpi .s { font-size: 12px; color: var(--muted); }
+
+  /* attention */
+  .attn { display: flex; flex-direction: column; }
+  .attn .item { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--line); }
+  .attn .item:first-child { border-top: 0; }
+  .attn .item .t { font-weight: 500; }
+  .attn .item .m { color: var(--muted); font-size: 12.5px; }
+  .attn .item .right { margin-left: auto; display: flex; gap: 8px; }
+
+  /* bot roster */
+  .roster { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .botcard { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .botcard .topline { display: flex; align-items: center; gap: 12px; }
+  .botcard .name { font-weight: 600; }
+  .botcard .role { color: var(--muted); font-size: 12.5px; }
+  .botcard .meta { display: flex; gap: 6px; flex-wrap: wrap; }
+  .botcard .foot { display: flex; gap: 8px; margin-top: auto; }
+
+  /* table */
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 500; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
+  tr:last-child td { border-bottom: 0; }
+  tr:hover td { background: rgba(255,255,255,.015); }
+  td .sub { color: var(--muted); font-size: 12px; display: block; }
+
+  /* bot page */
+  .entity { display: flex; align-items: center; gap: 16px; padding: 18px 0 20px; }
+  .entity .big { width: 46px; height: 46px; border-radius: 13px; background: #0f2b33; color: #a5f3fc; display: grid; place-items: center; font-weight: 600; }
+  .entity h2 { margin: 0; font-size: 21px; letter-spacing: -.01em; }
+  .entity .meta { color: var(--muted); font-size: 13px; }
+  .entity .acts { margin-left: auto; display: flex; gap: 8px; }
+  .anchorbar { display: flex; gap: 18px; padding: 10px 0 16px; border-bottom: 1px solid var(--line); position: sticky; top: 63px; background: var(--bg); z-index: 10; }
+  .anchorbar a { font-size: 13px; color: var(--muted); }
+  .anchorbar a:hover { color: var(--ink); }
+  .section { padding: 18px 0 6px; scroll-margin-top: 120px; }
+  .section > .h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .section > .h h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); font-weight: 600; }
+  .section > .h .right { margin-left: auto; display: flex; gap: 8px; }
+  .kv { display: grid; grid-template-columns: 132px 1fr; gap: 8px 16px; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .persona { white-space: pre-wrap; font-size: 13.5px; line-height: 1.6; color: #c4cdd8; }
+  .chiprow { display: flex; gap: 6px; flex-wrap: wrap; }
+  .connrow { display: grid; grid-template-columns: 150px 60px 1fr 120px 170px 90px; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .connrow:last-child { border-bottom: 0; }
+  .connrow .tgt { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* activity */
+  .filters { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
+  .filters .spacer { flex: 1; }
+  .feed .ev { display: grid; grid-template-columns: 74px 28px 1fr auto; gap: 12px; padding: 14px 18px; border-top: 1px solid var(--line); align-items: start; }
+  .feed .ev:first-child { border-top: 0; }
+  .feed .time { color: var(--muted); font-size: 12px; padding-top: 2px; }
+  .feed .who { font-weight: 500; }
+  .feed .what { color: var(--muted); font-size: 12.5px; }
+  .feed .cost { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .note { border-left: 2px solid #16323a; padding: 10px 0 10px 14px; color: var(--muted); font-size: 12.5px; }
+  .legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; }
+  @media (max-width: 1100px) { .cols-2, .roster, .kpis { grid-template-columns: 1fr; } .app { grid-template-columns: 1fr; } .rail { display: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand"><b>TEAMMATE</b><span>BY BINARY ELEMENTS</span></div>
+    <nav class="nav">
+      <div class="label">OPERATE</div>
+      <a class="on" href="#today"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Today</a>
+      <a href="#bots"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 13h.01M15 13h.01"/></svg>Bots</a>
+      <a href="#people"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.4 6-5.4s6 2.1 6 5.4M16 11a3 3 0 1 0 0-6M21 20c0-2.6-1.4-4.4-3.6-5"/></svg>People</a>
+      <a href="#connections"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 15l6-6M8 12l-2 2a3 3 0 0 0 4 4l2-2M16 12l2-2a3 3 0 0 0-4-4l-2 2"/></svg>Connections</a>
+      <div class="label">CONFIGURE</div>
+      <a href="#"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Assignments</a>
+      <a href="#"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>Settings</a>
+      <div class="label">AUDIT</div>
+      <a href="#activity"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l2.5-7 4 14 2.5-7h5"/></svg>Activity</a>
+    </nav>
+    <div class="me"><div class="avatar">MW</div><div><div style="font-size:13px">Martin Wong</div><div class="small muted">admin</div></div></div>
+  </aside>
+
+  <div class="main">
+    <div class="top">
+      <div><h1 id="title">Today</h1><div class="sub" id="subtitle">Everything the bots did, and anything that needs a person</div></div>
+      <label class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Search bots, people, connections, activity"><span class="kbd">⌘K</span></label>
+      <button class="iconbtn" title="Needs attention">!<span class="dot"></span></button>
+      <button class="iconbtn" title="Theme">◐</button>
+      <div class="avatar" title="Martin Wong">MW</div>
+    </div>
+
+    <div class="switcher">
+      <button data-s="today" class="on">Today</button>
+      <button data-s="bot">Bot page</button>
+      <button data-s="connections">Connections</button>
+      <button data-s="activity">Activity</button>
+      <span class="legend" style="margin-left:auto;align-items:center">Mockup of the proposed v2 — same data, fewer screens</span>
+    </div>
+
+    <div class="body screens">
+
+      <!-- TODAY -->
+      <section id="today" class="on">
+        <div class="kpis">
+          <div class="card pad kpi"><div class="l">Turns today</div><div class="v">182</div><div class="s">4 bots · $2.14 spent</div></div>
+          <div class="card pad kpi"><div class="l">Needs a person</div><div class="v" style="color:var(--warn)">3</div><div class="s">1 blocked connection · 2 approvals</div></div>
+          <div class="card pad kpi"><div class="l">Guarded writes</div><div class="v">11</div><div class="s">all confirmed in chat</div></div>
+          <div class="card pad kpi"><div class="l">Failed runs</div><div class="v" style="color:var(--good)">0</div><div class="s">last 24 hours</div></div>
+        </div>
+
+        <div class="grid cols-2" style="margin-top:16px">
+          <div class="card">
+            <div class="head"><h2>Needs a person</h2><div class="right"><span class="chip w">3</span></div></div>
+            <div class="attn">
+              <div class="item"><span class="chip b">blocked</span><div><div class="t">imm11 · SSH host key changed</div><div class="m">Proxmox at OVH · last worked 09:41 · Mickey</div></div><div class="right"><button class="btn sm">Unblock</button></div></div>
+              <div class="item"><span class="chip w">approval</span><div><div class="t">bedirect · connection requested by Mickey</div><div class="m">https://direct.binaryelements.com/api/mcp · asks to read</div></div><div class="right"><button class="btn sm">Review</button></div></div>
+              <div class="item"><span class="chip w">sign-in</span><div><div class="t">Beiqing · Graph token expired</div><div class="m">its routines cannot run until they sign in once</div></div><div class="right"><button class="btn sm">Nudge</button></div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="head"><h2>Bots</h2><div class="right"><a class="btn sm ghost" href="#bots">Open roster</a></div></div>
+            <div class="attn">
+              <div class="item"><div class="avatar" style="background:#0f2b33;color:#a5f3fc">M</div><div><div class="t">Mickey · IT Support</div><div class="m">7 chats · 14 routines · last 11:49</div></div><div class="right"><span class="chip g">active</span></div></div>
+              <div class="item"><div class="avatar" style="background:#2a1f33;color:#e9d5ff">J</div><div><div class="t">Jimmy · Quotation Specialist</div><div class="m">2 chats · last 10:12</div></div><div class="right"><span class="chip g">active</span></div></div>
+              <div class="item"><div class="avatar" style="background:#132a1f;color:#bbf7d0">B</div><div><div class="t">Beiqing · My assistant</div><div class="m">private · last 10:29</div></div><div class="right"><span class="chip w">sign-in</span></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="head"><h2>Today, in order</h2><div class="right"><a class="btn sm ghost" href="#activity">All activity</a></div></div>
+          <div class="feed">
+            <div class="ev"><div class="time">11:49</div><div class="avatar" style="width:24px;height:24px">M</div><div><div class="who">Mickey answered Martin in the office chat</div><div class="what">2 tools · 12s · needed no write</div></div><div class="cost">$0.011</div></div>
+            <div class="ev"><div class="time">11:27</div><div class="avatar" style="width:24px;height:24px">M</div><div><div class="who">Mickey removed the bedirect connection</div><div class="what">confirmed by Martin · connection denied at the gate</div></div><div class="cost">$0.004</div></div>
+            <div class="ev"><div class="time">10:29</div><div class="avatar" style="width:24px;height:24px">B</div><div><div class="who">Beiqing remembered a preference</div><div class="what">“quote economy fares with checked bags as an option” · free, no card</div></div><div class="cost">$0.002</div></div>
+            <div class="ev"><div class="time">07:00</div><div class="avatar" style="width:24px;height:24px">M</div><div><div class="who">Mickey ran the fleet sweep routine</div><div class="what">13 hosts read · 1 warning (imm3 zpool 82%)</div></div><div class="cost">$0.081</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- BOT PAGE -->
+      <section id="bot">
+        <div class="entity">
+          <div class="big">M</div>
+          <div><h2>Mickey · IT Support</h2><div class="meta">Company bot · <span class="mono">deepseek/deepseek-flash</span> · 7 chats · last active 11:49 · <span style="color:var(--good)">active</span></div></div>
+          <div class="acts"><button class="btn">Try it</button><button class="btn primary">Edit</button><button class="btn ghost">…</button></div>
+        </div>
+
+        <div class="anchorbar">
+          <a href="#b-persona">Persona</a><a href="#b-tools">Tools</a><a href="#b-conn">Connections</a><a href="#b-routines">Routines</a><a href="#b-chats">Chats</a><a href="#b-memory">Memory</a><a href="#b-m365">Microsoft 365</a><a href="#b-hook">Inbound</a>
+        </div>
+
+        <div class="grid cols-2" style="margin-top:6px">
+          <div class="stack">
+            <div class="section" id="b-persona">
+              <div class="h"><h3>Persona</h3><div class="right"><button class="btn sm ghost">Edit inline</button></div></div>
+              <div class="card pad"><div class="persona">You are Mickey, Binary Elements' IT support engineer for the Melbourne and Sydney fleet. Be brief and concrete: name the machine, the evidence and the next step. Before you change anything, say exactly what you will change and wait for the confirmation card.
+
+You look after the Proxmox hosts (imm2, imm3, imm7, imm8, imm11–13, cvp2), the KM VoIP monitors and Mantis. Search your knowledge for the matching runbook before you improvise.</div></div>
+            </div>
+
+            <div class="section" id="b-tools">
+              <div class="h"><h3>Tools</h3><div class="right"><span class="small muted">any rule can be freed per bot</span></div></div>
+              <div class="card">
+                <table>
+                  <thead><tr><th>Tool</th><th>Group</th><th>Rule</th><th></th></tr></thead>
+                  <tbody>
+                    <tr><td>ssh_read</td><td class="muted">connections</td><td><select class="select"><option>free</option><option>confirm</option></select></td><td class="muted small">reads only, changes denied</td></tr>
+                    <tr><td>ssh_change</td><td class="muted">connections</td><td><select class="select"><option>confirm</option><option>free</option></select></td><td class="muted small">per connection below</td></tr>
+                    <tr><td>run_script</td><td class="muted">be-hub</td><td><select class="select"><option>free</option><option>confirm</option></select></td><td class="muted small">no card</td></tr>
+                    <tr><td>remember</td><td class="muted">memory</td><td><select class="select"><option>free</option></select></td><td class="muted small">bot's own store</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="section" id="b-conn">
+              <div class="h"><h3>Connections</h3><div class="right"><a class="btn sm ghost" href="#connections">Company view</a></div></div>
+              <div class="card pad">
+                <div class="connrow" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em"><div>Name</div><div>Kind</div><div>Target</div><div>Mode</div><div>This bot</div><div>Health</div></div>
+                <div class="connrow"><div>be-hub</div><div class="muted">mcp</div><div class="tgt">behub.a.sapautomate.com/mcp</div><select class="select"><option>change</option><option>read-only</option></select><select class="select"><option>write: no confirmation</option><option>change: ask</option></select><span class="chip g">active</span></div>
+                <div class="connrow"><div>bedirect</div><div class="muted">mcp</div><div class="tgt">direct.binaryelements.com/api/mcp</div><select class="select"><option>read-only</option></select><select class="select"><option>read only</option><option>no access</option></select><span class="chip w">pending</span></div>
+                <div class="connrow"><div>bevoice</div><div class="muted">mcp</div><div class="tgt">voiceapp.binaryelements.com/mcp</div><select class="select"><option>change</option></select><select class="select"><option>write: no confirmation</option></select><span class="chip g">signed in</span></div>
+                <div class="connrow"><div>imm11</div><div class="muted">ssh</div><div class="tgt">100.90.31.124</div><select class="select"><option>change</option></select><select class="select"><option>write: no confirmation</option></select><span class="chip b">blocked</span></div>
+                <div class="connrow"><div>cvp2</div><div class="muted">ssh</div><div class="tgt">103.78.194.111</div><select class="select"><option>change</option></select><select class="select"><option>change: ask</option></select><span class="chip g">active</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stack">
+            <div class="section" id="b-routines" style="padding-top:18px">
+              <div class="h"><h3>Routines</h3><div class="right"><button class="btn sm">New</button></div></div>
+              <div class="card">
+                <div class="attn">
+                  <div class="item"><div><div class="t">Fleet sweep</div><div class="m">every day at 07:00 · 13 hosts · last 07:00 · <span style="color:var(--good)">ok</span></div></div><div class="right"><button class="btn sm ghost">…</button></div></div>
+                  <div class="item"><div><div class="t">Mantis registrations</div><div class="m">every 30 min · last 11:30 · <span style="color:var(--good)">ok</span></div></div><div class="right"><button class="btn sm ghost">…</button></div></div>
+                  <div class="item"><div><div class="t">Backup report</div><div class="m">weekdays at 08:00 · last 08:00 · <span style="color:var(--warn)">1 warning</span></div></div><div class="right"><button class="btn sm ghost">…</button></div></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section" id="b-chats">
+              <div class="h"><h3>Chats</h3><div class="right"><a class="btn sm ghost" href="#">Assign</a></div></div>
+              <div class="card"><div class="attn">
+                <div class="item"><div><div class="t">IT (group)</div><div class="m">4 people · last 11:49</div></div><div class="right"><span class="chip g">on</span></div></div>
+                <div class="item"><div><div class="t">Office (group)</div><div class="m">Joy, Patricia, Martin · last 11:49</div></div><div class="right"><span class="chip g">on</span></div></div>
+              </div></div>
+            </div>
+
+            <div class="section" id="b-memory">
+              <div class="h"><h3>Memory & learnings</h3><div class="right"><a class="btn sm ghost" href="#">Search</a></div></div>
+              <div class="card pad"><div class="chiprow"><span class="chip">14 learnings</span><span class="chip">63 memories</span><span class="chip c">daily reflection 18:00</span></div>
+                <div class="note" style="margin-top:12px">“SSH connection refused on 22 does not mean sshd is down — check the tailscale route first.” — learnt 10 Nov</div>
+              </div>
+            </div>
+
+            <div class="section" id="b-hook">
+              <div class="h"><h3>Inbound webhook</h3><div class="right"><span class="chip g">on</span></div></div>
+              <div class="card pad"><div class="mono" style="word-break:break-all">https://teammate.binaryelements.com/hooks/9c84…/6RzQ…</div><div class="small muted" style="margin-top:8px">Handed to the bot in every chat it is in · 12 received · last 07:56</div><div class="row" style="margin-top:12px"><button class="btn sm">New URL</button><button class="btn sm">Turn off</button></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CONNECTIONS -->
+      <section id="connections">
+        <div class="filters">
+          <input class="search" style="width:260px" placeholder="Filter by name, target, bot…">
+          <select class="select"><option>All kinds</option><option>ssh</option><option>mcp</option><option>http</option><option>sql</option></select>
+          <select class="select"><option>All states</option><option>active</option><option>pending</option><option>blocked</option></select>
+          <div class="spacer"></div>
+          <button class="btn primary">Add connection</button>
+        </div>
+        <div class="card">
+          <table>
+            <thead><tr><th>Connection</th><th>Kind</th><th>Mode</th><th>Who</th><th>Health</th><th>Last used</th><th></th></tr></thead>
+            <tbody>
+              <tr><td><b>be-hub</b><span class="sub">behub.a.sapautomate.com/mcp</span></td><td class="muted">mcp</td><td><select class="select"><option>change</option><option>read-only</option></select></td><td class="muted">Mickey</td><td><span class="chip g">active</span></td><td class="muted">11:49</td><td><button class="btn sm ghost">…</button></td></tr>
+              <tr><td><b>bedirect</b><span class="sub">direct.binaryelements.com/api/mcp</span></td><td class="muted">mcp</td><td><select class="select"><option>read-only</option></select></td><td class="muted">Mickey</td><td><span class="chip w">pending</span></td><td class="muted">—</td><td><button class="btn sm">Approve</button></td></tr>
+              <tr><td><b>bevoice</b><span class="sub">voiceapp.binaryelements.com/mcp</span></td><td class="muted">mcp</td><td><select class="select"><option>change</option></select></td><td class="muted">Mickey</td><td><span class="chip g">signed in</span></td><td class="muted">10:02</td><td><button class="btn sm ghost">…</button></td></tr>
+              <tr><td><b>imm11</b><span class="sub">100.90.31.124 · root</span></td><td class="muted">ssh</td><td><select class="select"><option>change</option></select></td><td class="muted">Mickey</td><td><span class="chip b">blocked</span></td><td class="muted">09:41</td><td><button class="btn sm">Unblock</button></td></tr>
+              <tr><td><b>imm2</b><span class="sub">100.79.208.112 · root</span></td><td class="muted">ssh</td><td><select class="select"><option>change</option></select></td><td class="muted">Mickey</td><td><span class="chip g">active</span></td><td class="muted">07:00</td><td><button class="btn sm ghost">Test</button></td></tr>
+              <tr><td><b>cvp2</b><span class="sub">103.78.194.111 · root</span></td><td class="muted">ssh</td><td><select class="select"><option>change</option></select></td><td class="muted">Mickey</td><td><span class="chip g">active</span></td><td class="muted">09:12</td><td><button class="btn sm ghost">Test</button></td></tr>
+              <tr><td><b>wasabi</b><span class="sub">mcp.wasabisys.dev/s3</span></td><td class="muted">mcp</td><td><select class="select"><option>read-only</option></select></td><td class="muted">—</td><td><span class="chip g">signed in</span></td><td class="muted">08:31</td><td><button class="btn sm ghost">…</button></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note" style="margin-top:14px">One row per connection, whether it is the company's or one bot's. <b>Who</b> shows which bots use it; open a row to set each bot's own permission, install a key or see what it was approved on.</div>
+      </section>
+
+      <!-- ACTIVITY -->
+      <section id="activity">
+        <div class="filters">
+          <select class="select"><option>All bots</option><option>Mickey</option><option>Jimmy</option><option>Beiqing</option></select>
+          <select class="select"><option>Everything</option><option>Answers</option><option>Writes</option><option>Routines</option><option>Refusals</option></select>
+          <select class="select"><option>Today</option><option>7 days</option><option>30 days</option></select>
+          <div class="spacer"></div>
+          <span class="chip">$2.14 today</span>
+        </div>
+        <div class="card">
+          <div class="feed">
+            <div class="ev"><div class="time">11:49</div><div class="avatar" style="width:24px;height:24px">M</div><div><div class="who">Mickey → Office (group)</div><div class="what">“Nothing else running on my side.” · 2 tools · 12.0s · 1.9s to send</div></div><div class="cost">$0.011</div></div>
+            <div class="ev"><div class="time">11:27</div><div class="avatar" style="width:24px;height:24px">M</div><div><div class="who">Mickey → Office (group)</div><div class="what">Write refused: connections.remove(bedirect) — bot has no remove tool · audited</div></div><div class="cost">$0.004</div></div>
+            <div class="ev"><div class="time">10:29</div><div class="avatar" style="width:24px;height:24px">B</div><div><div class="who">Beiqing → Martin (1:1)</div><div class="what">Memory saved · preference · free, no card · 9.7s</div></div><div class="cost">$0.002</div></div>
+            <div class="ev"><div class="time">07:00</div><div class="avatar" style="width:24px;height:24px">M</div><div><div class="who">Routine · Fleet sweep</div><div class="what">13 hosts · 41 ssh reads · 1 warning · 4m 12s</div></div><div class="cost">$0.081</div></div>
+            <div class="ev"><div class="time">06:58</div><div class="avatar" style="width:24px;height:24px">M</div><div><div class="who">Routine · Mantis registrations</div><div class="what">2 lines failing · posted to IT</div></div><div class="cost">$0.006</div></div>
+          </div>
+        </div>
+        <div class="note" style="margin-top:14px">Each row expands: the prompt, every tool call with its arguments, the confirmation, the reply and the cost. Nothing is summarised away — the audit is the record.</div>
+      </section>
+
+    </div>
+  </div>
+</div>
+<script>
+  const titles = { today: ["Today", "Everything the bots did, and anything that needs a person"], bot: ["Mickey · IT Support", "Persona, tools, connections, routines and memory on one page"], connections: ["Connections", "Every system a bot can reach, and what each bot may do with it"], activity: ["Activity", "Every turn, tool call and refusal, in order"] };
+  const buttons = document.querySelectorAll(".switcher button");
+  const show = (name) => {
+    document.querySelectorAll(".screens > section").forEach((s) => s.classList.toggle("on", s.id === name));
+    buttons.forEach((b) => b.classList.toggle("on", b.dataset.s === name));
+    const [t, s] = titles[name]; document.getElementById("title").textContent = t; document.getElementById("subtitle").textContent = s;
+    window.scrollTo({ top: 0 });
+  };
+  buttons.forEach((b) => b.addEventListener("click", () => show(b.dataset.s)));
+  document.querySelectorAll('.rail .nav a[href^="#"]').forEach((a) => a.addEventListener("click", (e) => {
+    const id = a.getAttribute("href").slice(1);
+    if (titles[id]) { e.preventDefault(); show(id); }
+  }));
+</script>
+</body>
+</html>

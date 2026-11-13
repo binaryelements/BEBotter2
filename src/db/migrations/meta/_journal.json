@@ -239,6 +239,13 @@
       "when": 1794470006828,
       "tag": "0033_mail-actions",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794480000000,
+      "tag": "0034_web-search-on",
+      "breakpoints": true
     }
   ]
 }

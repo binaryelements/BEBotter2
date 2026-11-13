@@ -75,6 +75,7 @@ describe("bots screen", () => {
     expect(res.status).toBe(303);
     const d = await def("helper");
     expect(d.model).toBe("m1");
+    expect(d.webSearch).toBe(true); // web search and the browser are on for every new bot unless it is unticked
     const add = await post(`/admin/bots/${d.id}/servers`, "Ann", [
       ["name", "tickets"], ["transport", "http"], ["url", "https://mcp.example.test/"], ["headerName", "Authorization"], ["headerValue", "Bearer s3cret"], ["readOnlyTools", "list_a, list_b"],
     ]);
@@ -150,13 +151,22 @@ describe("bots screen", () => {
       await db.insert(definitionDepartments).values({ definitionId: pid, departmentId: sales }); // a stale link, by hand: the save refuses one
     });
 
-    it("has a Microsoft 365 tab and no Email or Connections tab", async () => {
+    it("can be given a connection and its own permission", async () => {
+      const cid = crypto.randomUUID();
+      await db.insert(connections).values({ id: cid, tenantId: T, name: "pa-ssh", kind: "ssh", target: "host.example.test", config: { port: 22, username: "ops" }, mode: "change", status: "active", secretCipher: "CIPHER", publicKey: "ssh-ed25519 AAAAPUB" });
+      expect((await post(`/admin/bots/${pid}/connections/${cid}/link`, "Ann", [["linked", "on"]])).status).toBe(303);
+      expect((await post(`/admin/bots/${pid}/connections/${cid}/permission`, "Ann", [["mode", "read"]])).status).toBe(303);
+      expect(await getConnectionGrant(db, pid, cid)).toBe("read");
+    });
+
+    it("has Microsoft 365 and Connections tabs, and no Email tab", async () => {
       const page = await (await get(`/admin/bots/${pid}`, "Ann")).text();
       expect(page).toContain("Acts as Mo in their own chat");
       expect(page).toContain(`href="/admin/bots/${pid}?tab=m365"`);
       expect(page).toContain(">Microsoft 365<");
       expect(page).not.toContain("?tab=email");
-      expect(page).not.toContain("?tab=connections");
+      // an assistant may now be given connections, so an admin can link them here like any other bot
+      expect(page).toContain(`href="/admin/bots/${pid}?tab=connections"`);
       const m365 = await (await get(`/admin/bots/${pid}?tab=m365`, "Ann")).text();
       for (const c of GRAPH_CAPABILITIES) expect(m365).toContain(`name="graph" value="${c}" checked`);
     });
@@ -203,13 +213,13 @@ describe("bots screen", () => {
       expect([after.persona, after.computer]).toEqual(["p", false]);
     });
 
-    it("refuses servers and connection links", async () => {
-      expect((await post(`/admin/bots/${pid}/servers`, "Ann", [["name", "x"], ["transport", "stdio"], ["command", "c"]])).status).toBe(400);
-      expect((await getDefinition(db, T, pid))!.mcpServers).toEqual([]);
+    it("takes an MCP server and a connection link now that it may have connections", async () => {
+      await post(`/admin/bots/${pid}/servers`, "Ann", [["name", "x"], ["transport", "stdio"], ["command", "c"]]);
+      expect((await getDefinition(db, T, pid))!.mcpServers.map((s) => s.name)).toEqual(["x"]);
       const cid = crypto.randomUUID();
       await db.insert(connections).values({ id: cid, tenantId: T, name: "personal-link", kind: "ssh", target: "host.example.test", config: { port: 22, username: "ops" }, mode: "read-only", status: "active" });
-      expect((await post(`/admin/bots/${pid}/connections/${cid}/link`, "Ann", [["linked", "on"]])).status).toBe(400);
-      expect(await listConnectionsFor(db, T, pid)).toEqual([]);
+      expect((await post(`/admin/bots/${pid}/connections/${cid}/link`, "Ann", [["linked", "on"]])).status).toBe(303);
+      expect((await listConnectionsFor(db, T, pid)).map((c) => c.name)).toContain("personal-link");
     });
 
     it("the assistants page and the overview show it once, with its owner", async () => {

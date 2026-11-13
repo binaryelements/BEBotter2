@@ -186,8 +186,9 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       ...(containerId ? { computer: computerMcpServer(deps.docker, containerId) } : {}),
       ...(definition.webSearch ? { browser: browserMcpServer() } : {}),
       // Personal reads shared notes but stores nothing and reaches no company systems: what it saw in one person's mail must not reach others
-      knowledge: knowledgeMcpServer(deps, ctx, definition.identity === "person"),
-      ...(definition.identity === "person" ? {} : { connections: connectionsMcpServer(deps, ctx) }),
+      // a personal assistant's own notes are stored against its definition, so they stay private to its owner
+      knowledge: knowledgeMcpServer(deps, ctx, false),
+      connections: connectionsMcpServer(deps, ctx),
       routine: routineMcpServer(deps, ctx),
       attachments: attachmentsMcpServer(deps, ctx),
       learnings: learningsMcpServer(deps, ctx, personal),
@@ -198,7 +199,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       ...(definition.identity === "person" && definition.graph.length ? { m365: m365McpServer(deps, ctx, definition.graph) } : {}),
       ...(mail ? { mail: { type: "http" as const, url: `${deps.agentmailUrl}/mcp`, headers: { Authorization: `Bearer ${mail.key}` } } } : {}),
       ...deps.builtinServers?.({ confirmedBy: ctx.confirmedBy }),
-      ...(definition.identity === "person" ? {} : conn.servers),
+      ...conn.servers,
     },
   };
   // anything the options capture at start is in the fingerprint
