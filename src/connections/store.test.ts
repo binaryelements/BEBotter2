@@ -369,4 +369,11 @@ describe("connections store", () => {
     expect(await connectionGrantForTool(db, "t1", defId, "mcp__conn-fleet__list", {})).toMatchObject({ mode: "confirm", change: false });
     expect(await connectionGrantForTool(db, "t1", defId, "mcp__conn-fleet__run_script", {})).toMatchObject({ mode: "confirm", change: true });
   });
+
+  it("a bot's own connection is private to it and cannot be given to another", async () => {
+    const mine = await requestConnection(deps, "t1", { kind: "http", name: "private-api", target: "https://api.example.test", mode: "read-only", config: {}, definitionId: defId, personId });
+    expect(mine.connection.ownerDefinitionId).toBe(defId);
+    expect((await listConnectionsFor(db, "t1", defId)).map((c) => c.name)).toContain("private-api");
+    expect((await listConnectionsFor(db, "t1", otherDefId)).map((c) => c.name)).not.toContain("private-api");
+  });
 });

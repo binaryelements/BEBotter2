@@ -157,7 +157,10 @@ const toTokens = (json: Record<string, unknown>, previous?: Tokens): Tokens => {
 };
 const tokensOf = (deps: Pick<Deps, "secretsKey">, c: Connection): Tokens | undefined => (c.secretCipher ? (JSON.parse(decrypt(deps.secretsKey, c.secretCipher)) as Tokens) : undefined);
 const saveTokens = (deps: Deps, c: Connection, t: Tokens) =>
-  deps.db.update(connections).set({ secretCipher: encrypt(deps.secretsKey, JSON.stringify(t)), status: "active", updatedAt: new Date() }).where(and(eq(connections.id, c.id), eq(connections.tenantId, c.tenantId)));
+  deps.db
+    .update(connections)
+    .set({ secretCipher: encrypt(deps.secretsKey, JSON.stringify(t)), status: "active", lastError: null, updatedAt: new Date() })
+    .where(and(eq(connections.id, c.id), eq(connections.tenantId, c.tenantId)));
 
 /** Swaps the code for tokens, stores them encrypted, and the connection goes active. */
 export async function finishSignIn(deps: Deps, tenantId: string, state: string, code: string): Promise<Connection> {
@@ -186,9 +189,13 @@ export async function accessToken(deps: Deps, c: Connection): Promise<string> {
   const issued = t!.issuedAt ?? c.updatedAt.getTime();
   const expiresAt = t!.expiresAt || issued + assumed;
   if (!expiresAt || expiresAt - Date.now() > 60_000) return t!.access;
-  const back = () => deps.db.update(connections).set({ status: "pending", updatedAt: new Date() }).where(eq(connections.id, c.id));
+  const back = (why: string) =>
+    deps.db
+      .update(connections)
+      .set({ status: "pending", lastError: why.slice(0, 300), updatedAt: new Date() })
+      .where(eq(connections.id, c.id));
   if (!t!.refresh) {
-    await back();
+    await back("the sign-in expired and the server gave no refresh token");
     fail(`${c.name}'s sign-in has expired; sign in again`);
   }
   try {
@@ -196,7 +203,7 @@ export async function accessToken(deps: Deps, c: Connection): Promise<string> {
     await saveTokens(deps, c, next);
     return next.access;
   } catch (e) {
-    await back();
+    await back(e instanceof OAuthError ? e.message : "the refresh failed");
     throw e;
   }
 }

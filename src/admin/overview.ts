@@ -4,7 +4,7 @@ import type { Router } from "express";
 import { allowedDepartments, listDefinitions } from "../bots/definitions.js";
 import { listActions } from "../audit/audit.js";
 import type { Db } from "../db/client.js";
-import { auditEvents, chatAssignments, departmentMembers, mailboxes, people } from "../db/schema.js";
+import { auditEvents, chatAssignments, departmentMembers, mailboxes, people, resourceSamples } from "../db/schema.js";
 import type { BotDefinition } from "../db/schema.js";
 import type { Actor } from "./access.js";
 import { isAdmin } from "./access.js";
@@ -123,6 +123,27 @@ export function overviewRoutes(db: Db, balance?: BalanceReader): Router {
       const bot = new Map(defs.map((d) => [d.id, d]));
       const stamp = whenIn(timezone, now);
       const wallet = balance ? await balance().catch(() => undefined) : undefined;
+      // host load: a sample a minute for a day, so a growing fleet shows as a trend rather than a number
+      const samples = await db
+        .select({ cpu: resourceSamples.cpuPct, used: resourceSamples.memUsed, total: resourceSamples.memTotal })
+        .from(resourceSamples)
+        .where(gte(resourceSamples.at, new Date(now.getTime() - 24 * 3600_000)))
+        .orderBy(resourceSamples.at);
+      const hostNow = samples[samples.length - 1];
+      const pct = (v: number) => Math.max(0, Math.min(100, v));
+      const spark = (values: number[]) => {
+        if (values.length < 2) return "";
+        const w = 100, h = 26;
+        const pts = values.map((v, i) => `${((i / (values.length - 1)) * w).toFixed(1)},${(h - (pct(v) / 100) * h).toFixed(1)}`);
+        return `<svg class="be-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="trend"><polygon class="fill" points="0,${h} ${pts.join(" ")} ${w},${h}"/><polyline points="${pts.join(" ")}"/></svg>`;
+      };
+      const gb = (kb: number) => (kb / 1048576).toFixed(1);
+      const loadPanel = samples.length
+        ? html`<div class="be-spark-row">
+<div class="be-spark-box"><div class="be-eyebrow">CPU · host</div><div class="v">${pct(hostNow!.cpu).toFixed(0)}<span class="u">%</span></div><div class="s">peak ${Math.max(...samples.map((x) => x.cpu)).toFixed(0)}% · ${samples.length} samples</div>${raw(spark(samples.map((x) => x.cpu)))}</div>
+<div class="be-spark-box"><div class="be-eyebrow">Memory · host</div><div class="v">${gb(hostNow!.used)}<span class="u">GB</span></div><div class="s">of ${gb(hostNow!.total)} GB · ${pct((hostNow!.used / Math.max(1, hostNow!.total)) * 100).toFixed(0)}% used</div>${raw(spark(samples.map((x) => (x.used / Math.max(1, x.total)) * 100)))}</div>
+</div>`
+        : html`<div class="be-empty">Collecting host load — a sample lands every minute, the trend after a few.</div>`;
       const tile = (label: string, value: string, sub: string, cls = "") => html`<div class="be-tile ${cls}"><div class="be-eyebrow">${label}</div><div class="v">${value}</div><div class="s">${sub}</div></div>`;
       // replies per local day for the last seven days, oldest first
       const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -150,6 +171,7 @@ export function overviewRoutes(db: Db, balance?: BalanceReader): Router {
       const body = html`<header class="be-pagehead"><div class="pt"><h1>Dashboard</h1><p class="meta">${stamp(now)} · ${timezone.split("/").pop()!.replace(/_/g, " ")} · ${defs.length} bots · ${new Set(chatRows.map((c) => c.id)).size} chats</p></div><div class="act">${switcher}</div></header>
 ${waiting.map((r) => html`<div class="be-notice warn"><span><b>${name.get(r.definitionId) ?? ""}</b> is waiting for approval: ${inputWords(r.summary)}</span><span class="n">${r.personId ? `asked by ${personName.get(r.personId) ?? ""} · ` : ""}${stamp(r.startedAt)}</span></div>`)}
 <div class="be-tiles" style="margin-top:var(--space-12)">${tile("replies", String(messages.length), change)}${tile("actions", String(tools.length), `${tools.filter((r) => r.authority?.type === "confirmation").length} confirmed · ${tools.filter((r) => r.status === "denied").length} declined`)}${tile("people served", String(served.size), `of ${people_.length}`)}${tile("median reply", typical === undefined ? "none" : `${typical.toFixed(1)} s`, slowest === undefined ? "" : `slowest ${slowest.toFixed(0)} s`)}${tile("spend", `$${spend(rows).toFixed(2)}`, `$${spend(monthRows).toFixed(2)} this month so far`)}${tile("failed", String(failed.length), failedBy || "none", failed.length ? "bad" : "")}${tile("waiting approvals", String(waiting.length), waiting.length ? "in the chats now" : "none", waiting.length ? "warn" : "")}${wallet ? tile("deepseek balance", `${wallet.currency === "USD" ? "$" : ""}${wallet.total.toFixed(2)}`, wallet.available ? `checked ${stamp(wallet.checkedAt)}` : (wallet.error ?? "unavailable"), !wallet.available || wallet.total < 5 ? "warn" : "") : ""}</div>
+<section class="be-section"><h3>Host load <span class="be-mono muted">last 24 hours</span></h3>${loadPanel}</section>
 <div class="dash-cols">
 <section class="be-section"><h3>Replies per day</h3><div class="be-bars" role="img" aria-label="Replies per day: ${perDay.map((p) => `${p.label} ${p.n}`).join(", ")}">${perDay.map((p) => html`<div class="bar${p.label === "today" ? " today" : ""}" style="height:${Math.round((p.n / peak) * 100)}%" title="${p.label}: ${p.n}"></div>`)}</div><div class="be-bars-key">${perDay.map((p) => html`<span>${p.label}</span>`)}</div></section>
 <section class="be-section"><h3>By bot, ${PERIOD_WORDS[period]}</h3>${bots.length ? html`<table class="be-table lean"><tbody>${bots.map((b) => html`<tr><td>${b.label}</td><td class="w"><div class="be-meter"><div style="width:${Math.round((b.replies / mostReplies) * 100)}%"></div></div></td><td class="n">${b.replies} ${b.replies === 1 ? "reply" : "replies"} · $${b.cost.toFixed(2)}</td></tr>`)}</tbody></table>` : html`<div class="be-empty">Nothing yet.</div>`}

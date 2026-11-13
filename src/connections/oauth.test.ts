@@ -84,6 +84,22 @@ describe("mcp OAuth sign-in", () => {
     expect((await finishSignIn(deps, "t1", url.searchParams.get("state")!, "code-1")).status).toBe("active");
   });
 
+  it("says why it went back to pending, and clears that once it signs in again", async () => {
+    const oauth = await discover(server.fetchFn, MCP, REDIRECT);
+    const c = await createConnection({ db, secretsKey: key, ssh: fakeSsh() }, "t1", { kind: "mcp", name: "wasabi", target: MCP, mode: "read-only", config: { oauth, readOnlyTools: [] } as never, personId, definitionIds: [defId] });
+    const url = new URL(beginSignIn(c, REDIRECT));
+    fakeServer.challenge = url.searchParams.get("code_challenge")!;
+    await finishSignIn(deps, "t1", url.searchParams.get("state")!, "code-1");
+    expect(await row().then((r) => r.lastError)).toBeNull();
+
+    server.refuse();
+    await db.update(connections).set({ secretCipher: encrypt(key, JSON.stringify({ access: "old", refresh: "refresh-1", expiresAt: Date.now() - 1 })) }).where(eq(connections.id, c.id));
+    await expect(accessToken(deps, await row())).rejects.toThrow(/refused/);
+    const failed = await row();
+    expect(failed.status).toBe("pending");
+    expect(failed.lastError).toMatch(/refused|invalid_grant/);
+  });
+
   it("keeps a lifetime the server sent as text, and refreshes a token that carried none once it is old", async () => {
     server.stringExpiry();
     const oauth = await discover(server.fetchFn, MCP, REDIRECT);

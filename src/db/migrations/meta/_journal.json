@@ -246,6 +246,20 @@
       "when": 1794480000000,
       "tag": "0034_web-search-on",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794490000000,
+      "tag": "0035_private-connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794493600000,
+      "tag": "0036_resource-samples",
+      "breakpoints": true
     }
   ]
 }

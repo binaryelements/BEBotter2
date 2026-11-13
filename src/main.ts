@@ -32,6 +32,7 @@ import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startReflectionScheduler } from "./reflections/scheduler.js";
 import { runRoutine, startScheduler } from "./routines/scheduler.js";
+import { startMetrics } from "./system/metrics.js";
 import { createTeamsApp, graphToken } from "./teams/app.js";
 import { personToken, sendToChat } from "./teams/proactive.js";
 import type { AdaptiveCard } from "./teams/cards.js";
@@ -122,6 +123,8 @@ startServer(app, {
 
 if (mail) void ensureAllMailboxes(mail);
 startAuditPruning(db, 24 * 60 * 60 * 1000);
+startMetrics(db);
+startMetrics(db);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler(schedulerDeps);
 startReflectionScheduler({ db, engine, send: (chatId, text) => sendToChat(proactive, chatId, text) });

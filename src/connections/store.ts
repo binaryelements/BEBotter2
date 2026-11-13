@@ -118,9 +118,9 @@ export const listConnections = (db: Db, tenantId: string): Promise<Connection[]>
 export async function listConnectionsFor(db: Db, tenantId: string, definitionId: string): Promise<Connection[]> {
   const rows = await db
     .select({ c: connections })
-    .from(definitionConnections)
-    .innerJoin(connections, eq(definitionConnections.connectionId, connections.id))
-    .where(and(eq(connections.tenantId, tenantId), eq(definitionConnections.definitionId, definitionId)))
+    .from(connections)
+    .leftJoin(definitionConnections, and(eq(definitionConnections.connectionId, connections.id), eq(definitionConnections.definitionId, definitionId)))
+    .where(and(eq(connections.tenantId, tenantId), or(eq(definitionConnections.definitionId, definitionId), eq(connections.ownerDefinitionId, definitionId))))
     .orderBy(connections.name);
   return rows.map((r) => r.c);
 }
@@ -178,7 +178,7 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   const values = {
     kind: input.kind, target: input.target, config, mode: input.mode, status: "pending", description: input.description?.trim() || null,
     secretCipher: key ? encrypt(deps.secretsKey, key.privateKey) : input.clientSecret ? clientSecretCipher(deps.secretsKey, input.clientSecret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
-    requestedByPersonId: input.personId, approvedByPersonId: null, updatedAt: new Date(),
+    requestedByPersonId: input.personId, approvedByPersonId: null, ownerDefinitionId: input.definitionId, updatedAt: new Date(),
   };
   // a revoked connection keeps its row and starts over; a concurrent request for a new name loses the race and gets the winner
   const [row] = existing
@@ -191,7 +191,7 @@ export async function requestConnection(deps: Omit<ConnectionDeps, "fetchFn">, t
   return { connection: row, ...(row.publicKey ? { publicKey: row.publicKey } : {}) };
 }
 
-export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; definitionIds: string[] };
+export type AdminConnectionInput = Omit<ConnectionRequest, "definitionId" | "needsSecret"> & { secret?: string; definitionIds: string[]; /** Set to make it that bot's own: nobody else may be linked to it. */ privateToDefinitionId?: string };
 
 /** An admin sets a connection up with its secret typed in, so it is approved at once; ssh still needs its key installed and a verify, and an OAuth mcp server a sign-in. */
 export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, tenantId: string, input: AdminConnectionInput): Promise<Connection> {
@@ -206,7 +206,7 @@ export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, te
   const values = {
     kind: input.kind, target: input.target, config, mode: input.mode, status: key || signIn ? "pending" : "active", description: input.description?.trim() || null,
     secretCipher: signIn ? (input.clientSecret ? clientSecretCipher(deps.secretsKey, input.clientSecret) : null) : secret ? encrypt(deps.secretsKey, secret) : null, publicKey: key?.publicKey ?? null, hostKey: null,
-    requestedByPersonId: input.personId, approvedByPersonId: input.personId, updatedAt: new Date(),
+    requestedByPersonId: input.personId, approvedByPersonId: input.personId, ownerDefinitionId: input.privateToDefinitionId ?? null, updatedAt: new Date(),
   };
   const [row] = existing
     ? await db.update(connections).set(values).where(and(byId(tenantId, existing.id), eq(connections.status, "revoked"))).returning()

@@ -1,4 +1,4 @@
-import { boolean, customType, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { boolean, customType, doublePrecision, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { EngineMessage } from "../engine/engine.js";
 
@@ -361,6 +361,10 @@ export const connections = pgTable(
     hostKey: text("host_key"),
     requestedByPersonId: text("requested_by_person_id").references(() => people.id),
     approvedByPersonId: text("approved_by_person_id").references(() => people.id),
+    /** A bot's own connection: only that bot may use it, and it is never linkable to another. Null is the company's. */
+    ownerDefinitionId: text("owner_definition_id").references(() => botDefinitions.id, { onDelete: "cascade" }),
+    /** Why the connection last stopped working (sign-in refused, host key changed), shown to an admin. */
+    lastError: text("last_error"),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -417,6 +421,19 @@ export const knowledgeVersions = pgTable(
     createdAt: createdAt(),
   },
   (t) => [unique().on(t.tenantId, t.path, t.version)],
+);
+
+/** One host sample a minute: CPU busy % and memory in kB, for the dashboard's trend. */
+export const resourceSamples = pgTable(
+  "resource_samples",
+  {
+    id: text("id").primaryKey(),
+    at: timestamp("at", { withTimezone: true }).notNull(),
+    cpuPct: doublePrecision("cpu_pct").notNull(),
+    memUsed: integer("mem_used").notNull(),
+    memTotal: integer("mem_total").notNull(),
+  },
+  (t) => [index("resource_samples_at_idx").on(t.at)],
 );
 
 export const routines = pgTable("routines", {
