@@ -40,11 +40,29 @@ export function assistantMcpServer(deps: { db: Db }, ctx: AssistantCtx): McpServ
           const [sender] = await db.select().from(botDefinitions).where(and(eq(botDefinitions.id, ctx.definitionId), eq(botDefinitions.tenantId, ctx.tenantId)));
           if (!sender || sender.identity !== "person" || sender.ownerPersonId !== personId) return no("Only a personal assistant can ask another assistant.");
           const want = to.trim().toLowerCase();
-          const [recipient] = await db
+          const [byPerson] = await db
             .select()
             .from(people)
             .where(and(eq(people.tenantId, ctx.tenantId), or(sql`lower(${people.name}) = ${want}`, sql`lower(${people.email}) = ${want}`)));
-          if (!recipient) return no(`No person called "${to}".`);
+          let recipient = byPerson;
+          // an assistant's own name: "Jasmine" is Pat's assistant, so asking Jasmine is asking Pat
+          if (!recipient) {
+            const [byAssistant] = await db
+              .select({ owner: people })
+              .from(botDefinitions)
+              .innerJoin(people, eq(people.id, botDefinitions.ownerPersonId))
+              .where(and(eq(botDefinitions.tenantId, ctx.tenantId), eq(botDefinitions.identity, "person"), sql`lower(${botDefinitions.displayName}) = ${want}`));
+            recipient = byAssistant?.owner;
+          }
+          // "Pat" for Patricia: only when exactly one person starts that way
+          if (!recipient) {
+            const named = await db
+              .select()
+              .from(people)
+              .where(and(eq(people.tenantId, ctx.tenantId), sql`lower(split_part(${people.name}, ' ', 1)) = ${want}`));
+            if (named.length === 1) recipient = named[0];
+          }
+          if (!recipient) return no(`No person or assistant called "${to}". Use the person's full name or email, or the name of their assistant.`);
           if (recipient.id === personId) return no("That is your own owner; just do it yourself.");
           const [target] = await db
             .select()

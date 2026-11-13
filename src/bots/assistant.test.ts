@@ -63,6 +63,28 @@ describe("assistant requests", () => {
     expect(todos.map((t) => t.title)).toContain("Send the October report to Priya by Friday.");
   });
 
+  it("finds a person by their assistant's name, or by a first name that only one person has", async () => {
+    // Jasmine is Bob's assistant; asking Jasmine is asking Bob
+    const { botDefinitions } = await import("../db/schema.js");
+    await db.update(botDefinitions).set({ displayName: "Jasmine" }).where(eq(botDefinitions.id, bobPa));
+    const a = server(annPa, ann);
+    const byName = await a.ask_assistant.handler({ to: "Jasmine", request: "Book the review room for Friday." });
+    expect(byName.isError).toBeUndefined();
+    expect(byName.content[0].text).toContain("Bob's assistant");
+
+    // "Pat" for Pat Smith, when nobody else starts with it
+    const pat = await upsertPerson(db, { tenantId: "t1", aadObjectId: "u9", name: "Pat Smith" });
+    await setPersonalBot(db, "t1", pat.id, true);
+    await ensurePersonalAssistant(db, "t1", pat.id, "m");
+    const byFirst = await a.ask_assistant.handler({ to: "Pat", request: "Check the D1 invoices." });
+    expect(byFirst.isError).toBeUndefined();
+    expect(byFirst.content[0].text).toContain("Pat Smith's assistant");
+
+    const unknown = await a.ask_assistant.handler({ to: "Nobody", request: "hi" });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toContain("No person or assistant called");
+  });
+
   it("refuses a person with no assistant, and a service bot", async () => {
     await upsertPerson(db, { tenantId: "t1", aadObjectId: "u3", name: "Carol" });
     const a = server(annPa, ann);
