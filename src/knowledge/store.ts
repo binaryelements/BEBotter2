@@ -53,6 +53,18 @@ export async function readNote(db: Db, key: Buffer, tenantId: string, path: stri
   return row && { path, version: row.version, body: decrypt(key, row.bodyCipher), definitionId: row.definitionId };
 }
 
+/** The runbooks a bot can use, one line each (path: its first line), for the end of its instructions; "" when it has none. */
+export async function runbookIndex(db: Db, key: Buffer, tenantId: string, definitionId: string): Promise<string> {
+  // shortcut: the first 20 by path; rank by use when a bot has more than that.
+  const rows = (await latestRows(db, tenantId, definitionId)).filter((r) => r.path.startsWith("troubleshooting/")).slice(0, 20);
+  if (!rows.length) return "";
+  const lines = rows.map((r) => {
+    const first = decrypt(key, r.bodyCipher).split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) ?? "";
+    return `- ${r.path}: ${first.slice(0, 120)}`;
+  });
+  return `\n\nYour runbooks. Before you start a task one of these covers, read it with knowledge read and follow it:\n${lines.join("\n")}`;
+}
+
 export async function searchNotes(db: Db, key: Buffer, tenantId: string, query: string, limit = 20, definitionId?: string): Promise<{ path: string; snippet: string }[]> {
   const q = query.toLowerCase();
   const hits: { path: string; snippet: string }[] = [];
