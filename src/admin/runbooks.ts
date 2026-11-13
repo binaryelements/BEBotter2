@@ -221,13 +221,13 @@ export function runbookRoutes(deps: RunbookDeps): Router {
         layout({
           title: "Runbooks",
           body: html`${pageHead("Runbooks", isAdmin(actor) && bots.length ? html`<a class="be-btn primary" href="#upload">Upload a runbook</a>` : undefined)}
-<div class="be-notice"><div class="grow"><b>How runbooks work</b><div class="meta">Upload a markdown runbook and give it to one bot: it becomes that bot's playbook, and only that bot searches and reads it. Have the model read it back, then test it. Start it with one line saying when to use it: the bot sees that line in its list of runbooks on every message and reads the runbook when a task matches.</div></div></div>
+<div class="be-notice"><div class="grow"><b>How runbooks work</b><div class="meta">Upload a markdown runbook and give it to one bot: it becomes that bot's playbook, and only that bot searches and reads it. Have the model read it back, then test it. Give it a one-line description of when to use it: the bot sees that line in its list of runbooks on every message and reads the runbook when a task matches.</div></div></div>
 <section class="be-card">
 <div class="card-head"><h2>Runbooks</h2><span class="be-chip">${notes.length}</span></div>
 ${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Runbook</th><th>Bot</th><th>Version</th><th>Updated</th><th></th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty"><b>No runbooks yet</b>Upload a markdown runbook to give a bot a procedure to follow.${isAdmin(actor) && bots.length ? html`<div style="margin-top:14px"><a class="be-btn primary" href="#upload">Upload a runbook</a></div>` : ""}</div>`}
 </section>
 ${isAdmin(actor) && bots.length
-  ? html`<section class="be-card" id="upload"><div class="card-head"><h2>Upload a runbook</h2></div><form method="post" action="/admin/runbooks/upload"><input type="hidden" name="csrf" value="${csrf}"><div class="form-grid"><div class="field"><label for="rb-bot">Belongs to</label><select class="be-select" id="rb-bot" name="bot" required>${botOptions(bots)}</select><div class="hint">The one bot that uses this runbook.</div></div><div class="field"><label for="rb-file">Markdown file</label><input class="be-input" type="file" id="rb-file" name="file" accept=".md,.markdown,.txt,text/markdown,text/plain"><div class="hint">Read in the browser; nothing is uploaded until you save.</div></div><div class="field"><label for="rb-path">Path</label><input class="be-input" id="rb-path" name="path" placeholder="troubleshooting/be-voice.md"><div class="hint">Defaults to troubleshooting/&lt;file name&gt;.md.</div></div><div class="field wide"><label for="rb-body">Or paste the markdown</label><textarea class="be-textarea" id="rb-body" name="body" rows="14" required maxlength="${MAX_BODY}" placeholder="# BE Voice&#10;&#10;## Symptoms&#10;..."></textarea></div></div><div class="savebar"><span class="muted small">Saved as that bot's note and opened for review.</span><div class="spacer"></div><button class="be-btn primary">Upload runbook</button></div></form></section>${raw(FILE_SCRIPT)}`
+  ? html`<section class="be-card" id="upload"><div class="card-head"><h2>Upload a runbook</h2></div><form method="post" action="/admin/runbooks/upload"><input type="hidden" name="csrf" value="${csrf}"><div class="form-grid"><div class="field"><label for="rb-bot">Belongs to</label><select class="be-select" id="rb-bot" name="bot" required>${botOptions(bots)}</select><div class="hint">The one bot that uses this runbook.</div></div><div class="field"><label for="rb-file">Markdown file</label><input class="be-input" type="file" id="rb-file" name="file" accept=".md,.markdown,.txt,text/markdown,text/plain"><div class="hint">Read in the browser; nothing is uploaded until you save.</div></div><div class="field"><label for="rb-path">Path</label><input class="be-input" id="rb-path" name="path" placeholder="troubleshooting/be-voice.md"><div class="hint">Defaults to troubleshooting/&lt;file name&gt;.md.</div></div><div class="field wide"><label for="rb-desc">Description</label><input class="be-input" id="rb-desc" name="description" required maxlength="200" placeholder="Use when a customer asks for a hardware quote"><div class="hint">One line on when the bot should use this runbook. The bot sees it on every message and reads the runbook when a task matches.</div></div><div class="field wide"><label for="rb-body">Or paste the markdown</label><textarea class="be-textarea" id="rb-body" name="body" rows="14" required maxlength="${MAX_BODY}" placeholder="# BE Voice&#10;&#10;## Symptoms&#10;..."></textarea></div></div><div class="savebar"><span class="muted small">Saved as that bot's note and opened for review.</span><div class="spacer"></div><button class="be-btn primary">Upload runbook</button></div></form></section>${raw(FILE_SCRIPT)}`
   : ""}`,
           actor,
           csrf,
@@ -249,8 +249,11 @@ ${isAdmin(actor) && bots.length
         .from(botDefinitions)
         .where(and(eq(botDefinitions.id, str(bodyOf(req).bot)), eq(botDefinitions.tenantId, actor.tenantId)));
       if (!bot) throw new KnowledgeError("Choose the bot this runbook belongs to.");
+      const description = str(bodyOf(req).description).replace(/\s+/g, " ").trim();
+      if (!description) throw new KnowledgeError("Give the runbook a short description.");
+      if (description.length > 200) throw new KnowledgeError("The description is too long: keep it to one line.");
       const path = runbookPath(str(bodyOf(req).path), str(bodyOf(req).file));
-      await writeNote(db, key, actor.tenantId, path, body, { personId: actor.personId, definitionId: bot.id });
+      await writeNote(db, key, actor.tenantId, path, body, { personId: actor.personId, definitionId: bot.id }, description);
       res.redirect(303, `/admin/runbooks/review?path=${encodeURIComponent(path)}`);
     }),
   );
@@ -268,7 +271,7 @@ ${isAdmin(actor) && bots.length
       res.type("html").send(
         layout({
           title: `Review ${path}`,
-          body: html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/runbooks">runbooks</a> / <span aria-current="page">${path}</span></nav><h1>${path}</h1><p class="meta">version ${note.version} · ${owner ? `for ${owner}` : note.definitionId ? "for a deleted bot" : "shared"}</p></div><div class="act"><a class="be-btn" href="/admin/knowledge/note?path=${encodeURIComponent(path)}">Edit runbook</a></div></header>
+          body: html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/runbooks">runbooks</a> / <span aria-current="page">${path}</span></nav><h1>${path}</h1><p class="meta">version ${note.version} · ${owner ? `for ${owner}` : note.definitionId ? "for a deleted bot" : "shared"}</p><p>${note.description ?? html`<span class="be-muted">No description: the bot sees the runbook's first line instead.</span>`}</p></div><div class="act"><a class="be-btn" href="/admin/knowledge/note?path=${encodeURIComponent(path)}">Edit runbook</a></div></header>
 <section class="be-card"><h2>What the model reads</h2><pre>${note.body}</pre></section>
 ${isAdmin(actor)
   ? deps.engine

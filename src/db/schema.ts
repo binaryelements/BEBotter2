@@ -412,6 +412,8 @@ export const knowledgeVersions = pgTable(
     path: text("path").notNull(),
     version: integer("version").notNull(),
     bodyCipher: text("body_cipher").notNull(),
+    /** A runbook's one-line "when to use it", shown to its bot on every message; carried to the next version unless replaced. */
+    descriptionCipher: text("description_cipher"),
     deleted: boolean("deleted").notNull().default(false),
     authorPersonId: text("author_person_id").references(() => people.id),
     authorDefinitionId: text("author_definition_id").references(() => botDefinitions.id),
