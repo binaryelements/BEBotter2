@@ -48,18 +48,19 @@ export async function listNotes(db: Db, _key: Buffer, tenantId: string, definiti
   return (await latestRows(db, tenantId, definitionId)).map((r) => ({ path: r.path, version: r.version, updatedAt: r.createdAt, definitionId: r.definitionId }));
 }
 
-export async function readNote(db: Db, key: Buffer, tenantId: string, path: string, definitionId?: string): Promise<{ path: string; version: number; body: string; definitionId: string | null } | undefined> {
+export async function readNote(db: Db, key: Buffer, tenantId: string, path: string, definitionId?: string): Promise<{ path: string; version: number; body: string; definitionId: string | null; description?: string } | undefined> {
   const row = await latestRow(db, tenantId, path, definitionId);
-  return row && { path, version: row.version, body: decrypt(key, row.bodyCipher), definitionId: row.definitionId };
+  return row && { path, version: row.version, body: decrypt(key, row.bodyCipher), definitionId: row.definitionId, description: row.descriptionCipher ? decrypt(key, row.descriptionCipher) : undefined };
 }
 
-/** The runbooks a bot can use, one line each (path: its first line), for the end of its instructions; "" when it has none. */
+/** The runbooks a bot can use, one line each (path: its description or first line), for the end of its instructions; "" when it has none. */
 export async function runbookIndex(db: Db, key: Buffer, tenantId: string, definitionId: string): Promise<string> {
   // shortcut: the first 20 by path; rank by use when a bot has more than that.
   const rows = (await latestRows(db, tenantId, definitionId)).filter((r) => r.path.startsWith("troubleshooting/")).slice(0, 20);
   if (!rows.length) return "";
   const lines = rows.map((r) => {
-    const first = decrypt(key, r.bodyCipher).split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) ?? "";
+    // the description written for it, else the runbook's own first line
+    const first = (r.descriptionCipher ? decrypt(key, r.descriptionCipher) : "") || (decrypt(key, r.bodyCipher).split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) ?? "");
     return `- ${r.path}: ${first.slice(0, 120)}`;
   });
   return `\n\nYour runbooks. Before you start a task one of these covers, read it with knowledge read and follow it:\n${lines.join("\n")}`;
@@ -84,14 +85,18 @@ export async function searchNotes(db: Db, key: Buffer, tenantId: string, query: 
 const isUniqueViolation = (e: unknown): boolean =>
   typeof e === "object" && e !== null && ((e as { code?: string }).code === "23505" || isUniqueViolation((e as { cause?: unknown }).cause));
 
-async function append(db: Db, key: Buffer, tenantId: string, path: string, body: string, deleted: boolean, author: Author): Promise<number> {
+async function append(db: Db, key: Buffer, tenantId: string, path: string, body: string, deleted: boolean, author: Author, description?: string): Promise<number> {
   const bodyCipher = encrypt(key, body);
+  // an edit that says nothing about the description keeps the one the note had
+  const descriptionCipher = description !== undefined
+    ? (description.trim() ? encrypt(key, description.trim()) : null)
+    : ((await db.select({ d: knowledgeVersions.descriptionCipher }).from(knowledgeVersions).where(scope(tenantId, path)).orderBy(desc(knowledgeVersions.version)).limit(1))[0]?.d ?? null);
   for (let attempt = 0; ; attempt++) {
     const [{ v }] = await db.select({ v: max(knowledgeVersions.version) }).from(knowledgeVersions).where(scope(tenantId, path));
     const version = (v ?? 0) + 1;
     try {
       await db.insert(knowledgeVersions).values({
-        id: crypto.randomUUID(), tenantId, path, version, bodyCipher, deleted,
+        id: crypto.randomUUID(), tenantId, path, version, bodyCipher, descriptionCipher, deleted,
         authorPersonId: author.personId, authorDefinitionId: author.definitionId, definitionId: author.definitionId ?? null, chatId: author.chatId,
       });
       return version;
@@ -101,12 +106,12 @@ async function append(db: Db, key: Buffer, tenantId: string, path: string, body:
   }
 }
 
-export async function writeNote(db: Db, key: Buffer, tenantId: string, path: string, body: string, author: Author): Promise<number> {
+export async function writeNote(db: Db, key: Buffer, tenantId: string, path: string, body: string, author: Author, description?: string): Promise<number> {
   checkPath(path);
   if (body.length > MAX_BODY) throw new KnowledgeError("Note is too long");
-  const secret = findSecret(body);
+  const secret = findSecret(`${body}\n${description ?? ""}`);
   if (secret) throw new KnowledgeError(`Note not saved: it looks like it contains a ${secret}`);
-  return append(db, key, tenantId, path, body, false, author);
+  return append(db, key, tenantId, path, body, false, author, description);
 }
 
 export async function noteHistory(db: Db, key: Buffer, tenantId: string, path: string): Promise<(KnowledgeVersion & { body: string })[]> {

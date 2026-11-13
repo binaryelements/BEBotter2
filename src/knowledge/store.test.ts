@@ -42,6 +42,11 @@ describe("knowledge store", () => {
     expect(index).toContain("- troubleshooting/vpn.md: Use when the VPN drops.");
     expect(index).not.toContain("printer");
     expect(index).not.toContain("acme");
+    // a written description wins over the first line, and an edit that doesn't mention it keeps it
+    await writeNote(db, key, "t3", "troubleshooting/quote.md", "Steps...", { definitionId: a.id }, "Hardware quotes");
+    await writeNote(db, key, "t3", "troubleshooting/quote.md", "Steps, edited", { definitionId: a.id });
+    expect(await runbookIndex(db, key, "t3", a.id)).toContain("- troubleshooting/quote.md: Hardware quotes\n");
+    expect((await readNote(db, key, "t3", "troubleshooting/quote.md"))?.description).toBe("Hardware quotes");
   });
 
   it("a bot sees its own notes and the shared ones, never another bot's", async () => {
