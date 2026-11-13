@@ -47,3 +47,23 @@ export function cronMatches(cron: Cron, at: Date, timeZone: string): boolean {
   const w = dow.has(WEEKDAYS.indexOf(parts.weekday));
   return cron.domAny || cron.dowAny ? d && w : d || w;
 }
+
+/**
+ * The next time the expression matches after `from`, within `maxDays` (a week covers every daily and weekly shape;
+ * rarer ones answer undefined rather than scanning a year). Minute resolution, in the tenant's zone.
+ */
+export function nextRun(expr: string, timeZone: string, from: Date, maxDays = 8): Date | undefined {
+  let cron: Cron;
+  try {
+    cron = parseCron(expr);
+  } catch {
+    return undefined;
+  }
+  const start = Math.ceil((from.getTime() + 1) / 60_000) * 60_000;
+  const end = start + maxDays * 86_400_000;
+  for (let t = start; t <= end; t += 60_000) {
+    const d = new Date(t);
+    if (cronMatches(cron, d, timeZone)) return d;
+  }
+  return undefined;
+}

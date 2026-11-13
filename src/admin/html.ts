@@ -54,6 +54,7 @@ const groups = [
       { label: "Bots", path: "bots", head: false, icon: "bots" },
       { label: "Personal assistants", path: "assistants", head: false, icon: "assistant" },
       { label: "To-dos", path: "todos", head: false, icon: "todos" },
+      { label: "Routines", path: "routines", head: true, icon: "runbooks" },
       { label: "People", path: "people", head: true, icon: "people" },
       { label: "Connections", path: "connections", head: false, icon: "connections" },
       { label: "Runbooks", path: "runbooks", head: true, icon: "runbooks" },

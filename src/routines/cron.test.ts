@@ -25,3 +25,14 @@ describe("cron", () => {
     for (const bad of ["* * *", "60 * * * *", "a b c d e", "*/0 * * * *", "5-2 * * * *"]) expect(() => parseCron(bad)).toThrow();
   });
 });
+
+describe("nextRun", () => {
+  it("finds the next matching minute in the zone, and gives up on nonsense", async () => {
+    const { nextRun } = await import("./cron.js");
+    expect(nextRun("0 7 * * *", "UTC", new Date("2026-11-13T00:00:00Z"))?.toISOString()).toBe("2026-11-13T07:00:00.000Z");
+    expect(nextRun("*/15 * * * *", "UTC", new Date("2026-11-13T00:07:30Z"))?.toISOString()).toBe("2026-11-13T00:15:00.000Z");
+    // 8am in Melbourne: the next 7am there is 20:00 UTC the same day
+    expect(nextRun("0 7 * * *", "Australia/Melbourne", new Date("2026-11-12T21:00:00Z"))?.toISOString()).toBe("2026-11-13T20:00:00.000Z");
+    expect(nextRun("not a cron", "UTC", new Date("2026-11-13T00:00:00Z"))).toBeUndefined();
+  });
+});

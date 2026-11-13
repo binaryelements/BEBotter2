@@ -26,6 +26,7 @@ import type { OidcDeps } from "./oidc.js";
 import { overviewRoutes } from "./overview.js";
 import { peopleRoutes } from "./people.js";
 import { runbookRoutes } from "./runbooks.js";
+import { routineRoutes } from "./routines.js";
 import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
@@ -154,6 +155,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(activityRoutes(db));
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(runbookRoutes({ db, key: deps.config.secretsKey, defaultModel: deps.defaultModel, models: deps.models, engine: deps.engine }));
+  router.use(routineRoutes(db));
   router.use(settingsRoutes(db, deps.models, deps.balance, deps.mail?.admin));
 
   router.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
