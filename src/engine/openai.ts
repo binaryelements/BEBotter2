@@ -176,8 +176,11 @@ export class OpenAICompatEngine implements Engine {
           tool_calls: calls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } })),
         });
 
+        // an image returned by a tool cannot go between tool results: the provider rejects a tool_calls message
+        // whose results are interrupted, so they are added once the whole batch is in
+        const images: { note: string; images: { mimeType: string; data: string }[] }[] = [];
         for (const call of calls) {
-          if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
+          if (input.signal.aborted) return this.aborted(input, messages, openai, calls, usage, steps);
           input.onEvent({ kind: "tool", toolName: call.name });
           const args = parseArgs(call.arguments);
           if (!args) {
@@ -192,24 +195,24 @@ export class OpenAICompatEngine implements Engine {
             openai.push({ role: "tool", tool_call_id: call.id, content: decision.message });
             continue;
           }
-          if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
+          if (input.signal.aborted) return this.aborted(input, messages, openai, calls, usage, steps);
           const result = await input.callTool(call.name, args, input.signal);
-          if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
+          if (input.signal.aborted) return this.aborted(input, messages, openai, calls, usage, steps);
           const text = result.text || "(no output)";
           messages.push({ role: "tool", toolCallId: call.id, text, ...(result.isError ? { isError: true } : {}) });
           openai.push({ role: "tool", tool_call_id: call.id, content: text });
-          if (result.images?.length) {
-            const note = `Image returned by ${call.name}.`;
-            messages.push({ role: "user", text: note, images: result.images });
-            openai.push({
-              role: "user",
-              content: [
-                { type: "text", text: note },
-                ...result.images.map((img) => ({ type: "image_url" as const, image_url: { url: `data:${img.mimeType};base64,${img.data}` } })),
-              ],
-            });
-          }
+          if (result.images?.length) images.push({ note: `Image returned by ${call.name}.`, images: result.images });
           await input.completeTool(call.id, result.isError ? "failed" : "done");
+        }
+        for (const img of images) {
+          messages.push({ role: "user", text: img.note, images: img.images });
+          openai.push({
+            role: "user",
+            content: [
+              { type: "text", text: img.note },
+              ...img.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.data}` } })),
+            ],
+          });
         }
       }
       return this.result(input, messages, "max-steps", usage, steps);
@@ -229,6 +232,27 @@ export class OpenAICompatEngine implements Engine {
       : (new OpenAI({ apiKey: keys.apiKey, baseURL: baseUrl, timeout: 120_000 }) as unknown as ChatClient);
     this.clients.set(provider.id, client);
     return client;
+  }
+
+  /**
+   * An aborted turn still has to leave a valid transcript: every tool call it announced gets a result, or the next
+   * turn sends a tool_calls message the provider refuses ("insufficient tool messages").
+   */
+  private aborted(
+    input: EngineRunInput,
+    messages: EngineMessage[],
+    openai: ChatCompletionMessageParam[],
+    calls: { id: string }[],
+    usage: NormalisedUsage,
+    steps: number,
+  ): EngineResult {
+    for (const c of calls) {
+      if (messages.some((m) => m.role === "tool" && m.toolCallId === c.id)) continue;
+      const text = "Not run: the turn was interrupted.";
+      messages.push({ role: "tool", toolCallId: c.id, text, isError: true });
+      openai.push({ role: "tool", tool_call_id: c.id, content: text });
+    }
+    return this.result(input, messages, "aborted", usage, steps);
   }
 
   private result(input: EngineRunInput, messages: EngineMessage[], stopReason: EngineResult["stopReason"], usage: NormalisedUsage, steps: number): EngineResult {

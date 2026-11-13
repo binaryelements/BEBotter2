@@ -128,6 +128,48 @@ describe("OpenAICompatEngine", () => {
     expect(result.messages).toContainEqual({ role: "user", text: "Image returned by mcp__knowledge__read.", images: [{ data: "aGVsbG8=", mimeType: "image/png" }] });
   });
 
+  it("puts an image after the whole tool batch, so every tool result comes first", async () => {
+    const two = chunk({
+      tool_calls: [
+        { index: 0, id: "call_1", function: { name: "mcp__knowledge__read", arguments: '{"path":"a"}' } },
+        { index: 1, id: "call_2", function: { name: "mcp__knowledge__read", arguments: '{"path":"b"}' } },
+      ],
+    });
+    const fake = fakeClient([[two], [chunk({ content: "ok" })]]);
+    const engine = new OpenAICompatEngine({ providers: { deepseek: { apiKey: "k" } }, client: () => fake });
+    await engine.run(
+      input({
+        callTool: async (_name, args) => ({ text: "body", ...((args as { path?: string }).path === "a" ? { images: [{ data: "aGVsbG8=", mimeType: "image/png" }] } : {}) }),
+      }),
+    );
+    const sent = (fake.bodies[1]!.messages as { role: string }[]).map((m) => m.role);
+    // assistant(tool_calls), tool, tool, then the image as a user message
+    expect(sent.slice(-4)).toEqual(["assistant", "tool", "tool", "user"]);
+  });
+
+  it("leaves a valid transcript when a turn is aborted between tool calls", async () => {
+    const two = chunk({
+      tool_calls: [
+        { index: 0, id: "call_1", function: { name: "mcp__knowledge__read", arguments: '{"path":"a"}' } },
+        { index: 1, id: "call_2", function: { name: "mcp__knowledge__read", arguments: '{"path":"b"}' } },
+      ],
+    });
+    const engine = new OpenAICompatEngine({ providers: { deepseek: { apiKey: "k" } }, client: () => fakeClient([[two]]) });
+    const controller = new AbortController();
+    const result = await engine.run(
+      input({
+        signal: controller.signal,
+        callTool: async () => {
+          controller.abort(); // the person sent another message while the first tool ran
+          return { text: "body" };
+        },
+      }),
+    );
+    expect(result.stopReason).toBe("aborted");
+    const tools = result.messages.filter((m) => m.role === "tool").map((m) => (m as { toolCallId: string }).toolCallId);
+    expect(tools).toEqual(["call_1", "call_2"]);
+  });
+
   it("drops an orphan tool message before sending the history", async () => {
     const fake = fakeClient([[chunk({ content: "ok" })]]);
     const engine = new OpenAICompatEngine({ providers: { deepseek: { apiKey: "k" } }, client: () => fake });
