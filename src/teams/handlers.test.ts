@@ -917,19 +917,20 @@ describe("choosing the bot in a one-to-one chat", () => {
     const body = (t: string) => t.replace(/^\[Files and images posted[\s\S]*?\]\n\n/, "");
     expect((s.runTurn.mock.calls[1] as any)[0].text).toMatch(/^\[Files and images posted/);
     expect(body((s.runTurn.mock.calls[1] as any)[0].text)).toBe("fixed now");
-    // follow-ups: for two minutes after the bot answered Bob, Bob needs no name; Ann does, and so does Bob when he talks to Ann
+    // follow-ups: for fifteen minutes after the bot answered Bob, Bob needs no name; naming Ann still keeps it overheard
     const bob = await upsertPerson(s.db, { tenantId: "t1", aadObjectId: "u2", name: "Bob" });
     const answered = await beginAction(s.db, { tenantId: "t1", chatId: "c1", definitionId: a.id, personId: bob.id, kind: "message", summary: "fixed now" });
     await completeAction(s.db, answered, { status: "done" });
-    await group("fine", false, "u1");
-    await group("Ann, can you check the toner", false);
-    await group("thanks all", false, "u2", true);
-    expect(s.runTurn).toHaveBeenCalledTimes(2);
-    await group("check zfs", false);
-    expect(body((s.runTurn.mock.calls[2] as any)[0].text)).toBe("[Said in this group chat since your last reply; you were not addressed, so you did not answer:\nAnn: fine\nBob: Ann, can you check the toner\nBob: thanks all]\n\ncheck zfs");
-    await s.db.update(auditEvents).set({ finishedAt: new Date(Date.now() - 3 * 60_000) }).where(eq(auditEvents.id, answered));
-    await group("still there?", false);
-    expect(s.runTurn).toHaveBeenCalledTimes(3);
+    const before = s.runTurn.mock.calls.length;
+    await group("thanks all", false, "u2");
+    expect(s.runTurn).toHaveBeenCalledTimes(before + 1); // a follow-up: no name needed
+    await group("Ann, can you check the toner", false, "u2");
+    expect(s.runTurn).toHaveBeenCalledTimes(before + 1); // aimed at a colleague
+    await s.db.update(auditEvents).set({ finishedAt: new Date(Date.now() - 16 * 60_000) }).where(eq(auditEvents.id, answered));
+    await group("still there?", false, "u2");
+    expect(s.runTurn).toHaveBeenCalledTimes(before + 1); // too late to be a follow-up
+    await group("mickey, still there?", false, "u2");
+    expect(s.runTurn).toHaveBeenCalledTimes(before + 2); // named, so it answers
     expect(addressedByName("Hey Mickey: help", { displayName: "Mickey", label: "IT" })).toBe(true);
     expect(addressedByName("Mickeys are mice", { displayName: "Mickey", label: "IT" })).toBe(false);
     expect(addressedByName("it support, help", { displayName: null, label: "IT Support" })).toBe(true);

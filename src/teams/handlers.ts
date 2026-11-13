@@ -541,7 +541,7 @@ export const confirmationWord = (text: string): "yes" | "no" | undefined => {
 };
 
 /** For this long after the bot answers someone in a group chat, their next messages are follow-ups and need no name. */
-const FOLLOW_UP_MS = 2 * 60_000;
+const FOLLOW_UP_MS = 15 * 60_000;
 /** A bot that ended on a question is waiting for an answer; do not stop listening after two minutes. */
 const QUESTION_FOLLOW_UP_MS = 30 * 60_000;
 /** A group-chat message is a follow-up when the bot answered its sender within the window and it is not aimed at someone else. */
