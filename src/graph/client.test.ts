@@ -37,6 +37,15 @@ describe("graphFetch", () => {
     expect(f.requests).toHaveLength(0);
   });
 
+  it("retries once on Graph's own gateways (502, 504) as well as 429 and 503", async () => {
+    for (const status of [502, 504]) {
+      const f = fakeFetch(graphError(status, "UnknownError"), new Response('{"ok":true}'));
+      const waits: number[] = [];
+      await graphFetch({ fetchFn: f.fn, token: async () => TOKEN, sleep: async (ms: number) => void waits.push(ms) }, "/me");
+      expect([status, waits.length, f.requests.length]).toEqual([status, 1, 2]);
+    }
+  });
+
   it("retries once on 429 or 503 after Retry-After, capped at 10 s", async () => {
     const sleep = vi.fn(async () => {});
     const f = fakeFetch(graphError(429, "TooManyRequests", { "Retry-After": "3" }), new Response('{"ok":true}'));

@@ -39,13 +39,15 @@ export async function graphFetch(deps: GraphDeps, path: string, init: Init = {})
       ...(json ? { body: JSON.stringify(init.json) } : init.body !== undefined ? { body: init.body as BodyInit } : {}),
     });
   let res = await send();
-  // a 401 is never retried: within a turn the token service may hand back the same token
-  if (res.status === 429 || res.status === 503) {
+  // a 401 is never retried: within a turn the token service may hand back the same token.
+  // 502 and 504 are Graph's own gateways; the call usually works a moment later
+  if (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) {
     await res.body?.cancel();
     // shortcut: one retry and at most 10 s of waiting, so a longer Retry-After fails the call; queue calls if throttling becomes common
     const wait = Math.min(Math.max(Number(res.headers.get("Retry-After")) * 1000 || 1000, 0), MAX_WAIT_MS);
     await (deps.sleep ?? delay)(wait);
     res = await send();
+    if ((res.status === 502 || res.status === 504) && res.ok === false) await res.body?.cancel();
   }
   if (!res.ok) throw new GraphError(res.status, await errorCode(res));
   return res;

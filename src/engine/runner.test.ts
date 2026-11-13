@@ -134,6 +134,19 @@ describe("runTurn", () => {
     expect(JSON.stringify(logged)).not.toContain(token);
   });
 
+  it("stops retrying a tool that has failed four times in a row in the same turn", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeEngine({ failTool: "mcp__tickets__close_ticket", calls: Array.from({ length: 5 }, () => ["mcp__tickets__close_ticket", { id: 1 }] as [string, Record<string, unknown>]) });
+    const confirmations = new Confirmations();
+    await runTurn(deps(db, q.engine, confirmations), {
+      tenantId: "t1", chatId: "c1", definition, person, text: "close it", graphToken: async () => "t",
+      askConfirmation: async (req) => void confirmations.resolve(req.actionId, person.id, "yes"),
+    });
+    expect(q.decisions).toEqual(["allow", "allow", "allow", "allow", "deny"]);
+    expect(q.messages.at(-1)).toContain("failed 4 times in a row");
+  });
+
   it("a throwing progress callback is logged and the turn still finishes", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);

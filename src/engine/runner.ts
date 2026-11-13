@@ -306,6 +306,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   // tool use id → audit row of a call that was allowed and has not finished yet
   const inFlight = new Map<string, string>();
+  // a tool that keeps failing is not worth another attempt: models retry a broken server dozens of times
+  const failures = new Map<string, number>();
+  const toolOf = new Map<string, string>();
   const granted = new Set<string>(); // tool use ids allowed by a routine grant
   let changed = false;
   // Tool handlers never see the confirmation. Parallel calls may be confirmed in any order, so only an
@@ -342,6 +345,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
 
   const authoriseTool = async (callId: string, toolName: string, input: Record<string, unknown>): Promise<ToolDecision> => {
     const run = attemptNo;
+    toolOf.set(callId, toolName);
     const audited = auditInput(toolName, input);
     const json = JSON.stringify(audited);
     const auditId = await beginAction(db, {
@@ -355,6 +359,11 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       await completeAction(db, auditId, { status: "failed" });
       return STALE;
     };
+    // a tool that has failed the last few times is refused: the turn should report the problem, not loop
+    if ((failures.get(toolName) ?? 0) >= 4) {
+      await completeAction(db, auditId, { status: "denied" });
+      return { allow: false, message: `Not done: ${toolName} has failed ${failures.get(toolName)} times in a row this turn. Stop retrying and tell the person what is wrong.` };
+    }
     // read per call, so an admin's change applies to the next call without restarting the engine
     const rule = await toolRule(db, definition.id, toolName);
     if (run !== attemptNo) return stale();
@@ -443,6 +452,12 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   };
 
   const completeTool = async (callId: string, status: "done" | "failed"): Promise<void> => {
+    const name = toolOf.get(callId);
+    toolOf.delete(callId);
+    if (name) {
+      if (status === "failed") failures.set(name, (failures.get(name) ?? 0) + 1);
+      else failures.delete(name);
+    }
     const auditId = inFlight.get(callId);
     if (!auditId) return;
     inFlight.delete(callId);
