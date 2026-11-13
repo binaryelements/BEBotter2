@@ -80,12 +80,16 @@ describe("runbooks screen", () => {
     });
 
   it("an admin uploads a markdown runbook, and it belongs to the bot they picked", async () => {
-    const res = await post("/admin/runbooks/upload", "Ann", { bot: botId, path: "", file: "BE Voice.md", body: "# BE Voice\n\nCheck the SBC." });
+    // the description is required
+    expect((await post("/admin/runbooks/upload", "Ann", { bot: botId, path: "", file: "BE Voice.md", body: "# BE Voice\n\nCheck the SBC." })).status).toBeGreaterThanOrEqual(400);
+    const res = await post("/admin/runbooks/upload", "Ann", { bot: botId, path: "", file: "BE Voice.md", description: "  Use when BE Voice\n calls fail ", body: "# BE Voice\n\nCheck the SBC." });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/admin/runbooks/review?path=troubleshooting%2Fbe-voice.md");
     const note = await readNote(db, secretsKey, T, "troubleshooting/be-voice.md");
     expect(note?.body).toContain("Check the SBC.");
     expect(note?.definitionId).toBe(botId);
+    expect(note?.description).toBe("Use when BE Voice calls fail");
+    expect(await (await get("/admin/runbooks/review?path=troubleshooting%2Fbe-voice.md", "Ann")).text()).toContain("Use when BE Voice calls fail");
     expect((await listNotes(db, secretsKey, T)).map((n) => n.path)).toContain("troubleshooting/be-voice.md");
     expect(await (await get("/admin/runbooks", "Ann")).text()).toContain("troubleshooting/be-voice.md");
     // no bot, or someone else's bot, and nothing is saved

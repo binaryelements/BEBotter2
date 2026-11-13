@@ -16,6 +16,7 @@ import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
 import { botDefinitions, chats, connections, mailboxes, sessions } from "../db/schema.js";
 import { addLearning } from "../learnings/store.js";
+import { writeNote } from "../knowledge/store.js";
 import { rememberMemory } from "../memory/store.js";
 import { requestConnection, setConnectionGrant } from "../connections/store.js";
 import { encrypt } from "../secrets/cipher.js";
@@ -310,6 +311,19 @@ describe("runTurn", () => {
     await db.update(chats).set({ ownerPersonId: bob.id }).where(eq(chats.id, "c1"));
     await turn(personal);
     expect(String(q.seen.at(-1)!.systemPrompt)).toMatch(/- Call scheduled runs reminders\n- Bob's wife is Jo/);
+  });
+
+  it("the bot's runbooks are listed at the end of its instructions from the next turn", async () => {
+    const db = await testDb();
+    const { definition, person } = await setup(db);
+    const q = fakeEngine({ calls: [] });
+    const turn = () => runTurn(deps(db, q.engine), { tenantId: "t1", chatId: "c1", definition, person, text: "x", askConfirmation: async () => {} });
+    await turn();
+    expect(String(q.seen[0]!.systemPrompt)).not.toContain("Your runbooks");
+    await addLearning(db, "t1", { definitionId: definition.id, text: "Call scheduled runs reminders", taughtByPersonId: person.id, chatId: "c1" });
+    await writeNote(db, key, "t1", "troubleshooting/voice.md", "Use when calls fail.\n1. check the trunk", { definitionId: definition.id });
+    await turn();
+    expect(String(q.seen.at(-1)!.systemPrompt)).toMatch(/- Call scheduled runs reminders[\s\S]*Your runbooks[^\n]*\n- troubleshooting\/voice\.md: Use when calls fail\./);
   });
 
   it("a saved server named like a built-in neither loads nor shadows it", async () => {
