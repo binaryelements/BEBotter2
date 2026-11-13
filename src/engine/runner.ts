@@ -16,6 +16,7 @@ import type { SshRunner } from "../connections/ssh.js";
 import { connectionMcpConfigs } from "../connections/store.js";
 import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
+import { runbookIndex } from "../knowledge/store.js";
 import { routineMcpServer } from "../routines/mcp.js";
 import { attachmentsMcpServer, chatAttachment } from "../teams/attachments.js";
 import { learningsMcpServer } from "../learnings/mcp.js";
@@ -131,6 +132,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
   const personal = definition.identity === "person";
   const owner = personal ? (definition.ownerPersonId ?? ((await db.select({ o: chats.ownerPersonId }).from(chats).where(eq(chats.id, chatId)))[0]?.o ?? null)) : null;
   const learnt = await listLearnings(db, tenantId, definition.id, owner);
+  const runbooks = await runbookIndex(db, deps.secretsKey, tenantId, definition.id);
   const pending = personal
     ? await db
         .select({ id: assistantRequests.id, body: assistantRequests.body, from: people.name })
@@ -173,7 +175,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     mail
       ? `Your own email address is ${mail.address}.`
       : `You have no email address and cannot send or receive email${deps.agentmailUrl ? "; an admin can add one on the admin page" : ""}.`
-  }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}${requestsNote}`;
+  }${DEFAULTS_NOTE}${noComputer}${rulesText}${learningsNote(learnt)}${runbooks}${requestsNote}`;
   const processOptions: EngineProcessOptions = {
     model: definition.model,
     systemPrompt,

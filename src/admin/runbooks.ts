@@ -221,7 +221,7 @@ export function runbookRoutes(deps: RunbookDeps): Router {
         layout({
           title: "Runbooks",
           body: html`${pageHead("Runbooks", isAdmin(actor) && bots.length ? html`<a class="be-btn primary" href="#upload">Upload a runbook</a>` : undefined)}
-<div class="be-notice"><div class="grow"><b>How runbooks work</b><div class="meta">Upload a markdown runbook and give it to one bot: it becomes that bot's playbook, and only that bot searches and reads it. Have the model read it back, then test it. The bot's persona must tell it to search its knowledge for the system and runbook.</div></div></div>
+<div class="be-notice"><div class="grow"><b>How runbooks work</b><div class="meta">Upload a markdown runbook and give it to one bot: it becomes that bot's playbook, and only that bot searches and reads it. Have the model read it back, then test it. Start it with one line saying when to use it: the bot sees that line in its list of runbooks on every message and reads the runbook when a task matches.</div></div></div>
 <section class="be-card">
 <div class="card-head"><h2>Runbooks</h2><span class="be-chip">${notes.length}</span></div>
 ${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Runbook</th><th>Bot</th><th>Version</th><th>Updated</th><th></th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty"><b>No runbooks yet</b>Upload a markdown runbook to give a bot a procedure to follow.${isAdmin(actor) && bots.length ? html`<div style="margin-top:14px"><a class="be-btn primary" href="#upload">Upload a runbook</a></div>` : ""}</div>`}

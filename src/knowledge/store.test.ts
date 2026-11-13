@@ -5,7 +5,7 @@ import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { upsertTenant } from "../org/org.js";
 import { upsertDefinition } from "../bots/definitions.js";
-import { deleteNote, KnowledgeError, listNotes, noteHistory, readNote, rollbackNote, searchNotes, writeNote } from "./store.js";
+import { deleteNote, KnowledgeError, listNotes, noteHistory, readNote, rollbackNote, runbookIndex, searchNotes, writeNote } from "./store.js";
 
 describe("knowledge store", () => {
   let db: Db;
@@ -23,6 +23,25 @@ describe("knowledge store", () => {
     expect(await readNote(db, key, "t1", "a/one")).toEqual({ path: "a/one", version: 2, body: "second", definitionId: null });
     expect((await listNotes(db, key, "t1")).map((n) => [n.path, n.version])).toEqual([["a/one", 2], ["a/zed", 1]]);
     expect(await searchNotes(db, key, "t1", "SECON")).toEqual([{ path: "a/one", snippet: "second" }]);
+  });
+
+  it("a bot's runbook index lists its own and the shared runbooks by their first line, nothing else", async () => {
+    await upsertTenant(db, { id: "t3" });
+    const a = await upsertDefinition(db, key, "t3", { name: "bot-a", label: "A", persona: "p" });
+    const b = await upsertDefinition(db, key, "t3", { name: "bot-b", label: "B", persona: "p" });
+    expect(await runbookIndex(db, key, "t3", a.id)).toBe("");
+    await writeNote(db, key, "t3", "troubleshooting/voice.md", "\n# Use when calls to BE Voice numbers fail\n\n1. check the trunk", { definitionId: a.id });
+    await writeNote(db, key, "t3", "troubleshooting/quote.md", "Use when a customer asks for a hardware quote.\nSteps...", { definitionId: a.id });
+    await writeNote(db, key, "t3", "troubleshooting/printer.md", "Use when the printer jams.", { definitionId: b.id });
+    await writeNote(db, key, "t3", "troubleshooting/vpn.md", "Use when the VPN drops.", {});
+    await writeNote(db, key, "t3", "customers/acme.md", "Acme details", { definitionId: a.id });
+    const index = await runbookIndex(db, key, "t3", a.id);
+    expect(index).toContain("Your runbooks.");
+    expect(index).toContain("- troubleshooting/voice.md: Use when calls to BE Voice numbers fail\n");
+    expect(index).toContain("- troubleshooting/quote.md: Use when a customer asks for a hardware quote.");
+    expect(index).toContain("- troubleshooting/vpn.md: Use when the VPN drops.");
+    expect(index).not.toContain("printer");
+    expect(index).not.toContain("acme");
   });
 
   it("a bot sees its own notes and the shared ones, never another bot's", async () => {
