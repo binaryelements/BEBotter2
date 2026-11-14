@@ -1,0 +1,256 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "Review: chat message to agent answer",
+  "description": "How a Teams message becomes a bot's answer, step by step, with review questions and findings on how well each step works.",
+  "steps": [
+    {
+      "directory": "src",
+      "title": "1 · The path in one picture",
+      "description": "## Teams message → agent answer\n\n```\nTeams activity\n  └─ teams/app.ts        onMessage: normalise the activity, wire send/update/stream\n      └─ teams/handlers.ts handleMessage: who, which bot, may they, is it for us?\n          └─ submitBurst + serialize: coalesce rapid messages, one turn per chat+bot\n              └─ engine/runner.ts runTurn: system prompt, memory, session, tools, audit\n                  └─ engine/openai.ts  model ⇄ tool loop (≤ 50 steps)\n                      ├─ authoriseTool → gate.ts classify → confirmation card\n                      └─ callTool      → mcp-registry.ts → MCP server\n              ← session saved (compact), audit row, reply streamed / edited into Teams\n```\n\nEach slide ends with **Review questions**: what to judge about how *well* this step works, not just what it does.\nSteps marked **⚠ Finding** point at something already worth a ticket."
+    },
+    {
+      "file": "src/teams/app.ts",
+      "selection": {
+        "start": {
+          "line": 169,
+          "character": 1
+        },
+        "end": {
+          "line": 231,
+          "character": 1
+        }
+      },
+      "title": "2 · Entry: a Teams activity becomes an IncomingMessage",
+      "description": "**Situation.** Every Teams `message` activity lands in `onMessage`. It records `receivedAt`, reads @mentions (group chats only), the sender's client time zone, and lazily-downloaded attachments.\n\n**Mechanism.** It hands `handleMessage` a plain `IncomingMessage` plus a `TeamsIo` (send / update / sendCard / typing / stream, and a Graph token only on a signed-in turn). Route order matters: `personTurn` (line 225) runs first and forces sign-in when the message will reach the sender's *Personal* assistant.\n\n**Gotcha.** `needsSignIn` re-derives the bot choice that `handleMessage` makes later, so the two must stay in step.\n\n**Review questions**\n- Is time-to-first-signal measured from here? (`receivedAt` is the zero for `TurnTimings`.)\n- Two DB-heavy routing passes per message (sign-in check, then routing): does that show up in latency?"
+    },
+    {
+      "file": "src/teams/handlers.ts",
+      "selection": {
+        "start": {
+          "line": 273,
+          "character": 1
+        },
+        "end": {
+          "line": 336,
+          "character": 1
+        }
+      },
+      "title": "3 · Routing: which bot answers?",
+      "description": "**Situation.** Before any model runs, the handler decides *which bot definition* owns the turn.\n\n**Mechanism.**\n- Upserts tenant, person, chat; stores the conversation reference (for proactive posts).\n- A Personal assistant named in a group chat is **replayed** into its owner's one-to-one chat (line 284).\n- One-to-one: `switch`, naming a bot (`\"Jennifer, …\"`), or the single usable bot picks the definition.\n- Group: naming a company bot takes the chat over (line 329).\n\n**Implication.** Name matching is a regex on the start of the message (`addressedByName`, line 523).\n\n**Review questions**\n- How often do people get the *choose a bot* card instead of an answer? That is a lost turn.\n- `\"Hey Jennifer can you…\"` matches; `\"Can you, Jennifer…\"` does not. Is that the right trade-off?"
+    },
+    {
+      "file": "src/teams/handlers.ts",
+      "selection": {
+        "start": {
+          "line": 337,
+          "character": 1
+        },
+        "end": {
+          "line": 375,
+          "character": 1
+        }
+      },
+      "title": "4 · Gates before the model: confirmations, listening, access",
+      "description": "**Mechanism.**\n- A pending confirmation turns short replies (`yes`, `no`, `go ahead`: `confirmationWord`, line 535) into the answer to the card.\n- In a group chat the bot is **listening**: a message not aimed at it is stored as *overheard* (line 353) and only used as context on its next turn. A follow-up within 15 min (30 min if the bot ended on a question) counts as aimed at it (`followUp`, line 548).\n- Access: Personal is owner-only; `mayUseDefinition` for everything else.\n\n**Review questions**\n- False negatives: follow-ups the bot ignored because someone else's first name started the message (line 561).\n- False positives: a stray `ok` while a card is pending is taken as **yes** (`YES` includes `ok` and `please`)."
+    },
+    {
+      "file": "src/teams/handlers.ts",
+      "selection": {
+        "start": {
+          "line": 87,
+          "character": 1
+        },
+        "end": {
+          "line": 143,
+          "character": 1
+        }
+      },
+      "title": "5 · Bursts: several quick messages, one turn",
+      "description": "**Situation.** People type in fragments. `submitBurst` waits `BURST_QUIET_MS` (1.2 s default, `main.ts:83`) for them to finish.\n\n**Mechanism.** One job per chat+bot+person. A message arriving *while a turn runs* aborts it (`running.abort()`); the drain loop puts the aborted batch back in front of the new message and runs them together. `serialize` (line 39) then makes turns for the same chat+bot run one at a time, so two never write the same session.\n\n**Implication.** An aborted turn leaves no session row, no message audit row and no reply (`runner.ts:522`). Tool calls it already made **did** happen.\n\n**Review questions**\n- Every burst costs ≥ 1.2 s before the model starts. Is that latency worth having fewer half-answers?\n- How often are turns aborted after side-effecting tools ran? (tool audit rows with no message row)"
+    },
+    {
+      "file": "src/teams/handlers.ts",
+      "selection": {
+        "start": {
+          "line": 458,
+          "character": 1
+        },
+        "end": {
+          "line": 482,
+          "character": 1
+        }
+      },
+      "title": "6 · What the model is actually given",
+      "description": "**Mechanism.** The user message is built as:\n\n```\n[defaults: now <time> (<tz>); location <place>]      ← runner.ts withDefaults\n[Recent files: …]                                      ← withAttachments (last 10 min)\n[Said in this group chat since your last reply: …]     ← withOverheard (≤ 60 lines)\n<burst text, joined by newlines>\n```\n\nplus `askConfirmation` (posts the card, ends any open stream) and `progress` (drives the status line / stream).\n\n**Gotcha.** This composite text is also what memory search uses as its query (slides 8–9). The person's actual words come **last**.\n\n**Review questions**\n- In busy group chats, how much of the prompt is overheard chatter vs. the question?"
+    },
+    {
+      "file": "src/engine/runner.ts",
+      "selection": {
+        "start": {
+          "line": 104,
+          "character": 1
+        },
+        "end": {
+          "line": 178,
+          "character": 1
+        }
+      },
+      "title": "7 · The system prompt, rebuilt every turn",
+      "description": "**Situation.** `engineSetup` assembles everything a turn depends on.\n\n**Mechanism.** System prompt = persona + name + email note + defaults note + computer note + admin tool rules + **all learnings** (oldest first, `listLearnings`) + **runbook index** (first 20 `troubleshooting/` paths, `knowledge/store.ts runbookIndex`) + pending assistant requests.\n\nMCP servers for the turn: the bot's own, computer, browser, knowledge, connections, routine, attachments, learnings, bots (tell); for Personal also assistant, todos, m365; plus mail and connection servers.\n\n**⚠ Finding: dead code.** `fingerprint` (line 208) is computed and returned but never read (`grep fingerprint src` finds only this line). It is left over from the warm-process design.\n\n**Review questions**\n- Learnings have no relevance filter: every one goes into every turn. At what count does that crowd out the persona?\n- Runbooks are chosen by path order, not by use (its own `shortcut:` comment says so)."
+    },
+    {
+      "file": "src/engine/runner.ts",
+      "selection": {
+        "start": {
+          "line": 301,
+          "character": 1
+        },
+        "end": {
+          "line": 307,
+          "character": 1
+        }
+      },
+      "title": "8 · Long-term memory: what gets recalled",
+      "description": "**Mechanism.** `searchMemory(scope, turn.text, 12)` → full-text match, then **filled up to 12** with the most important / most recently used items in scope. Every returned item is `touchMemory`'d (lastUsedAt, useCount++).\n\n**Implication.** This is the bot's only automatic retrieval of long-tail facts; it decides whether the answer is informed.\n\n→ Next slide shows why it rarely matches."
+    },
+    {
+      "file": "src/memory/store.ts",
+      "selection": {
+        "start": {
+          "line": 90,
+          "character": 1
+        },
+        "end": {
+          "line": 125,
+          "character": 1
+        }
+      },
+      "title": "9 · ⚠ Finding: memory search is mostly not relevance-based",
+      "description": "**Mechanism.** `websearch_to_tsquery('english', query)` joins every unquoted word with **AND**. The query is the whole composite message (slide 6), cut to 2,000 chars.\n\n**Consequences (from reading the code; confirm with data):**\n1. A normal sentence only matches a memory that contains *every* stem in it, so most turns get **no** full-text hits.\n2. The list is then filled by importance/recency: the same top 12 items every time, whatever was asked.\n3. `touchMemory` bumps those fillers' `lastUsedAt`, so they stay on top. It reinforces itself.\n4. In group chats the 2,000-char slice can be mostly overheard lines, not the question.\n\n**Review questions / cheap fixes**\n- Measure the share of turns with ≥ 1 real full-text hit (log `rows.length` before the fill).\n- Use OR semantics (lexemes joined with `|`), query on the burst text only, and don't `touch` fill items."
+    },
+    {
+      "file": "src/engine/runner.ts",
+      "selection": {
+        "start": {
+          "line": 489,
+          "character": 1
+        },
+        "end": {
+          "line": 514,
+          "character": 1
+        }
+      },
+      "title": "10 · History + prompt handed to the engine",
+      "description": "**Mechanism.** `history = session.messages + new user message`. System prompt = setup prompt + `Earlier in this conversation: <summary>` + memory note.\n\n**⚠ Finding: prompt-cache cost.** Providers cache by **prefix**. The memory note changes with every message and sits at the *end of the system prompt*, i.e. *before* the whole history. So the cached prefix stops inside the system prompt and the full history is billed as fresh input on each step. Moving memory (and the summary) into the new user message would let the history hit the cache. Compare cached vs. total input tokens to size this.\n\n**Review questions**\n- Cached share of input tokens per turn, per model.\n- A background routine gets 100 steps, a chat turn 50 (line 183). Have any chat turns hit 50?"
+    },
+    {
+      "file": "src/engine/openai.ts",
+      "selection": {
+        "start": {
+          "line": 106,
+          "character": 1
+        },
+        "end": {
+          "line": 224,
+          "character": 1
+        }
+      },
+      "title": "11 · The agent loop",
+      "description": "**Situation.** One provider-neutral loop over OpenAI-compatible Chat Completions (DeepSeek, Qwen: `providers.ts`).\n\n**Mechanism.** Each step streams the completion (deltas → Teams) and collects tool calls, then for **each call in turn**: parse args → `authoriseTool` → `callTool` → append result → `completeTool`. Images from tools are appended after the batch as a user message. No tool calls ⇒ the text is the answer.\n\n**Effectiveness notes (from reading the code)**\n- Tool calls run **one after another**, even independent reads the model asked for together.\n- One attempt only: any error or `max-steps` returns `FAILED_TEXT` (\"I couldn't finish that.\"), with no partial answer and no fallback model. Only the OpenAI SDK's own default retries apply.\n- `deepseek-*` models are capped at 8,192 output tokens per step.\n\n**Review questions**\n- Rate of `failed` message audit rows, split by stop reason (error vs max-steps).\n- Average steps and tools per turn; share of latency spent waiting on tools."
+    },
+    {
+      "file": "src/engine/runner.ts",
+      "selection": {
+        "start": {
+          "line": 348,
+          "character": 1
+        },
+        "end": {
+          "line": 454,
+          "character": 1
+        }
+      },
+      "title": "12 · The tool gate: allow, ask, or refuse",
+      "description": "**Mechanism.** Every call opens an audit row, then:\n1. A tool that failed 4× in a row this turn is refused (\"Stop retrying and tell the person\").\n2. A per-connection grant (deny / read-only / confirm / free) overrides…\n3. …the class from `gate.ts classify` (read / write / approve) with the admin's per-bot rule.\n4. `read` runs; `write` under a routine grant runs; otherwise a **confirmation card** goes out and the call waits (up to 10 min) for a click or a typed yes/no. Approve-class calls run one at a time.\n\n**Implication.** Refusals go back to the model as tool errors (`NOT_DONE`), so it can explain instead of retrying.\n\n**Review questions**\n- Confirmations per turn and expiry rate: are cards blocking answers people wanted?\n- Which tools do admins most often set to `free`? They are candidates for a better default."
+    },
+    {
+      "file": "src/engine/gate.ts",
+      "selection": {
+        "start": {
+          "line": 41,
+          "character": 1
+        },
+        "end": {
+          "line": 60,
+          "character": 1
+        }
+      },
+      "title": "13 · Default tool classes",
+      "description": "**Mechanism.** Unknown ⇒ **write** (asks). Known reads are listed in `BUILT_IN` (line 11); mail tools by name; `conn-*` and bot MCP servers by the admin's `readOnlyTools`.\n\n**Review question.** A safe default, but every new read-only MCP tool asks for confirmation until someone marks it. How many cards are for tools that are really reads?"
+    },
+    {
+      "file": "src/engine/mcp-registry.ts",
+      "selection": {
+        "start": {
+          "line": 41,
+          "character": 1
+        },
+        "end": {
+          "line": 86,
+          "character": 1
+        }
+      },
+      "title": "14 · Tool discovery and calls",
+      "description": "**Mechanism.** A new registry per turn. `listTools` asks **each server in turn** (20 s timeout each) before the first model call; stdio clients are pooled between turns, the others reconnect. `call` flattens MCP content to text + images, with a 120 s timeout.\n\n**⚠ Finding: unbounded tool output.** Result text is not size-capped here or in the engine. A large SQL/HTTP/file result goes straight into the context and into the saved session until compaction drops it.\n\n**Review questions**\n- `engineReadyAt − receivedAt` in turn timings: how much of it is tool listing?\n- Largest tool results seen (session rows)."
+    },
+    {
+      "file": "src/engine/runner.ts",
+      "selection": {
+        "start": {
+          "line": 516,
+          "character": 1
+        },
+        "end": {
+          "line": 566,
+          "character": 1
+        }
+      },
+      "title": "15 · After the answer: save, compact, audit",
+      "description": "**Mechanism.** If not aborted: `compact` the transcript, strip images, upsert `sessions` (per chat + bot), and write the message audit row with cost and timings. `finally` closes MCP clients and marks any still-open tool rows `failed`.\n\n**Gotcha.** A failed turn (`error` / `max-steps`) still saves its transcript, so the next turn sees the tool calls while the person only saw \"I couldn't finish that.\""
+    },
+    {
+      "file": "src/engine/transcript.ts",
+      "selection": {
+        "start": {
+          "line": 23,
+          "character": 1
+        },
+        "end": {
+          "line": 42,
+          "character": 1
+        }
+      },
+      "title": "16 · ⚠ Finding: \"compaction\" is truncation, not a summary",
+      "description": "**Mechanism.** It triggers above **60 % of the context window or 40 messages**. The oldest messages are dropped and appended raw (`role: text`) to `summary`; once that is over 4,000 chars it keeps the first and last ~2,000 and cuts the middle.\n\n**Implication.** Tool calls and results count as messages, so one tool-heavy turn can push the earlier conversation out. Facts from the middle of a long chat are lost silently, and the \"summary\" is mostly raw JSON tool calls.\n\n**Review questions**\n- How often do sessions hit the 40-message cap? (With million-token models the 60 % limit almost never applies.)\n- Is a model-written summary (a cheap flash model) worth it here?"
+    },
+    {
+      "file": "src/teams/handlers.ts",
+      "selection": {
+        "start": {
+          "line": 380,
+          "character": 1
+        },
+        "end": {
+          "line": 457,
+          "character": 1
+        }
+      },
+      "title": "17 · Delivery: stream, status line, slow note",
+      "description": "**Mechanism.**\n- **One-to-one:** the reply streams into Teams as it is written, prefixed with the bot's name; tool progress shows as an informative line until text flows.\n- **Group:** one status message after 3 s, edited at most every 2 s (`statusMessage`, line 175), then replaced by the answer.\n- After 45 s, a single *\"Still working…\"* note.\n- A confirmation card ends the stream; the answer then arrives as a new message so people are notified.\n\n**Review questions**\n- `firstOutputAt − receivedAt` p50/p95 by chat type (logged by `logTurn`, line 146).\n- Rate of `Something went wrong on my side.` (line 498) vs `I couldn't finish that.`"
+    },
+    {
+      "title": "18 · Review checklist",
+      "description": "## What to measure, and where\n\n| Question | Source |\n| --- | --- |\n| Did it answer? | `audit_events` kind=`message`, status done / failed |\n| How fast? | `TurnTimings` (receivedAt, engineReadyAt, firstOutputAt, resultAt) on the message row; `logTurn` lines |\n| How much work? | tool audit rows per turn |\n| What did it cost? | `costUsd`; `sessions.inputTokens` |\n| Did it remember? | memory full-text hits vs fills (needs a log line) |\n\n## Findings to file\n1. Memory search ANDs every word of the whole composite message → mostly importance fill, which reinforces itself (slide 9).\n2. Per-turn memory/summary in the system prompt defeats prefix caching of the history (slide 10).\n3. Compaction is head+tail truncation of the raw transcript; the 40-message cap counts tool messages (slide 16).\n4. Tool output is not size-capped (slide 14).\n5. Tool calls run one after another; tool listing goes server by server (slides 11, 14).\n6. Failed / max-steps turns give a bare \"I couldn't finish that.\" with no partial answer or fallback (slide 11).\n7. `fingerprint` in `engineSetup` is dead code (slide 7)."
+    }
+  ]
+}
