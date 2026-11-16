@@ -467,7 +467,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
     const groupSwitch = (g: string) => html`<div class="be-seg" role="radiogroup" aria-label="all ${g}">${(["", "free", "confirm"] as const).map(
       (r) => html`<label><input type="radio" name="all:${g}" value="${r}" ${r === "" ? "checked" : ""}><span>${r ? `all: ${RULE_LABEL[r]}` : "as below"}</span></label>`,
     )}</div>`;
-    return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it. A connection can be narrower or freer for this bot on its Connections tab; that per-connection choice wins over these rules.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}${[...groups.keys()].sort().map(
+    return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it. A connection can be narrower or freer for this bot on its Connections tab; that per-connection choice wins over these rules.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}<div class="rule-search"><input class="be-input" type="search" placeholder="Search sections and actions…" aria-label="Search sections and actions" data-section-filter> <span class="muted" data-section-count></span></div>${[...groups.keys()].sort().map(
       (g, i) => {
         const tools = groups.get(g)!;
         // shortcut: sections always open on load; remember the open state if collapsing many becomes a chore.
