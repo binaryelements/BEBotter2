@@ -949,5 +949,8 @@ details.rule-group > .be-seg, details.rule-group > .rule-search { margin: 8px 0;
 .rule-search { display: flex; align-items: center; gap: 8px; }
 .rule-search .muted { white-space: nowrap; }
 .rule-search .be-input { width: min(100%, 320px); }
-/* a long section shows about 8 actions at once and scrolls the rest inside itself */
-.rule-rows { max-height: 480px; overflow-y: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--ui-line); }
+/* a long list (a bot's actions, its connections) shows about 8 rows at once and scrolls the rest inside itself;
+   the cap sits on the table's own scroll box so a header row can stay pinned */
+.capped-rows { border-bottom: 1px solid var(--ui-line); }
+.capped-rows > .scroll { max-height: 480px; overflow: auto; overscroll-behavior: contain; }
+.capped-rows thead th { position: sticky; top: 0; z-index: 1; }
