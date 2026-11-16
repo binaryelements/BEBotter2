@@ -938,8 +938,14 @@ form.saved { outline: 2px solid var(--ui-good); outline-offset: 3px; border-radi
 
 /* Actions tab: each tool group collapses, with its own search */
 details.rule-group { margin-top: 18px; }
-details.rule-group > summary { cursor: pointer; display: flex; align-items: baseline; gap: 8px; }
+details.rule-group > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; list-style: none; padding: 6px 8px; margin: 0 -8px; border-radius: 8px; }
+details.rule-group > summary::-webkit-details-marker { display: none; }
+details.rule-group > summary:hover { background: var(--ui-accent-soft); }
+/* a chevron that points right when closed and down when open */
+details.rule-group > summary::before { content: ""; width: 8px; height: 8px; border: solid var(--ui-muted); border-width: 0 2px 2px 0; transform: rotate(-45deg); transition: transform .15s; flex: none; }
+details.rule-group[open] > summary::before { transform: rotate(45deg); }
 details.rule-group > summary > h3 { display: inline; margin: 0; }
 details.rule-group > .be-seg, details.rule-group > .rule-search { margin: 8px 0; }
 .rule-search { display: flex; align-items: center; gap: 8px; }
-.rule-search .be-input { max-width: 320px; }
+.rule-search .muted { white-space: nowrap; }
+.rule-search .be-input { width: min(100%, 320px); }
