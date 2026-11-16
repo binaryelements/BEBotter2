@@ -468,7 +468,13 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       (r) => html`<label><input type="radio" name="all:${g}" value="${r}" ${r === "" ? "checked" : ""}><span>${r ? `all: ${RULE_LABEL[r]}` : "as below"}</span></label>`,
     )}</div>`;
     return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it. A connection can be narrower or freer for this bot on its Connections tab; that per-connection choice wins over these rules.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}${[...groups.keys()].sort().map(
-      (g) => html`<div data-rule-group><h3>${g}</h3>${groups.get(g)!.length > 1 ? groupSwitch(g) : ""}${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}</div>`,
+      (g, i) => {
+        const tools = groups.get(g)!;
+        // shortcut: sections always open on load; remember the open state if collapsing many becomes a chore.
+        return html`<details class="rule-group" data-rule-group open><summary><h3>${g}</h3> <span class="muted">${tools.length} ${tools.length === 1 ? "action" : "actions"}</span></summary>${tools.length > 1 ? groupSwitch(g) : ""}${
+          tools.length > 5 ? html`<div class="rule-search"><input class="be-input" type="search" placeholder="Search ${g} actions…" aria-label="Search ${g} actions" data-live-filter="#rg-${i}" data-live-count="#rg-${i}-count"> <span id="rg-${i}-count" class="muted"></span></div>` : ""
+        }<div id="rg-${i}">${scroll(html`<table class="be-table"><tbody>${tools.map(row)}</tbody></table>`)}</div></details>`;
+      },
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
 

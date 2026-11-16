@@ -187,7 +187,8 @@ document.addEventListener("change", function (e) {
   if (t.name.indexOf("all:") === 0) { if (t.value) g.querySelectorAll('input[name^="rule:"][value="' + t.value + '"]').forEach(function (r) { r.checked = true; }); }
   else if (t.name.indexOf("rule:") === 0) { var b = g.querySelector('input[name^="all:"][value=""]'); if (b) b.checked = true; }
 }, true);
-document.addEventListener("change", function (e) { var f = e.target && e.target.closest && e.target.closest("form[data-autosave]"); if (f) f.requestSubmit(); });
+// a control with no name (a search box) saves nothing, so it doesn't submit
+document.addEventListener("change", function (e) { var f = e.target && e.target.name && e.target.closest && e.target.closest("form[data-autosave]"); if (f) f.requestSubmit(); });
 document.addEventListener("keydown", function (e) {
   if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === "k") {
     var s = document.querySelector(".search input, .search-form input");
@@ -223,6 +224,8 @@ document.querySelectorAll("[data-live-filter]").forEach(function (input) {
     if (count) count.textContent = shown + " of " + rows.length;
   };
   input.addEventListener("input", apply);
+  // Enter in a filter box filters; it must not submit the form around it
+  input.addEventListener("keydown", function (e) { if (e.key === "Enter") e.preventDefault(); });
   apply();
 });
 document.querySelectorAll(".nav-item").forEach(function (a) {
