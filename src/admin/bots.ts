@@ -468,7 +468,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       (r) => html`<label><input type="radio" name="all:${g}" value="${r}" ${r === "" ? "checked" : ""}><span>${r ? `all: ${RULE_LABEL[r]}` : "as below"}</span></label>`,
     )}</div>`;
     return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it. A connection can be narrower or freer for this bot on its Connections tab; that per-connection choice wins over these rules.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}${[...groups.keys()].sort().map(
-      (g) => html`<h3>${g}</h3>${groups.get(g)!.length > 1 ? groupSwitch(g) : ""}${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}`,
+      (g) => html`<div data-rule-group><h3>${g}</h3>${groups.get(g)!.length > 1 ? groupSwitch(g) : ""}${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}</div>`,
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
 
