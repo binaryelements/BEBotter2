@@ -473,7 +473,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         // shortcut: sections always open on load; remember the open state if collapsing many becomes a chore.
         return html`<details class="rule-group" data-rule-group open><summary><h3>${g}</h3> <span class="muted">${tools.length} ${tools.length === 1 ? "action" : "actions"}</span></summary>${tools.length > 1 ? groupSwitch(g) : ""}${
           tools.length > 5 ? html`<div class="rule-search"><input class="be-input" type="search" placeholder="Search ${g} actions…" aria-label="Search ${g} actions" data-live-filter="#rg-${i}" data-live-count="#rg-${i}-count"> <span id="rg-${i}-count" class="muted"></span></div>` : ""
-        }<div class="rule-rows" id="rg-${i}">${scroll(html`<table class="be-table"><tbody>${tools.map(row)}</tbody></table>`)}</div></details>`;
+        }<div class="capped-rows" id="rg-${i}">${scroll(html`<table class="be-table"><tbody>${tools.map(row)}</tbody></table>`)}</div></details>`;
       },
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
@@ -602,7 +602,7 @@ ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` 
 <td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
           };
           const connTable = (list: Connection[], uses: boolean) =>
-            scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>This bot</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
+            html`<div class="capped-rows">${scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>This bot</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`)}</div>`;
           const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
           const needle = q.toLowerCase();
           const matches = (c: Connection) => !needle || [c.name, c.kind, c.target, c.mode, c.status, c.description ?? ""].some((s) => s.toLowerCase().includes(needle));
