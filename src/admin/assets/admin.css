@@ -935,3 +935,11 @@ form.saved { outline: 2px solid var(--ui-good); outline-offset: 3px; border-radi
   }
   .js table.be-table tr:hover td { background: transparent; }
 }
+
+/* Actions tab: each tool group collapses, with its own search */
+details.rule-group { margin-top: 18px; }
+details.rule-group > summary { cursor: pointer; display: flex; align-items: baseline; gap: 8px; }
+details.rule-group > summary > h3 { display: inline; margin: 0; }
+details.rule-group > .be-seg, details.rule-group > .rule-search { margin: 8px 0; }
+.rule-search { display: flex; align-items: center; gap: 8px; }
+.rule-search .be-input { max-width: 320px; }
