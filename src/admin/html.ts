@@ -239,8 +239,10 @@ function beToast(text) {
 document.addEventListener("submit", function (e) {
   var f = e.target;
   if (!f || !f.hasAttribute || !f.hasAttribute("data-autosave")) return;
+  if (f.method === "get") return; // a GET form (the try page's "as" picker) just navigates
   e.preventDefault();
-  var body = new FormData(f);
+  // the admin reads plain form posts only; FormData alone would send multipart and fail the token check
+  var body = new URLSearchParams(new FormData(f));
   fetch(f.getAttribute("action") || location.href, { method: "POST", body: body, credentials: "same-origin", redirect: "manual" })
     .then(function (r) {
       // a 303 back to the page is success; anything else goes to the error page
