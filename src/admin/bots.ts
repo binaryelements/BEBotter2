@@ -473,7 +473,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
         // shortcut: sections always open on load; remember the open state if collapsing many becomes a chore.
         return html`<details class="rule-group" data-rule-group open><summary><h3>${g}</h3> <span class="muted">${tools.length} ${tools.length === 1 ? "action" : "actions"}</span></summary>${tools.length > 1 ? groupSwitch(g) : ""}${
           tools.length > 5 ? html`<div class="rule-search"><input class="be-input" type="search" placeholder="Search ${g} actions…" aria-label="Search ${g} actions" data-live-filter="#rg-${i}" data-live-count="#rg-${i}-count"> <span id="rg-${i}-count" class="muted"></span></div>` : ""
-        }<div id="rg-${i}">${scroll(html`<table class="be-table"><tbody>${tools.map(row)}</tbody></table>`)}</div></details>`;
+        }<div class="rule-rows" id="rg-${i}">${scroll(html`<table class="be-table"><tbody>${tools.map(row)}</tbody></table>`)}</div></details>`;
       },
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
