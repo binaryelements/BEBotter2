@@ -179,6 +179,14 @@ ${raw(SHELL_SCRIPT)}
  */
 const SHELL_SCRIPT = `<script>
 document.documentElement.classList.add("js");
+// in a group of tool rules, "all: ..." moves every row to match, and a row's own change puts the group back to "as below";
+// capture runs this before the autosave below reads the form
+document.addEventListener("change", function (e) {
+  var t = e.target, g = t && t.closest && t.closest("[data-rule-group]");
+  if (!g || t.type !== "radio") return;
+  if (t.name.indexOf("all:") === 0) { if (t.value) g.querySelectorAll('input[name^="rule:"][value="' + t.value + '"]').forEach(function (r) { r.checked = true; }); }
+  else if (t.name.indexOf("rule:") === 0) { var b = g.querySelector('input[name^="all:"][value=""]'); if (b) b.checked = true; }
+}, true);
 document.addEventListener("change", function (e) { var f = e.target && e.target.closest && e.target.closest("form[data-autosave]"); if (f) f.requestSubmit(); });
 document.addEventListener("keydown", function (e) {
   if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === "k") {
