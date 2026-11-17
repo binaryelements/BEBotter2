@@ -21,7 +21,7 @@ type Activity = { attachments?: { contentType?: string; contentUrl?: string; nam
  * The files and images on a Teams message. An inline image's URL is on the Teams service and wants the bot's token;
  * a file (Teams uploads, OneDrive and SharePoint shares) brings a download link of its own. Cards and the HTML copy of the text are not files.
  */
-export function incomingAttachments(activity: Activity, fetchFn: typeof fetch, botToken: () => Promise<string>): IncomingAttachment[] {
+export function incomingAttachments(activity: Activity, fetchFn: typeof fetch, botToken: () => Promise<string>, userToken?: () => Promise<string | undefined>): IncomingAttachment[] {
   // the Teams service now and then sits on a download for the whole timeout, then serves it at once on the next try
   const fetchBytes = async (url: string, token?: string, retry = true): Promise<Buffer> => {
     const started = Date.now();
@@ -51,7 +51,17 @@ export function incomingAttachments(activity: Activity, fetchFn: typeof fetch, b
     } else if (type === FILE_INFO && typeof (a.content as { downloadUrl?: unknown })?.downloadUrl === "string") {
       const { downloadUrl: url, fileType } = a.content as { downloadUrl: string; fileType?: string };
       const ext = (fileType ?? a.name?.split(".").pop() ?? "").toLowerCase();
-      out.push({ name: a.name || `file.${ext}`, mediaType: EXT_TYPE[ext] ?? "application/octet-stream", download: () => fetchBytes(url) });
+      // a OneDrive or SharePoint share answers only to the person it was shared with: try it bare, then as them
+      const download = async () => {
+        try {
+          return await fetchBytes(url);
+        } catch (e) {
+          const token = await userToken?.().catch(() => undefined);
+          if (!token) throw e;
+          return fetchBytes(url, token);
+        }
+      };
+      out.push({ name: a.name || `file.${ext}`, mediaType: EXT_TYPE[ext] ?? "application/octet-stream", download });
     }
   }
   return out;

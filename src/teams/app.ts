@@ -191,8 +191,13 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
         from: { aadObjectId: from.aadObjectId, name: from.name ?? "", ...(ctx.activity.localTimezone ? { timezone: ctx.activity.localTimezone } : {}) },
         text: (ctx.activity.text ?? "").trim(),
         // the token the adapter itself uses for the Teams service, so an inline image downloads like a reply sends
-        attachments: incomingAttachments(ctx.activity, fetch, () =>
-          app.adapter.connectionManager.getTokenProviderFromActivity(ctx.identity, ctx.activity).getAccessToken(ctx.identity.azp ?? ctx.identity.appid ?? "https://api.botframework.com")),
+        attachments: incomingAttachments(
+          ctx.activity,
+          fetch,
+          () => app.adapter.connectionManager.getTokenProviderFromActivity(ctx.identity, ctx.activity).getAccessToken(ctx.identity.azp ?? ctx.identity.appid ?? "https://api.botframework.com"),
+          // a file shared from someone's OneDrive needs that person's Graph token, not the bot's
+          () => graphToken(app, ctx).catch(() => undefined),
+        ),
         receivedAt,
         conversationReference: ctx.activity.getConversationReference(),
       },

@@ -20,6 +20,22 @@ describe("chat attachments", () => {
     expect((await items[1]!.download()).toString()).toBe("hello");
   });
 
+  it("downloads a file shared from someone's OneDrive as them when the bare link refuses", async () => {
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+      (init?.headers as Record<string, string>)?.Authorization === "Bearer user" ? new Response("%PDF-1.4") : new Response("no", { status: 403 }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const [file] = incomingAttachments(
+      { attachments: [{ contentType: "application/vnd.microsoft.teams.file.download.info", name: "agreement.pdf", content: { downloadUrl: "https://contoso.sharepoint.com/download.aspx?id=1", fileType: "pdf" } }] },
+      fetchFn as unknown as typeof fetch,
+      async () => "bot",
+      async () => "user",
+    );
+    expect((await file!.download()).toString()).toBe("%PDF-1.4");
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    log.mockRestore();
+  });
+
   it("tries a download once more when the Teams service sits on it, and gives up on the second stall", async () => {
     const stall = () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
     const fetchFn = vi.fn().mockImplementationOnce(stall).mockImplementationOnce(async () => new Response(png)).mockImplementation(stall);
