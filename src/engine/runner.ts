@@ -333,7 +333,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     attemptNo++;
     for (const auditId of inFlight.values()) {
       try {
-        await completeAction(db, auditId, { status: "failed" });
+        await completeAction(db, auditId, { status: "failed", error: "Stopped before it finished: the turn was retried or ended." });
       } catch (err) {
         console.error("closing an unfinished action failed", err instanceof Error ? err.message : "unknown"); // never replaces the turn's answer
       }
@@ -358,7 +358,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       summary: summarise(toolName, input),
     });
     const stale = async () => {
-      await completeAction(db, auditId, { status: "failed" });
+      await completeAction(db, auditId, { status: "failed", error: "Not run: the turn was stopped or retried first." });
       return STALE;
     };
     // a tool that has failed the last few times is refused: the turn should report the problem, not loop
@@ -408,7 +408,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         return { allow: false, message: "Not done: the request was too large to show for confirmation." };
       }
       if (signal.aborted) {
-        await completeAction(db, auditId, { status: "failed" });
+        await completeAction(db, auditId, { status: "failed", error: "Not run: the turn was stopped first." });
         releaseApprove(callId);
         return STALE;
       }
@@ -428,7 +428,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         offAbort();
         if (o.result === "aborted") {
           deps.confirmations.cancel([actionId]); // a late click must not run it either
-          await completeAction(db, auditId, { status: "failed" });
+          await completeAction(db, auditId, { status: "failed", error: "Not run: the turn was stopped while waiting for confirmation." });
           releaseApprove(callId);
           return STALE;
         }
@@ -453,7 +453,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     }
   };
 
-  const completeTool = async (callId: string, status: "done" | "failed"): Promise<void> => {
+  const completeTool = async (callId: string, status: "done" | "failed", error?: string): Promise<void> => {
     const name = toolOf.get(callId);
     toolOf.delete(callId);
     if (name) {
@@ -464,7 +464,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     if (!auditId) return;
     inFlight.delete(callId);
     releaseApprove(callId);
-    await completeAction(db, auditId, { status });
+    await completeAction(db, auditId, { status, ...(error ? { error } : {}) });
     if (status === "done" && granted.has(callId)) changed = true;
   };
 
@@ -476,9 +476,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   };
   const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received, person);
 
-  const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings) => {
+  const auditMessage = async (summary: string, status: "done" | "failed", costUsd?: number, withTimings?: TurnTimings, error?: string) => {
     const auditId = await beginAction(db, { ...base, kind: "message", summary: summary.slice(0, 200), model: definition.model, startedAt: received });
-    await completeAction(db, auditId, { status, ...(costUsd !== undefined ? { costUsd } : {}), ...(withTimings ? { timings: withTimings } : {}) });
+    await completeAction(db, auditId, { status, ...(costUsd !== undefined ? { costUsd } : {}), ...(withTimings ? { timings: withTimings } : {}), ...(error ? { error } : {}) });
     return auditId;
   };
 
@@ -556,7 +556,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
             updatedAt: now,
           },
         });
-    const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings);
+    const why = ok ? undefined : result.stopReason === "max-steps" ? "Stopped: it used all its steps for this turn." : (result.error ?? "The model returned an error.");
+    const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings, why);
     return { text, costUsd, changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
     await registry?.close();

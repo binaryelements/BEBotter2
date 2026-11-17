@@ -92,15 +92,17 @@ export function mailInbound(deps: InboundDeps): RequestHandler[] {
       for (const { chatId } of await db.select({ chatId: chatAssignments.chatId }).from(chatAssignments).where(eq(chatAssignments.definitionId, box.definitionId))) {
         // one chat's failure (Teams or audit) never stops the notices to the others
         let status: "done" | "failed" = "done";
+        let error: string | undefined;
         try {
           await deps.send(chatId, text);
         } catch (e) {
           status = "failed";
+          error = `Couldn't post it to the chat: ${e instanceof Error ? e.message : "unknown error"}`;
           console.error("mail notice:", errName(e));
         }
         try {
           const id = await beginAction(db, { tenantId: def.tenantId, chatId, definitionId: box.definitionId, kind: "message", summary: `Email from ${sender}: ${subject}`.slice(0, 200) });
-          await completeAction(db, id, { status });
+          await completeAction(db, id, { status, error });
         } catch (e) {
           console.error("mail notice:", errName(e));
         }

@@ -67,7 +67,7 @@ function fakeEngine(opts: FakeOptions = {}) {
           history.push({ role: "tool", toolCallId: id, text: decision.message, isError: true });
           continue;
         }
-        await input.completeTool(id, name === opts.failTool ? "failed" : "done");
+        await input.completeTool(id, name === opts.failTool ? "failed" : "done", name === opts.failTool ? "403 Forbidden" : undefined);
         history.push({ role: "tool", toolCallId: id, text: "ok", ...(name === opts.failTool ? { isError: true } : {}) });
       }
       const text = opts.result?.text ?? "Done.";
@@ -532,13 +532,13 @@ describe("runTurn", () => {
   it("records a failed message when the result is not a success", async () => {
     const db = await testDb();
     const { definition, person } = await setup(db);
-    const q = fakeEngine({ calls: [], result: { stopReason: "error", text: "secret", usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.5 } } });
+    const q = fakeEngine({ calls: [], result: { stopReason: "error", text: "secret", error: "The model call failed: 429", usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.5 } } });
     const result = await runTurn(deps(db, q.engine), {
       tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {},
     });
     expect(result).toMatchObject({ text: FAILED_TEXT, costUsd: 0.5, changed: false });
     const [row] = await listActions(db, { tenantId: "t1" });
-    expect(row).toMatchObject({ kind: "message", status: "failed" });
+    expect(row).toMatchObject({ kind: "message", status: "failed", error: "The model call failed: 429" });
   });
 
   it("fails the audit row of a tool that errors", async () => {
@@ -549,7 +549,7 @@ describe("runTurn", () => {
       tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: () => Promise.reject(new Error("teams down")),
     });
     const rows = await listActions(db, { tenantId: "t1" });
-    expect(rows.find((r) => r.toolName === "mcp__computer__bash")!.status).toBe("failed");
+    expect(rows.find((r) => r.toolName === "mcp__computer__bash")).toMatchObject({ status: "failed", error: "403 Forbidden" });
   });
 
   it("denies the write tool and fails its row when askConfirmation rejects", async () => {

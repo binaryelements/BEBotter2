@@ -37,7 +37,7 @@ export async function runRoutine(deps: SchedulerDeps, routine: HeadlessRun): Pro
     console.error(`routine ${routine.id}: ${reason}`);
     try {
       const id = await beginAction(db, { tenantId, chatId, definitionId, personId: routine.createdByPersonId, kind: "message", summary: `Routine not run: ${reason}` });
-      await completeAction(db, id, { status: "failed" });
+      await completeAction(db, id, { status: "failed", error: reason });
     } catch (err) {
       console.error(`routine ${routine.id}: audit failed`, err);
     }

@@ -71,15 +71,17 @@ export async function receiveHook(deps: InboundHookDeps, id: string, secret: str
       for (const { chatId } of chats) {
         // one chat's failure (Teams or audit) never stops the notices to the others
         let status: "done" | "failed" = "done";
+        let error: string | undefined;
         try {
           await deps.send(chatId, text);
         } catch (e) {
           status = "failed";
+          error = `Couldn't post it to the chat: ${e instanceof Error ? e.message : "unknown error"}`;
           console.error("inbound hook:", errName(e));
         }
         try {
           const auditId = await beginAction(deps.db, { tenantId: def.tenantId, chatId, definitionId: def.id, kind: "message", summary: `Webhook from ${payload.from || "an outside system"}${payload.subject ? `: ${payload.subject}` : ""}`.slice(0, 200) });
-          await completeAction(deps.db, auditId, { status });
+          await completeAction(deps.db, auditId, { status, error });
         } catch (e) {
           console.error("inbound hook:", errName(e));
         }

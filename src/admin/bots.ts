@@ -137,7 +137,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
   const audit = async (actor: { tenantId: string; personId: string }, what: string, definitionId: string, outcome: "done" | "failed", note = "") => {
     try {
       const rowId = await beginAction(db, { tenantId: actor.tenantId, definitionId, personId: actor.personId, kind: "admin", toolName: what, summary: `Admin: ${what}${note ? ` (${note})` : ""}`.slice(0, 300) });
-      await completeAction(db, rowId, { status: outcome });
+      await completeAction(db, rowId, { status: outcome, ...(outcome === "failed" && note ? { error: note } : {}) });
     } catch (e) {
       console.error("admin audit:", e instanceof Error ? e.name : "error");
     }
