@@ -135,7 +135,7 @@ describe("activity screen", () => {
     expect(r.headers.get("content-disposition")).toBe('attachment; filename="activity.csv"');
     expect(r.headers.get("cache-control")).toBe("no-store");
     const csv = await r.text();
-    expect(csv.startsWith("time,person,bot,chat,tool,status,summary,confirmed_by\r\n")).toBe(true);
+    expect(csv.startsWith("time,person,bot,chat,tool,status,summary,confirmed_by,error\r\n")).toBe(true);
     expect(csv).toContain('"\'=SUM(1,2)","Hal"');
     expect(csv).toContain('"said ""hi"", there\nline two"');
     for (const s of ["-1", "+1", "@x", "\tx"]) expect(csv).toContain(`"'${s}"`);

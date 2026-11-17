@@ -51,6 +51,7 @@ const cells = (e: AuditEvent, n: Awaited<ReturnType<typeof names>>, when?: When)
   e.status,
   when ? inputWords(e.summary) : e.summary,
   e.authority ? (n.person.get(e.authority.personId) ?? "") : "",
+  e.error ?? "",
 ];
 
 /** A filter as a dropdown of names; the value stays the id, so links and the csv keep working. */
@@ -137,7 +138,7 @@ export function activityRoutes(db: Db): Router {
       const tr = rows.map((e) => {
         const c = cells(e, n, when);
         const cls = ["be-mono be-nowrap", "", "", "be-nowrap", ""];
-        return html`<tr>${c.slice(0, 5).map((v, i) => (cls[i] ? html`<td class="${cls[i]}">${v}</td>` : html`<td>${v}</td>`))}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
+        return html`<tr>${c.slice(0, 5).map((v, i) => (cls[i] ? html`<td class="${cls[i]}">${v}</td>` : html`<td>${v}</td>`))}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[6]}${e.error ? html`<div class="be-hint be-bad">${e.error}</div>` : ""}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
       });
       const sel = { bot: q(req, "bot"), person: q(req, "person"), chat: q(req, "chat") };
       res.type("html").send(
@@ -160,7 +161,7 @@ ${older ? html`<p><a href="/admin/activity?${older}">older</a></p>` : ""}`,
       const got = await fetchRows(req, res, CSV_MAX);
       if (!got) return;
       const { rows, n } = got;
-      const lines = ["time,person,bot,chat,tool,status,summary,confirmed_by", ...rows.map((e) => cells(e, n).map(csvCell).join(","))];
+      const lines = ["time,person,bot,chat,tool,status,summary,confirmed_by,error", ...rows.map((e) => cells(e, n).map(csvCell).join(","))];
       res
         .set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="activity.csv"', "Cache-Control": "no-store" })
         .send(lines.join("\r\n") + "\r\n");

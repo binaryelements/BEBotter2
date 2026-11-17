@@ -61,7 +61,7 @@ describe("OpenAICompatEngine", () => {
     expect(result.usage.costUsd).toBeGreaterThan(0);
     expect(authorise).toHaveBeenCalledWith("call_1", "mcp__knowledge__read", { path: "x" });
     expect(call).toHaveBeenCalledWith("mcp__knowledge__read", { path: "x" }, expect.any(AbortSignal));
-    expect(complete).toHaveBeenCalledWith("call_1", "done");
+    expect(complete).toHaveBeenCalledWith("call_1", "done", undefined);
     expect(events).toEqual([
       { kind: "ready" },
       { kind: "tools", tools: ["mcp__knowledge__read"] },

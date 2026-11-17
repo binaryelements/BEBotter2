@@ -36,6 +36,7 @@ export type EngineResult = {
   usage: EngineUsage;
   steps: number;
   stopReason: "text" | "max-steps" | "aborted" | "error";
+  error?: string; // why it stopped, for the activity log only; never shown in the chat
 };
 
 export type ToolDecision = { allow: true } | { allow: false; message: string };
@@ -69,7 +70,7 @@ export type EngineRunInput = EngineProcessOptions & {
   /** The app's gate, audit row and confirmation card. */
   authoriseTool: (callId: string, name: string, input: Record<string, unknown>) => Promise<ToolDecision>;
   /** Closes the audit row opened by authoriseTool. */
-  completeTool: (callId: string, status: "done" | "failed") => Promise<void>;
+  completeTool: (callId: string, status: "done" | "failed", error?: string) => Promise<void>;
   /** Called before each attempt, so the app can reset per-attempt timings. */
   onAttemptStart?: () => void;
 };

@@ -340,6 +340,7 @@ export const auditEvents = pgTable("audit_events", {
   model: text("model"),
   costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
   timings: jsonb("timings").$type<TurnTimings>(), // message rows only
+  error: text("error"), // why a failed action failed, first 500 characters
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
 });

@@ -202,7 +202,7 @@ export class OpenAICompatEngine implements Engine {
           messages.push({ role: "tool", toolCallId: call.id, text, ...(result.isError ? { isError: true } : {}) });
           openai.push({ role: "tool", tool_call_id: call.id, content: text });
           if (result.images?.length) images.push({ note: `Image returned by ${call.name}.`, images: result.images });
-          await input.completeTool(call.id, result.isError ? "failed" : "done");
+          await input.completeTool(call.id, result.isError ? "failed" : "done", result.isError ? text : undefined);
         }
         for (const img of images) {
           messages.push({ role: "user", text: img.note, images: img.images });
@@ -218,8 +218,9 @@ export class OpenAICompatEngine implements Engine {
       return this.result(input, messages, "max-steps", usage, steps);
     } catch (err) {
       if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
-      console.error("openai engine failed", err instanceof Error ? err.message : "unknown");
-      return this.result(input, messages, "error", usage, steps);
+      const why = err instanceof Error ? err.message : "unknown";
+      console.error("openai engine failed", why);
+      return { ...this.result(input, messages, "error", usage, steps), error: `The model call failed: ${why}` };
     }
   }
 
@@ -265,6 +266,6 @@ export class OpenAICompatEngine implements Engine {
 
   private failure(input: EngineRunInput, message: string): EngineResult {
     console.error(message);
-    return { text: FAILED_TEXT, messages: sanitiseHistory(input.history), usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, steps: 0, stopReason: "error" };
+    return { text: FAILED_TEXT, messages: sanitiseHistory(input.history), usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, steps: 0, stopReason: "error", error: message };
   }
 }

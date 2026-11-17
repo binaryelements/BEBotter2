@@ -25,10 +25,12 @@ export async function beginAction(
   return id;
 }
 
+const MAX_ERROR = 500;
+
 export async function completeAction(
   db: Db,
   id: string,
-  input: { status: "done" | "denied" | "expired" | "failed"; authority?: Authority; costUsd?: number; timings?: TurnTimings },
+  input: { status: "done" | "denied" | "expired" | "failed"; authority?: Authority; costUsd?: number; timings?: TurnTimings; error?: string },
 ): Promise<void> {
   await db
     .update(auditEvents)
@@ -38,6 +40,7 @@ export async function completeAction(
       ...(input.authority ? { authority: input.authority } : {}),
       ...(input.costUsd !== undefined ? { costUsd: input.costUsd.toString() } : {}),
       ...(input.timings ? { timings: input.timings } : {}),
+      ...(input.error ? { error: input.error.trim().slice(0, MAX_ERROR) } : {}),
     })
     .where(eq(auditEvents.id, id));
 }
