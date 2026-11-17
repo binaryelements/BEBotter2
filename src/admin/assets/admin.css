@@ -432,7 +432,15 @@ main h2, main h3 {
 .card-head .be-btn { margin-left: auto; }
 .card-head .be-chip { margin-left: auto; }
 .card-head .be-chip + .be-btn { margin-left: 0; }
-.persona { margin: 0; color: var(--ui-ink); font-size: 13.5px; line-height: 1.65; }
+.persona { margin: 0; color: var(--ui-ink); font-size: 13.5px; line-height: 1.65; white-space: pre-line; }
+/* a long persona shows its first 8 lines on the overview; the box beside it opens the rest without script */
+.persona.clamp { max-height: calc(1.65em * 8); overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.persona-all { position: absolute; opacity: 0; pointer-events: none; }
+.persona-all:checked + .persona.clamp { max-height: none; -webkit-mask-image: none; mask-image: none; }
+.persona-more { margin-top: 8px; }
+.persona-more::after { content: "Show all"; }
+.persona-all:checked ~ .persona-more::after { content: "Show less"; }
+.persona-all:focus-visible ~ .persona-more { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .small { font-size: 12.5px; }
 .list { display: flex; flex-direction: column; }
 .list-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--ui-line); }
@@ -935,3 +943,22 @@ form.saved { outline: 2px solid var(--ui-good); outline-offset: 3px; border-radi
   }
   .js table.be-table tr:hover td { background: transparent; }
 }
+
+/* Actions tab: each tool group collapses, with its own search */
+details.rule-group { margin-top: 18px; }
+details.rule-group > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; list-style: none; padding: 6px 8px; margin: 0 -8px; border-radius: 8px; }
+details.rule-group > summary::-webkit-details-marker { display: none; }
+details.rule-group > summary:hover { background: var(--ui-accent-soft); }
+/* a chevron that points right when closed and down when open */
+details.rule-group > summary::before { content: ""; width: 8px; height: 8px; border: solid var(--ui-muted); border-width: 0 2px 2px 0; transform: rotate(-45deg); transition: transform .15s; flex: none; }
+details.rule-group[open] > summary::before { transform: rotate(45deg); }
+details.rule-group > summary > h3 { display: inline; margin: 0; }
+details.rule-group > .be-seg, details.rule-group > .rule-search { margin: 8px 0; }
+.rule-search { display: flex; align-items: center; gap: 8px; }
+.rule-search .muted { white-space: nowrap; }
+.rule-search .be-input { width: min(100%, 320px); }
+/* a long list (a bot's actions, its connections) shows about 8 rows at once and scrolls the rest inside itself;
+   the cap sits on the table's own scroll box so a header row can stay pinned */
+.capped-rows { border-bottom: 1px solid var(--ui-line); }
+.capped-rows > .scroll { max-height: 480px; overflow: auto; overscroll-behavior: contain; }
+.capped-rows thead th { position: sticky; top: 0; z-index: 1; }

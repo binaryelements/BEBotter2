@@ -179,7 +179,16 @@ ${raw(SHELL_SCRIPT)}
  */
 const SHELL_SCRIPT = `<script>
 document.documentElement.classList.add("js");
-document.addEventListener("change", function (e) { var f = e.target && e.target.closest && e.target.closest("form[data-autosave]"); if (f) f.requestSubmit(); });
+// in a group of tool rules, "all: ..." moves every row to match, and a row's own change puts the group back to "as below";
+// capture runs this before the autosave below reads the form
+document.addEventListener("change", function (e) {
+  var t = e.target, g = t && t.closest && t.closest("[data-rule-group]");
+  if (!g || t.type !== "radio") return;
+  if (t.name.indexOf("all:") === 0) { if (t.value) g.querySelectorAll('input[name^="rule:"][value="' + t.value + '"]').forEach(function (r) { r.checked = true; }); }
+  else if (t.name.indexOf("rule:") === 0) { var b = g.querySelector('input[name^="all:"][value=""]'); if (b) b.checked = true; }
+}, true);
+// a control with no name (a search box) saves nothing, so it doesn't submit
+document.addEventListener("change", function (e) { var f = e.target && e.target.name && e.target.closest && e.target.closest("form[data-autosave]"); if (f) f.requestSubmit(); });
 document.addEventListener("keydown", function (e) {
   if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === "k") {
     var s = document.querySelector(".search input, .search-form input");
@@ -215,7 +224,31 @@ document.querySelectorAll("[data-live-filter]").forEach(function (input) {
     if (count) count.textContent = shown + " of " + rows.length;
   };
   input.addEventListener("input", apply);
+  // Enter in a filter box filters; it must not submit the form around it
+  input.addEventListener("keydown", function (e) { if (e.key === "Enter") e.preventDefault(); });
   apply();
+});
+// Actions tab: one box over every section. A section whose name matches shows whole; otherwise only its matching
+// actions show, and a section with none hides. Matching sections open so the hits are visible.
+document.querySelectorAll("[data-section-filter]").forEach(function (input) {
+  var form = input.form, count = form && form.querySelector("[data-section-count]");
+  if (!form) return;
+  var groups = Array.from(form.querySelectorAll("[data-rule-group]"));
+  input.addEventListener("keydown", function (e) { if (e.key === "Enter") e.preventDefault(); });
+  input.addEventListener("input", function () {
+    var q = input.value.trim().toLowerCase(), shown = 0;
+    groups.forEach(function (g) {
+      var h = g.querySelector("summary h3"), whole = !q || (h && h.textContent.toLowerCase().includes(q)), hits = 0;
+      var rows = Array.from(g.querySelectorAll("tbody tr"));
+      rows.forEach(function (tr) { var hit = whole || tr.textContent.toLowerCase().includes(q) || (tr.firstElementChild && (tr.firstElementChild.title || "").toLowerCase().includes(q)); tr.hidden = !hit; if (hit) hits++; });
+      var own = g.querySelector("[data-live-filter]"); if (own) own.value = "";
+      var c = own && document.querySelector(own.getAttribute("data-live-count")); if (c) c.textContent = hits + " of " + rows.length;
+      g.hidden = hits === 0;
+      if (q && hits) g.open = true;
+      if (hits) shown++;
+    });
+    if (count) count.textContent = q ? shown + " of " + groups.length + " sections" : "";
+  });
 });
 document.querySelectorAll(".nav-item").forEach(function (a) {
   a.addEventListener("click", function () { var c = document.getElementById("nav-open"); if (c) c.checked = false; });
@@ -239,8 +272,10 @@ function beToast(text) {
 document.addEventListener("submit", function (e) {
   var f = e.target;
   if (!f || !f.hasAttribute || !f.hasAttribute("data-autosave")) return;
+  if (f.method === "get") return; // a GET form (the try page's "as" picker) just navigates
   e.preventDefault();
-  var body = new FormData(f);
+  // the admin reads plain form posts only; FormData alone would send multipart and fail the token check
+  var body = new URLSearchParams(new FormData(f));
   fetch(f.getAttribute("action") || location.href, { method: "POST", body: body, credentials: "same-origin", redirect: "manual" })
     .then(function (r) {
       // a 303 back to the page is success; anything else goes to the error page

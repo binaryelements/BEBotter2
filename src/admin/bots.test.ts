@@ -829,6 +829,9 @@ describe("action rules", () => {
     expect(page).toMatch(/name="rule:mcp__mail__send_email" value="confirm" checked><span>Needs confirmation \(default\)/);
     expect(page).toContain("Needs confirmation (locked)");
     expect(page).not.toContain('name="rule:mcp__connections__approve"');
+    // each group collapses; a search box only appears in a group of more than 5
+    expect(page).toContain('<details class="rule-group" data-rule-group open><summary><h3>tickets</h3> <span class="muted">2 actions</span></summary>');
+    expect(page).not.toContain("data-live-filter=\"#rg-");
   });
 
   it("an admin's change is saved, shown and audited; choosing the default again clears it", async () => {

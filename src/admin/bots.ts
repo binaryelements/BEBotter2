@@ -467,8 +467,14 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
     const groupSwitch = (g: string) => html`<div class="be-seg" role="radiogroup" aria-label="all ${g}">${(["", "free", "confirm"] as const).map(
       (r) => html`<label><input type="radio" name="all:${g}" value="${r}" ${r === "" ? "checked" : ""}><span>${r ? `all: ${RULE_LABEL[r]}` : "as below"}</span></label>`,
     )}</div>`;
-    return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it. A connection can be narrower or freer for this bot on its Connections tab; that per-connection choice wins over these rules.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}${[...groups.keys()].sort().map(
-      (g) => html`<h3>${g}</h3>${groups.get(g)!.length > 1 ? groupSwitch(g) : ""}${scroll(html`<table class="be-table"><tbody>${groups.get(g)!.map(row)}</tbody></table>`)}`,
+    return html`<h2>Actions</h2><p class="muted">Each choice saves as you make it. A connection can be narrower or freer for this bot on its Connections tab; that per-connection choice wins over these rules.</p><form method="post" action="/admin/bots/${def.id}/actions" data-autosave>${csrfField(res, "actions")}${AUTO}<div class="rule-search"><input class="be-input" type="search" placeholder="Search sections and actions…" aria-label="Search sections and actions" data-section-filter> <span class="muted" data-section-count></span></div>${[...groups.keys()].sort().map(
+      (g, i) => {
+        const tools = groups.get(g)!;
+        // shortcut: sections always open on load; remember the open state if collapsing many becomes a chore.
+        return html`<details class="rule-group" data-rule-group open><summary><h3>${g}</h3> <span class="muted">${tools.length} ${tools.length === 1 ? "action" : "actions"}</span></summary>${tools.length > 1 ? groupSwitch(g) : ""}${
+          tools.length > 5 ? html`<div class="rule-search"><input class="be-input" type="search" placeholder="Search ${g} actions…" aria-label="Search ${g} actions" data-live-filter="#rg-${i}" data-live-count="#rg-${i}-count"> <span id="rg-${i}-count" class="muted"></span></div>` : ""
+        }<div class="capped-rows" id="rg-${i}">${scroll(html`<table class="be-table"><tbody>${tools.map(row)}</tbody></table>`)}</div></details>`;
+      },
     )}<p><button class="be-btn primary">save</button></p></form>`;
   };
 
@@ -543,7 +549,7 @@ ${person ? html`<p class="muted">Acts as ${ownerName ?? "its owner"} in their ow
           const listRow = (title: string, meta: string) => html`<div class="list-row"><div class="grow"><div class="name">${title}</div><div class="meta">${meta}</div></div></div>`;
           section = html`<div class="be-tiles" style="margin-bottom:16px">${def.identity === "person" ? tile("Owner", ownerName ?? "unowned", ownerName ? "the person this assistant acts for" : "choose one in Edit settings", "sm") : ""}${tile("Model", def.model, "the provider/model this bot uses", "sm")}${tile("Chats", String(chatCount.n), `${assigned.filter((c) => c.conversationType === "groupChat").length} group · ${assigned.filter((c) => c.conversationType === "channel").length} channel`)}${tile("Last active", last ? when(last.startedAt) : "never", lastWho ? `${lastWho}${lastChat ? ` · ${lastChat}` : ""}` : "no messages yet", "sm")}${tile("Spend, 7 days", `$${Number(spend7[0]?.total ?? 0).toFixed(2)}`, `$${Number(spendMonth[0]?.total ?? 0).toFixed(2)} this month`)}</div>
 <div class="dash-cols">
-<section class="be-card"><div class="card-head"><h2>Persona</h2><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=persona">Edit</a></div><p class="persona">${def.persona}</p><div class="bot-chips">${tools.map((t) => html`<span class="be-chip">${t}</span>`)}</div></section>
+<section class="be-card"><div class="card-head"><h2>Persona</h2><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=persona">Edit</a></div>${def.persona.split("\n").length > 8 || def.persona.length > 700 ? html`<input type="checkbox" class="persona-all" id="persona-all"><p class="persona clamp">${def.persona}</p><label class="be-btn sm quiet persona-more" for="persona-all"></label>` : html`<p class="persona">${def.persona}</p>`}<div class="bot-chips">${tools.map((t) => html`<span class="be-chip">${t}</span>`)}</div></section>
 <section class="be-card"><div class="card-head"><h2>Daily reflection</h2><span class="be-chip ${def.reflectionMode === "off" ? "" : "g"}">${def.reflectionMode === "off" ? "off" : "auto"}</span><a class="be-btn sm quiet" href="/admin/bots/${def.id}?tab=reflections">Edit</a></div><dl class="be-kv"><dt>Mode</dt><dd>${modeWords}</dd><dt>Group</dt><dd>${def.reflectionChatId ? (chatLabel.get(def.reflectionChatId) ?? "a chat") : "not set"}</dd><dt>Hour</dt><dd>${String(def.reflectionHour).padStart(2, "0")}:00</dd><dt>Last run</dt><dd>${reflection ? reflection.day : "not yet"}</dd></dl>${reflection ? html`<div class="be-notice good" style="margin-top:14px"><div class="grow"><b>${reflection.day}</b><div class="meta">${reflection.summary || reflection.willDo || "Reflection saved."}</div></div><a class="be-btn sm" href="/admin/bots/${def.id}?tab=reflections">Read</a></div>` : html`<p class="muted small" style="margin-top:14px">No reflection yet. It runs daily at ${String(def.reflectionHour).padStart(2, "0")}:00 in the company time zone.</p>`}</section>
 </div>
 <section class="be-card" style="margin-top:16px"><div class="card-head"><h2>Inbound webhook</h2><span class="be-chip ${def.inboundSecret ? "g" : ""}">${def.inboundSecret ? "on" : "off"}</span></div>
@@ -596,7 +602,7 @@ ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` 
 <td><form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke for all bots</button></form></td></tr>`;
           };
           const connTable = (list: Connection[], uses: boolean) =>
-            scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>This bot</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`);
+            html`<div class="capped-rows">${scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>This bot</th><th></th><th></th></tr></thead><tbody>${list.map((c) => connRow(c, uses))}</tbody></table>`)}</div>`;
           const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
           const needle = q.toLowerCase();
           const matches = (c: Connection) => !needle || [c.name, c.kind, c.target, c.mode, c.status, c.description ?? ""].some((s) => s.toLowerCase().includes(needle));
