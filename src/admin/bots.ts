@@ -9,7 +9,7 @@ import {
 import { and, count, eq, gte, inArray, max, sql } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
-import { activeMcp, adminVerify, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setConnectionGrant, setConnectionMode, setDescription, setLinked } from "../connections/store.js";
+import { activeMcp, adminVerify, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setConnectionGrant, setConnectionMode, setDescription, setLinked, updateConnection } from "../connections/store.js";
 import type { ConnectionGrantMode, ConnectionKind, ConnectionMode } from "../connections/store.js";
 import { SQL_ENGINES } from "../connections/sql.js";
 import type { SqlRunner } from "../connections/sql.js";
@@ -183,13 +183,30 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
       };
       const filtered = conns.filter(matches);
       const csrf = csrfField(res);
+      // every connection can be edited in place: address, mode, the fields its kind needs, and a new secret
+      const editForm = (c: Connection, csrf: SafeHtml) => {
+        const cfg = c.config as Record<string, unknown>;
+        const oauth = oauthOf(c);
+        const text = (v: unknown) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v));
+        return html`<details class="conn-edit"><summary>edit</summary><form method="post" action="/admin/connections/${c.id}/update" data-connection-kind>${csrf}
+<div class="fields">
+<label>target<span class="hint">host name, or URL</span><input name="target" value="${c.target}" required autocomplete="off"></label>
+<label>mode<select name="mode">${(["read-only", "change"] as const).map((m) => html`<option value="${m}" ${m === c.mode ? "selected" : ""}>${m}</option>`)}</select></label>
+${c.kind === "ssh" || c.kind === "sql" ? html`<label>username<input name="username" value="${text(cfg.username)}" autocomplete="off"></label><label>port<input name="port" inputmode="numeric" value="${text(cfg.port)}" autocomplete="off"></label>` : ""}
+${c.kind === "sql" ? html`<label>engine<select name="engine">${SQL_ENGINES.map((e) => html`<option ${e === cfg.engine ? "selected" : ""}>${e}</option>`)}</select></label><label>database<input name="database" value="${text(cfg.database)}" autocomplete="off"></label>` : ""}
+${oauth ? html`<label>sign-in<span class="hint">this server signs in with OAuth; changing its address needs a new sign-in</span><span class="be-chip c">OAuth</span></label>` : c.kind === "http" || c.kind === "mcp" ? html`<label>header name<span class="hint">leave blank to keep it as it is</span><input name="headerName" value="${text(cfg.headerName ?? (cfg.auth as { name?: string } | undefined)?.name)}" autocomplete="off"></label><label>new secret<span class="hint">blank keeps the stored one</span><input type="password" name="secret" autocomplete="new-password" data-lpignore="true"></label>` : c.kind === "sql" ? html`<label>new password<span class="hint">blank keeps the stored one</span><input type="password" name="secret" autocomplete="new-password" data-lpignore="true"></label>` : ""}
+${c.kind === "mcp" && !oauth ? html`<label>tools that only read<span class="hint">comma separated; they run without a card</span><input name="readOnlyTools" value="${((cfg.readOnlyTools as string[] | undefined) ?? []).join(", ")}" autocomplete="off"></label>` : ""}
+</div>
+<label>what it is for<textarea name="description" rows="3">${c.description ?? ""}</textarea></label>
+<button class="be-btn sm primary">save settings</button></form></details>`;
+      };
       const rows = filtered.map((c) => {
         const bots = links.filter((l) => l.connectionId === c.id);
         const test = c.status === "revoked" ? "" : c.status === "blocked"
           ? html`<form method="post" action="/admin/connections/${c.id}/unblock">${csrf}<button class="be-btn sm" title="forgets the old pin, tests the connection and pins the current host key">unblock</button></form>`
           : html`<form method="post" action="/admin/connections/${c.id}/verify">${csrf}<button class="be-btn sm" title="connects once to check it works; a new ssh connection goes active">test</button></form>`;
         return html`<tr><td><span class="nm">${c.name}</span>${c.ownerDefinitionId ? html` <span class="chip c" title="private to one bot: nobody else may be linked to it">private</span>` : ""}</td><td>${c.kind}</td><td class="conn-target" title="${c.target}">${c.target}${c.kind === "ssh" && c.status === "pending" && c.publicKey ? html`<details><summary>public key to install</summary><pre>${c.publicKey}</pre></details>` : ""}</td><td><form class="inline-edit" method="post" action="/admin/connections/${c.id}/mode" data-autosave>${csrf}<select class="be-select" name="mode" aria-label="Connection mode" title="Read-only stops every bot changing this system; change lets each bot's permission ask or allow writes.">${(["read-only", "change"] as const).map((m) => html`<option value="${m}" ${m === c.mode ? "selected" : ""}>${m}</option>`)}</select><button class="be-btn sm auto">save</button></form></td><td>${c.status}${signInCell(c, csrf)}${c.lastError ? html`<div class="small" style="color:var(--ui-bad)">${c.lastError}</div>` : ""}</td>
-<td><div class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</div><details class="conn-edit"><summary>edit</summary><form method="post" action="/admin/connections/${c.id}/description">${csrf}<textarea name="description" rows="3" placeholder="what it is for, what is safe to run, what to leave alone">${c.description ?? ""}</textarea><button class="be-btn sm">save</button></form></details></td>
+<td><div class="conn-desc" title="${c.description ?? ""}">${c.description ?? ""}</div>${editForm(c, csrf)}</td>
 <td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
 <td><div class="conn-actions">${test}${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</div></td></tr>`;
       });
@@ -277,6 +294,40 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       }
       if (oauthOf(c)) return res.redirect(302, beginSignIn(c, oauthRedirect));
       return res.redirect(303, "/admin/connections?saved=1");
+    }),
+  );
+
+  // an admin changes a connection's settings in place: address, mode, its kind's fields, and a new secret
+  router.post(
+    "/connections/:id/update",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      const [c] = await db.select().from(connections).where(and(eq(connections.id, req.params.id), eq(connections.tenantId, actor.tenantId)));
+      if (!c) return page(res, 404, "Connection not found.");
+      const kind = c.kind as ConnectionKind;
+      const prev = c.config as Record<string, unknown>;
+      const target = field(req, "target").trim() || c.target;
+      const port = field(req, "port").trim() ? Number(field(req, "port")) : undefined;
+      const headerName = field(req, "headerName").trim() || undefined;
+      const secret = field(req, "secret");
+      let config: Record<string, unknown> = {};
+      if (kind === "ssh") config = { username: field(req, "username").trim() || prev.username, port: port ?? prev.port ?? 22 };
+      if (kind === "sql") config = { engine: field(req, "engine") || prev.engine, port: port ?? prev.port, database: field(req, "database").trim() || prev.database, username: field(req, "username").trim() || prev.username };
+      if (kind === "http") config = headerName ? { auth: { in: "header", name: headerName } } : prev.auth ? { auth: prev.auth } : {};
+      if (kind === "mcp") {
+        const tools = field(req, "readOnlyTools").split(",").map((t) => t.trim()).filter(Boolean);
+        config = { ...(headerName ? { headerName } : prev.headerName ? { headerName: prev.headerName } : {}), readOnlyTools: tools.length ? tools : ((prev.readOnlyTools as string[] | undefined) ?? []) };
+      }
+      try {
+        await updateConnection(connDeps, actor.tenantId, req.params.id, { target, mode: (field(req, "mode") as ConnectionMode) || undefined, description: field(req, "description"), config: config as never, secret });
+      } catch (e) {
+        if (e instanceof ConnectionError || e instanceof DirectoryError) {
+          return res.redirect(303, `/admin/connections?error=${encodeURIComponent(e instanceof Error ? e.message : "Could not save the connection.")}`);
+        }
+        throw e;
+      }
+      res.redirect(303, "/admin/connections?saved=1");
     }),
   );
 

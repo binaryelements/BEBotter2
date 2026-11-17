@@ -217,6 +217,57 @@ export async function createConnection(deps: Omit<ConnectionDeps, "fetchFn">, te
   return row!;
 }
 
+/** An admin edits a connection's target, settings and description; a blank secret keeps the stored one. */
+export type ConnectionUpdate = {
+  target?: string;
+  mode?: ConnectionMode;
+  config?: ConnectionConfig;
+  description?: string;
+  /** a new secret, encrypted in place; blank or absent keeps the one already stored */
+  secret?: string;
+  /** when given, the set of bots that have it replaces the current links */
+  definitionIds?: string[];
+};
+
+export async function updateConnection(deps: ConnectionDeps, tenantId: string, id: string, input: ConnectionUpdate): Promise<Connection> {
+  const { db } = deps;
+  const [c] = await db.select().from(connections).where(byId(tenantId, id));
+  if (!c) fail("Connection not found");
+  const kind = c.kind as ConnectionKind;
+  const target = (input.target ?? c.target).trim();
+  const prev = c.config as Record<string, unknown>;
+  const mode = input.mode ?? (c.mode as ConnectionMode);
+  // an OAuth registration cannot be edited here: the server registered this exact client, so it is carried over
+  const config = checkRequest({
+    kind, name: c.name, target, mode,
+    // settings the caller leaves out keep their stored value, so a change of address alone does not blank a username
+    config: { ...prev, ...(input.config ?? {}), ...(kind === "mcp" && prev.oauth ? { oauth: prev.oauth } : {}) } as never,
+    definitionId: "",
+  } as never);
+  const secret = input.secret?.trim();
+  const moved = target !== c.target;
+  const values: Partial<typeof connections.$inferInsert> = {
+    target,
+    config,
+    mode,
+    description: input.description !== undefined ? input.description.trim() || null : c.description,
+    lastError: null,
+    updatedAt: new Date(),
+    ...(secret ? { secretCipher: encrypt(deps.secretsKey, secret) } : {}),
+  };
+  // a different address is a different machine: an ssh pin (and its approval) starts again
+  if (kind === "ssh" && moved) Object.assign(values, { status: "pending", hostKey: null, approvedByPersonId: null });
+  // a different address is a different OAuth server: the old tokens are useless there
+  if (kind === "mcp" && prev.oauth && moved) Object.assign(values, { status: "pending", secretCipher: null });
+  const [row] = await db.update(connections).set(values).where(byId(tenantId, id)).returning();
+  if (!row) fail("Connection not found");
+  if (input.definitionIds) {
+    await db.delete(definitionConnections).where(eq(definitionConnections.connectionId, id));
+    for (const definitionId of input.definitionIds) await setLinked(db, tenantId, definitionId, id, true);
+  }
+  return row!;
+}
+
 /** An admin's test of any connection: ssh pins the host key and goes active (the admin approves by pressing the button). */
 export async function adminVerify(deps: ConnectionDeps, tenantId: string, id: string, personId: string): Promise<string> {
   const [c] = await deps.db.select().from(connections).where(byId(tenantId, id));

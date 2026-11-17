@@ -107,8 +107,8 @@ describe("bots screen", () => {
     expect(page).toContain(`/admin/bots/${d.id}?tab=connections`);
     expect(page).toContain("SAP B1 company database; look things up, never write");
     expect(page).not.toContain("pw-top");
-    const id = page.match(/\/admin\/connections\/([^/]+)\/description/)![1];
-    expect((await post(`/admin/connections/${id}/description`, "Ann", [["description", "SAP B1 live company; read only"]])).status).toBe(303);
+    const id = page.match(/\/admin\/connections\/([^/]+)\/update/)![1];
+    expect((await post(`/admin/connections/${id}/update`, "Ann", [["description", "SAP B1 live company; read only"]])).status).toBe(303);
     expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain("SAP B1 live company; read only");
     const duplicate = await post("/admin/connections", "Ann", [["name", "sap"], ["kind", "sql"], ["target", "x"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"]]);
     expect(duplicate.status).toBe(303);
@@ -412,6 +412,22 @@ describe("bots screen", () => {
       const h = await conn("revhttp", { kind: "http", target: "https://x.example.test", config: {}, publicKey: null });
       expect(await (await post(`/admin/connections/${h}/revoke`, "Ann", [["confirm", "yes"]])).text()).toContain("Revoke the token at its source");
     });
+    it("edits a connection's settings in place from the Connections page", async () => {
+      const c = await conn("edit-me", { mode: "change", config: { port: 22, username: "ops" }, status: "active", hostKey: "ssh-ed25519 AAAAPIN" });
+      const page = await (await get("/admin/connections", "Ann")).text();
+      expect(page).toContain(`/admin/connections/${c}/update`);
+      expect(page).toContain("save settings");
+      const res = await post(`/admin/connections/${c}/update`, "Ann", [
+        ["target", "other.example.test"], ["mode", "read-only"], ["username", "deploy"], ["port", "2222"], ["description", "moved to the new host"],
+      ]);
+      expect([res.status, res.headers.get("location")]).toEqual([303, "/admin/connections?saved=1"]);
+      const [row] = await db.select().from(connections).where(eq(connections.id, c));
+      expect([row.target, row.mode, row.description]).toEqual(["other.example.test", "read-only", "moved to the new host"]);
+      expect(row.config).toMatchObject({ username: "deploy", port: 2222 });
+      // a different ssh host must be pinned again
+      expect([row.status, row.hostKey]).toEqual(["pending", null]);
+    });
+
     it("offers unblock for a blocked connection and the reset route clears the pin", async () => {
       const c = await conn("blk", { status: "blocked", hostKey: "k" });
       expect(await (await get("/admin/connections", "Ann")).text()).toContain(`/admin/connections/${c}/unblock`);

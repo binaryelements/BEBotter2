@@ -10,7 +10,7 @@ import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
 import type { SqlRunner } from "./sql.js";
 import {
-  adminVerify, approveConnection, connectionGrantForTool, connectionGrantsFor, connectionMcpConfigs, createConnection, getConnection, getConnectionGrant, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, resetHostKey, revokeConnection, runSsh, setConnectionGrant, setLinked, verifyConnection,
+  adminVerify, approveConnection, connectionGrantForTool, connectionGrantsFor, connectionMcpConfigs, createConnection, getConnection, getConnectionGrant, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, updateConnection, resetHostKey, revokeConnection, runSsh, setConnectionGrant, setLinked, verifyConnection,
 } from "./store.js";
 
 const key = randomBytes(32);
@@ -375,5 +375,30 @@ describe("connections store", () => {
     expect(mine.connection.ownerDefinitionId).toBe(defId);
     expect((await listConnectionsFor(db, "t1", defId)).map((c) => c.name)).toContain("private-api");
     expect((await listConnectionsFor(db, "t1", otherDefId)).map((c) => c.name)).not.toContain("private-api");
+  });
+});
+
+describe("editing a connection", () => {
+  it("changes its settings in place, keeps the stored secret unless a new one is given, and re-pends a moved ssh host", async () => {
+    const db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const runner = fakeSsh();
+    const deps = { db, ssh: runner, secretsKey: key, fetchFn: (async () => new Response("ok")) as typeof fetch };
+    const bot = await upsertDefinition(db, key, "t1", { name: "ops", label: "Ops", persona: "p" });
+    const person = await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" });
+    const { connection: c } = await requestConnection(deps, "t1", {
+      kind: "ssh", name: "edit-me", target: "pve1.example.test", mode: "read-only", config: { port: 22, username: "bot" }, definitionId: bot.id, personId: person.id,
+    });
+    const kept = c.secretCipher;
+
+    const edited = await updateConnection(deps, "t1", c.id, { target: c.target, config: { port: 2222, username: "other" } as never, description: "now on a new port" });
+    expect(edited.config).toMatchObject({ port: 2222, username: "other" });
+    expect(edited.description).toBe("now on a new port");
+    expect(edited.secretCipher).toBe(kept); // blank keeps it
+
+    const moved = await updateConnection(deps, "t1", c.id, { target: "pve9.example.test" });
+    expect(moved.target).toBe("pve9.example.test");
+    expect(moved.status).toBe("pending");
+    expect(moved.hostKey).toBeNull();
   });
 });
