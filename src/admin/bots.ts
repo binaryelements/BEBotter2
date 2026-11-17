@@ -492,7 +492,7 @@ ${domain ? html`<p><label>email address <input name="localPart" maxlength="36" a
       const head = (tab?: Tab) => html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <span aria-current="page">${def.displayName ?? def.name}</span></nav><h1>${def.displayName ?? def.name} · ${def.label}</h1><p class="meta">${def.identity === "person" ? (ownerName ? `for ${ownerName} · ` : "unowned · ") : ""}${mb?.address ? `${mb.address} · ` : ""}${def.model} · ${chatCount.n} ${chatCount.n === 1 ? "chat" : "chats"}</p></div><div class="act"><a class="be-btn" href="/admin/bots/${def.id}/try">try it</a>${admin ? html`<a class="be-btn primary" href="/admin/bots/${def.id}#bot-settings" onclick="var d=document.getElementById('bot-settings'); if(d) d.open=true;">edit</a>` : ""}</div></header>${
         tab ? html`<nav class="be-tabs" aria-label="bot">${tabsOf(def).map((t) => html`<a href="/admin/bots/${def.id}?tab=${t}"${t === tab ? raw(' class="active" aria-current="page"') : ""}>${t === "m365" ? "Microsoft 365" : t}</a>`)}</nav>` : ""
       }`;
-      const personaBox = html`<p><label>persona<textarea name="persona">${def.persona}</textarea></label></p>`;
+      const personaBox = html`<p><label>persona<textarea name="persona" class="persona-edit">${def.persona}</textarea></label></p>`;
       let body: SafeHtml;
       if (!admin) {
         body = html`${head()}<form method="post" action="/admin/bots/${def.id}">${csrfField(res)}${personaBox}<button class="be-btn primary">save</button></form>`;
