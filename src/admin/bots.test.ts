@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { testDb } from "../db/test-db.js";
 import type { Db } from "../db/client.js";
 import { ensurePersonalAssistant, ensurePersonalDefinition, getDefinition, listDefinitions, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
-import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
+import { recordTools, setToolRule, toolRule, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
@@ -142,6 +142,22 @@ describe("bots screen", () => {
     expect(after.config).toMatchObject({ headerName: "X-Key" });
     expect(after.secretCipher).not.toBe(c.secretCipher);
     expect(await getConnection(db, T, "other-name")).toBeUndefined();
+    // renamed and made private to one person's assistant: the bot's action settings follow the new name
+    await db.update(people).set({ personalBot: true }).where(eq(people.id, id.Mo));
+    const pa = await ensurePersonalAssistant(db, T, id.Mo, "m");
+    await recordTools(db, pa.id, ["mcp__conn-xero-a32tx7ke7f__list_invoices"]);
+    await setToolRule(db, pa.id, "mcp__conn-xero-a32tx7ke7f__list_invoices", "free");
+    expect(await (await get("/admin/connections", "Ann")).text()).toMatch(/Mo(&#39;|&#x27;|')s assistant/);
+    const renamed = await post(`/admin/connections/${c.id}/update`, "Ann", [["name", "xero"], ["privateTo", pa.id], ["mode", "read-only"]]);
+    expect(renamed.headers.get("location")).toBe("/admin/connections?saved=1");
+    const x = (await getConnection(db, T, "xero"))!;
+    expect(x).toMatchObject({ id: c.id, ownerDefinitionId: pa.id, target: "https://xero2.example.test/mcp" });
+    expect((await listConnectionsFor(db, T, pa.id)).map((k) => k.name)).toContain("xero");
+    expect(await toolRule(db, pa.id, "mcp__conn-xero__list_invoices")).toBe("free");
+    expect(await toolRule(db, pa.id, "mcp__conn-xero-a32tx7ke7f__list_invoices")).toBeUndefined();
+    // a taken name is refused on the form
+    await post("/admin/connections", "Ann", [["commandLine", "claude mcp add --transport http taken https://t.example.test/mcp"], ["mode", "read-only"]]);
+    expect(decodeURIComponent((await post(`/admin/connections/${c.id}/update`, "Ann", [["name", "taken"]])).headers.get("location") ?? "")).toContain("already exists");
     // a command it can't take, and an empty form, come back to the form with the reason
     for (const [fields, why] of [
       [[["commandLine", "claude mcp add local npx some-server"]], "Only an http MCP server"],

@@ -169,6 +169,12 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
           .where(eq(botDefinitions.tenantId, actor.tenantId)),
         listDefinitions(db, actor.tenantId),
       ]);
+      // a personal assistant is named for its owner, since every one of them is "My assistant"
+      const owners = new Map((await db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, actor.tenantId))).map((p) => [p.id, p.name]));
+      const botName = (d: BotDefinition) =>
+        d.identity === "person" ? `${(d.ownerPersonId && owners.get(d.ownerPersonId)) || "unowned"}'s assistant` : d.displayName ? `${d.displayName} · ${d.label}` : d.label;
+      const onlyFor = (current: string | null) =>
+        html`<label>only for<span class="hint">one bot alone may use it; nobody can give it to another</span><select class="be-select" name="privateTo"><option value="">any bot it is given to</option>${defs.map((d) => html`<option value="${d.id}" ${d.id === current ? "selected" : ""}>${botName(d)}</option>`)}</select></label>`;
       const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
       const error = (typeof req.query.error === "string" ? req.query.error.trim() : "").slice(0, 300);
       const unblockError = (typeof req.query.unblockError === "string" ? req.query.unblockError.trim() : "").slice(0, 300);
@@ -190,7 +196,9 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
         const text = (v: unknown) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v));
         return html`<details class="conn-edit"><summary>edit</summary><form method="post" action="/admin/connections/${c.id}/update" data-connection-kind>${csrf}
 <div class="fields">
+<label>name<span class="hint">lowercase, digits and dashes</span><input name="name" value="${c.name}" required pattern="[a-z0-9][a-z0-9-]{0,62}" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
 <label>target<span class="hint">host name, or URL</span><input name="target" value="${c.target}" required autocomplete="off"></label>
+${onlyFor(c.ownerDefinitionId)}
 <label>mode<select name="mode">${(["read-only", "change"] as const).map((m) => html`<option value="${m}" ${m === c.mode ? "selected" : ""}>${m}</option>`)}</select></label>
 ${c.kind === "ssh" || c.kind === "sql" ? html`<label>username<input name="username" value="${text(cfg.username)}" autocomplete="off"></label><label>port<input name="port" inputmode="numeric" value="${text(cfg.port)}" autocomplete="off"></label>` : ""}
 ${c.kind === "sql" ? html`<label>engine<select name="engine">${SQL_ENGINES.map((e) => html`<option ${e === cfg.engine ? "selected" : ""}>${e}</option>`)}</select></label><label>database<input name="database" value="${text(cfg.database)}" autocomplete="off"></label>` : ""}
@@ -248,7 +256,8 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
 <p class="hint" data-kind="mcp">The server has its own login: you sign in once after adding it, and every bot given the server shares that sign-in.</p>
 </fieldset>
 <label class="be-label">What it is for</label><textarea name="description" rows="4" placeholder="what the system does, who uses it, what is safe to run, what to leave alone" autocomplete="off"></textarea>
-<p class="give-to"><span>give to:</span>${defs.filter((d) => d.identity !== "person").map((d) => html`<label><input type="checkbox" name="definitionId" value="${d.id}"> ${d.displayName ? `${d.displayName} · ${d.label}` : d.label}</label>`)}</p>
+<p class="give-to"><span>give to:</span>${defs.map((d) => html`<label><input type="checkbox" name="definitionId" value="${d.id}"> ${botName(d)}</label>`)}</p>
+<div class="fields">${onlyFor(null)}</div>
 <p class="muted" data-kind="ssh">ssh: a key pair is made for the connection; install its public key on the target, then press test.</p>
 <div class="savebar"><button class="be-btn primary">add connection</button></div>
 </form></details>`);
@@ -274,6 +283,8 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
         throw e;
       }
       const [pastedHeader] = Object.entries(cmd?.headers ?? {});
+      const privateTo = field(req, "privateTo") || undefined;
+      if (privateTo && !(await getDefinition(db, actor.tenantId, privateTo))) return formError("That bot does not exist");
       const kind = cmd ? "mcp" : (field(req, "kind") as ConnectionKind);
       const target = cmd?.url ?? field(req, "target").trim();
       const name = cmd ? cmd.name.toLowerCase() : field(req, "name").trim();
@@ -299,7 +310,9 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       let c: Connection;
       try {
         c = await createConnection(connDeps, actor.tenantId, {
-          kind, name, target, mode: field(req, "mode") as ConnectionMode, description: field(req, "description"), config: config as never, secret, ...(clientSecret ? { clientSecret } : {}), personId: actor.personId, definitionIds: many(req, "definitionId"),
+          kind, name, target, mode: field(req, "mode") as ConnectionMode, description: field(req, "description"), config: config as never, secret, ...(clientSecret ? { clientSecret } : {}), personId: actor.personId,
+          // a private connection goes to its one bot only, whatever else was ticked
+          ...(privateTo ? { privateToDefinitionId: privateTo, definitionIds: [privateTo] } : { definitionIds: many(req, "definitionId") }),
         });
       } catch (e) {
         if (e instanceof ConnectionError || e instanceof DirectoryError) return formError(e.message);
@@ -347,7 +360,12 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
         config = { ...(headerName ? { headerName } : prev.headerName ? { headerName: prev.headerName } : {}), readOnlyTools: tools.length ? tools : ((prev.readOnlyTools as string[] | undefined) ?? []) };
       }
       try {
-        await updateConnection(connDeps, actor.tenantId, req.params.id, { target, mode: (field(req, "mode") as ConnectionMode) || undefined, description: field(req, "description"), config: config as never, secret });
+        await updateConnection(connDeps, actor.tenantId, req.params.id, {
+          target, mode: (field(req, "mode") as ConnectionMode) || undefined, description: field(req, "description"), config: config as never, secret,
+          name: field(req, "name").trim() || undefined,
+          // an older form without the field leaves it as it is
+          ...(req.body && "privateTo" in req.body ? { privateTo: field(req, "privateTo") || null } : {}),
+        });
       } catch (e) {
         if (e instanceof ConnectionError || e instanceof DirectoryError) return formError(e.message);
         throw e;

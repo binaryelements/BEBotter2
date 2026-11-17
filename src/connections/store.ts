@@ -1,8 +1,8 @@
-import { and, eq, isNull, ne, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { McpServerConfig } from "../engine/mcp.js";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
-import { connections, connectionGrants, definitionConnections, secretLinks } from "../db/schema.js";
+import { botDefinitions, connections, connectionGrants, definitionConnections, definitionTools, secretLinks, toolRules } from "../db/schema.js";
 import type { Connection, ConnectionConfig } from "../db/schema.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { listMcpTools, sendHttp } from "./http.js";
@@ -227,6 +227,10 @@ export type ConnectionUpdate = {
   secret?: string;
   /** when given, the set of bots that have it replaces the current links */
   definitionIds?: string[];
+  /** a new name; an mcp connection's per-bot action settings move to it */
+  name?: string;
+  /** one bot that alone may use it, or null to share it again; absent keeps it as it is */
+  privateTo?: string | null;
 };
 
 export async function updateConnection(deps: ConnectionDeps, tenantId: string, id: string, input: ConnectionUpdate): Promise<Connection> {
@@ -237,9 +241,12 @@ export async function updateConnection(deps: ConnectionDeps, tenantId: string, i
   const target = (input.target ?? c.target).trim();
   const prev = c.config as Record<string, unknown>;
   const mode = input.mode ?? (c.mode as ConnectionMode);
+  const name = input.name?.trim() || c!.name;
+  if (name !== c!.name && (await getConnection(db, tenantId, name))) fail(`A connection named ${name} already exists`);
+  if (input.privateTo && !(await getDefinition(db, tenantId, input.privateTo))) fail("That bot does not exist");
   // an OAuth registration cannot be edited here: the server registered this exact client, so it is carried over
   const config = checkRequest({
-    kind, name: c.name, target, mode,
+    kind, name, target, mode,
     // settings the caller leaves out keep their stored value, so a change of address alone does not blank a username
     config: { ...prev, ...(input.config ?? {}), ...(kind === "mcp" && prev.oauth ? { oauth: prev.oauth } : {}) } as never,
     definitionId: "",
@@ -247,6 +254,8 @@ export async function updateConnection(deps: ConnectionDeps, tenantId: string, i
   const secret = input.secret?.trim();
   const moved = target !== c.target;
   const values: Partial<typeof connections.$inferInsert> = {
+    name,
+    ...(input.privateTo !== undefined ? { ownerDefinitionId: input.privateTo } : {}),
     target,
     config,
     mode,
@@ -264,6 +273,19 @@ export async function updateConnection(deps: ConnectionDeps, tenantId: string, i
   if (input.definitionIds) {
     await db.delete(definitionConnections).where(eq(definitionConnections.connectionId, id));
     for (const definitionId of input.definitionIds) await setLinked(db, tenantId, definitionId, id, true);
+  }
+  // private: every other bot loses it, and the one bot has it
+  if (input.privateTo) {
+    await db.delete(definitionConnections).where(and(eq(definitionConnections.connectionId, id), ne(definitionConnections.definitionId, input.privateTo)));
+    await setLinked(db, tenantId, input.privateTo, id, true);
+  }
+  // its tools are named after it (mcp__conn-<name>__tool), so each bot's run-free/confirm choices follow the new name
+  if (kind === "mcp" && name !== c!.name) {
+    const from = `mcp__conn-${c!.name}__`;
+    const to = `mcp__conn-${name}__`;
+    const ours = db.select({ id: botDefinitions.id }).from(botDefinitions).where(eq(botDefinitions.tenantId, tenantId));
+    for (const t of [toolRules, definitionTools])
+      await db.update(t).set({ toolName: sql`${to} || substr(${t.toolName}, ${from.length + 1})` }).where(and(sql`starts_with(${t.toolName}, ${from})`, inArray(t.definitionId, ours)));
   }
   return row!;
 }
