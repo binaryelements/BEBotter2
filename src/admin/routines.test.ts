@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
+import { trackTurn } from "../engine/live.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -75,6 +76,19 @@ describe("routines screen", () => {
     const head = await (await get("/admin/routines", "Hal")).text();
     expect(head).toContain("sweep the fleet");
     expect(head).not.toContain(`/admin/routines/${routineId}/run`);
+  });
+
+  it("shows a running turn in Running now until it ends", async () => {
+    expect(await (await get("/admin/routines/running", "Ann")).text()).toContain("Nothing running right now");
+    const { live, done } = trackTurn({ tenantId: T, chatId: "c1", definitionId: botId, startedBy: "Background job" });
+    live.doing = "browser: click";
+    live.steps = 3;
+    live.waiting = true;
+    const box = await (await get("/admin/routines/running", "Ann")).text();
+    for (const s of ["Ops", "Ops room", "Background job", "browser: click", "step 3", "confirmation"]) expect(box).toContain(s);
+    expect(await (await get("/admin/routines", "Ann")).text()).toContain("browser: click");
+    done();
+    expect(await (await get("/admin/routines/running", "Ann")).text()).toContain("Nothing running right now");
   });
 
   it("pauses, runs now, and deletes as an admin; a head may not", async () => {
