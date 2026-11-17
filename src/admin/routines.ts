@@ -14,8 +14,36 @@ import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 import { cronWords, whenFor } from "./words.js";
 import { visibleBots } from "./overview.js";
+import { liveTurns } from "../engine/live.js";
+import type { SafeHtml } from "./html.js";
 
 /** Everything a bot runs on a timer or in the background, across every chat the person may see. */
+const chatNames = async (db: Db, tenantId: string) =>
+  new Map(
+    (await db.select({ id: chats.id, label: chats.label, type: chats.conversationType }).from(chats).where(eq(chats.tenantId, tenantId))).map(
+      (c) => [c.id, c.label ?? (c.type === "personal" ? "one-to-one" : c.id.slice(0, 18))],
+    ),
+  );
+
+const since = (at: Date, now: Date) => {
+  const s = Math.max(0, Math.round((now.getTime() - at.getTime()) / 1000));
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
+
+/** The turns working right now on bots this person can see; the page swaps it for a fresh copy every 10 seconds. */
+function runningBox(tenantId: string, bot: Map<string, string>, chatName: Map<string, string>): SafeHtml {
+  const now = new Date();
+  const rows = liveTurns(tenantId).filter((t) => bot.has(t.definitionId));
+  const tr = rows.map(
+    (t) =>
+      html`<tr><td>${bot.get(t.definitionId) ?? ""}</td><td class="muted">${chatName.get(t.chatId) ?? ""}</td><td>${t.startedBy}</td><td class="be-mono be-nowrap">${since(t.startedAt, now)}</td><td>${t.doing ?? html`<span class="muted">thinking</span>`}${t.steps > 1 ? html` <span class="muted">(step ${t.steps})</span>` : ""}</td><td>${t.waiting ? html`<span class="be-chip">confirmation</span>` : ""}</td></tr>`,
+  );
+  return html`<section class="be-card" data-refresh="/admin/routines/running">
+<div class="card-head"><h2>Running now</h2><span class="be-chip ${rows.length ? "c" : ""}">${rows.length}</span></div>
+${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>Bot</th><th>Chat</th><th>Started by</th><th>For</th><th>Doing now</th><th>Waiting on</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<p class="muted small">Nothing running right now.</p>`}
+</section>`;
+}
+
 export function routineRoutes(db: Db): Router {
   const router = express.Router();
   const deny = (res: express.Response) => page(res, 403, "Not allowed.");
@@ -28,11 +56,7 @@ export function routineRoutes(db: Db): Router {
       const { defs } = await visibleBots(db, actor);
       const ids = new Set(defs.map((d) => d.id));
       const rows = (await listRoutines(db, actor.tenantId)).filter((r) => ids.has(r.definitionId));
-      const [chatRows, timezone] = await Promise.all([
-        db.select({ id: chats.id, label: chats.label, type: chats.conversationType }).from(chats).where(eq(chats.tenantId, actor.tenantId)),
-        getTenantSettings(db, actor.tenantId).then((s) => s.timezone),
-      ]);
-      const chatName = new Map(chatRows.map((c) => [c.id, c.label ?? (c.type === "personal" ? "one-to-one" : c.id.slice(0, 18))]));
+      const [chatName, timezone] = await Promise.all([chatNames(db, actor.tenantId), getTenantSettings(db, actor.tenantId).then((s) => s.timezone)]);
       const bot = new Map(defs.map((d) => [d.id, d.displayName ?? d.label]));
       const when = await whenFor(db, actor.tenantId);
       const now = new Date();
@@ -53,11 +77,23 @@ export function routineRoutes(db: Db): Router {
       const recurring = rows.filter((r) => r.schedule).length;
       const res_ = html`${pageHead("Routines", admin ? html`<a class="be-btn" href="/admin/bots">Manage on a bot</a>` : undefined)}
 <p class="muted small">Everything a bot runs on a timer or in the background, across every chat you can see. A routine runs with nobody watching: reads are free, writes wait for a card nobody can answer unless an admin has granted them.</p>
+${runningBox(actor.tenantId, bot, chatName)}
 <section class="be-card">
 <div class="card-head"><h2>Routines</h2><span class="be-chip">${recurring} recurring · ${rows.length - recurring} one-off</span></div>
 ${tr.length ? scroll(html`<table class="be-table"><thead><tr><th>What it does</th><th>Bot</th><th>Chat</th><th>When</th><th>Next</th><th>Last</th><th>State</th><th></th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty"><b>No routines yet</b>A bot can schedule one in chat (“sweep the fleet at 7am”), or an admin can add one on a bot's Routines tab.</div>`}
 </section>`;
       res.type("html").send(layout({ title: "Routines", body: res_, actor, csrf }));
+    }),
+  );
+
+  // the Running now box alone, for the page's 10-second refresh
+  router.get(
+    "/routines/running",
+    wrap(async (_req, res) => {
+      const { actor } = adminOf(res);
+      const { defs } = await visibleBots(db, actor);
+      const bot = new Map(defs.map((d) => [d.id, d.displayName ?? d.label]));
+      res.type("html").send(String(runningBox(actor.tenantId, bot, await chatNames(db, actor.tenantId))));
     }),
   );
 

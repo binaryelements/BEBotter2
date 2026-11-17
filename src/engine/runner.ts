@@ -3,6 +3,8 @@ import { mkdirSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import { confirmerPolicy } from "../admin/access.js";
 import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
+import { toolLabel } from "../teams/cards.js";
+import { trackTurn } from "./live.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
 import { tellMcpServer } from "../bots/tell.js";
 import { assistantMcpServer } from "../bots/assistant.js";
@@ -250,6 +252,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id };
   const received = turn.receivedAt ?? new Date();
   const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };
+  const startedBy = turn.routine?.id.startsWith("mail:") ? "Email" : turn.routine?.background ? "Background job" : turn.routine ? "Routine" : turn.relay ? "Another bot" : person.name;
   // phase bookkeeping for the engine's events; a warm runtime feeds the same events
   const report = (event: ProgressEvent) => {
     try {
@@ -348,6 +351,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const authoriseTool = async (callId: string, toolName: string, input: Record<string, unknown>): Promise<ToolDecision> => {
     const run = attemptNo;
     toolOf.set(callId, toolName);
+    live.doing = toolLabel(toolName, input);
+    live.steps++;
     const audited = auditInput(toolName, input);
     const json = JSON.stringify(audited);
     const auditId = await beginAction(db, {
@@ -424,7 +429,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
           signal.addEventListener("abort", f, { once: true });
           offAbort = () => signal.removeEventListener("abort", f);
         });
-        o = await Promise.race([outcome, aborted]);
+        live.waiting = true;
+        o = await Promise.race([outcome, aborted]).finally(() => void (live.waiting = false));
         offAbort();
         if (o.result === "aborted") {
           deps.confirmations.cancel([actionId]); // a late click must not run it either
@@ -513,6 +519,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     return deps.engine.run(input);
   };
 
+  // added here, beside its finally, so a turn that fails during setup is never listed
+  const { live, done: liveDone } = trackTurn({ tenantId, chatId, definitionId: definition.id, startedBy });
   try {
     turnContexts.set(key, context);
     registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
@@ -560,6 +568,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings, why);
     return { text, costUsd, changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
+    liveDone();
     await registry?.close();
     turnContexts.delete(key);
     await settle(); // allowed but never finished (interrupted, maxSteps hit, stream died)

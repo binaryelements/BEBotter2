@@ -250,6 +250,17 @@ document.querySelectorAll("[data-section-filter]").forEach(function (input) {
     if (count) count.textContent = q ? shown + " of " + groups.length + " sections" : "";
   });
 });
+// a box marked data-refresh swaps itself for a fresh copy every 10 seconds while the tab is open; a failed fetch keeps the old one
+document.querySelectorAll("[data-refresh]").forEach(function (box) {
+  setInterval(function () {
+    if (document.hidden) return;
+    fetch(box.getAttribute("data-refresh"), { credentials: "same-origin" }).then(function (r) { return r.ok ? r.text() : null; }).then(function (t) {
+      if (!t) return;
+      var d = document.createElement("div"); d.innerHTML = t;
+      var n = d.firstElementChild; if (n && n.hasAttribute("data-refresh")) { box.replaceWith(n); box = n; beLabels(n); }
+    }).catch(function () {});
+  }, 10000);
+});
 document.querySelectorAll(".nav-item").forEach(function (a) {
   a.addEventListener("click", function () { var c = document.getElementById("nav-open"); if (c) c.checked = false; });
 });
@@ -287,11 +298,14 @@ document.addEventListener("submit", function (e) {
     })
     .catch(function () { f.submit(); });
 });
-document.querySelectorAll("table.be-table").forEach(function (t) {
-  var heads = Array.from(t.querySelectorAll("thead th")).map(function (th) { return th.textContent.trim(); });
-  if (!heads.length) return;
-  t.querySelectorAll("tbody tr").forEach(function (tr) { Array.from(tr.children).forEach(function (td, i) { if (heads[i]) td.setAttribute("data-l", heads[i]); }); });
-});
+function beLabels(root) {
+  root.querySelectorAll("table.be-table").forEach(function (t) {
+    var heads = Array.from(t.querySelectorAll("thead th")).map(function (th) { return th.textContent.trim(); });
+    if (!heads.length) return;
+    t.querySelectorAll("tbody tr").forEach(function (tr) { Array.from(tr.children).forEach(function (td, i) { if (heads[i]) td.setAttribute("data-l", heads[i]); }); });
+  });
+}
+beLabels(document);
 </script>`;
 
 /** In a form marked data-autosave: the save button hides and a change submits it. */
