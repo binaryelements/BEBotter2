@@ -137,8 +137,9 @@ export function activityRoutes(db: Db): Router {
       const csv = keep.toString();
       const tr = rows.map((e) => {
         const c = cells(e, n, when);
-        const cls = ["be-mono be-nowrap", "", "", "be-nowrap", ""];
-        return html`<tr>${c.slice(0, 5).map((v, i) => (cls[i] ? html`<td class="${cls[i]}">${v}</td>` : html`<td>${v}</td>`))}<td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td>${c[6]}${e.error ? html`<div class="be-hint be-bad">${e.error}</div>` : ""}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
+        const cls = ["be-mono be-nowrap", "", "", "", ""];
+        // the error sits under the tool, which is always on screen; the summary wraps instead of widening the table
+        return html`<tr>${c.slice(0, 4).map((v, i) => (cls[i] ? html`<td class="${cls[i]}">${v}</td>` : html`<td>${v}</td>`))}<td>${c[4]}${e.error ? html`<div class="be-hint be-bad act-error">${e.error}</div>` : ""}</td><td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td class="act-sum">${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
       });
       const sel = { bot: q(req, "bot"), person: q(req, "person"), chat: q(req, "chat") };
       res.type("html").send(
