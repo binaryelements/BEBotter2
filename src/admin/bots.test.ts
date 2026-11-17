@@ -7,7 +7,7 @@ import { recordTools, toolRulesFor } from "../engine/tool-rules.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
-import { getConnectionGrant, listConnectionsFor } from "../connections/store.js";
+import { getConnection, getConnectionGrant, listConnectionsFor } from "../connections/store.js";
 import { fakeSsh } from "../connections/ssh.js";
 import { encrypt } from "../secrets/cipher.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
@@ -119,6 +119,37 @@ describe("bots screen", () => {
     expect(duplicatePage).toContain("already exists");
     expect(duplicatePage).toContain('id="add" open');
     expect((await post("/admin/connections", "Hal", [["name", "x"], ["kind", "http"], ["target", "https://x.test/"], ["mode", "read-only"]])).status).toBe(403);
+  });
+
+  it("an admin pastes a claude mcp add command and gets an MCP connection with its header secret", async () => {
+    const res = await post("/admin/connections", "Ann", [
+      ["commandLine", 'claude mcp add --transport http Xero-a32tx7ke7f https://xero.example.test/mcp --header "Authorization: Bearer tok-secret"'],
+      ["kind", "ssh"], ["mode", "read-only"],
+    ]);
+    expect(res.headers.get("location")).toBe("/admin/connections?saved=1");
+    const c = (await getConnection(db, T, "xero-a32tx7ke7f"))!;
+    expect(c).toMatchObject({ kind: "mcp", target: "https://xero.example.test/mcp", status: "active" });
+    expect(c.config).toMatchObject({ headerName: "Authorization" });
+    expect(c.secretCipher).toBeTruthy();
+    expect(await (await get("/admin/connections", "Ann")).text()).not.toContain("tok-secret");
+    // pasting into the edit form moves it to the new URL and secret, under the same name
+    const edited = await post(`/admin/connections/${c.id}/update`, "Ann", [
+      ["commandLine", 'claude mcp add --transport http other-name https://xero2.example.test/mcp --header "X-Key: tok-2"'], ["mode", "read-only"],
+    ]);
+    expect(edited.headers.get("location")).toBe("/admin/connections?saved=1");
+    const after = (await getConnection(db, T, "xero-a32tx7ke7f"))!;
+    expect(after).toMatchObject({ target: "https://xero2.example.test/mcp" });
+    expect(after.config).toMatchObject({ headerName: "X-Key" });
+    expect(after.secretCipher).not.toBe(c.secretCipher);
+    expect(await getConnection(db, T, "other-name")).toBeUndefined();
+    // a command it can't take, and an empty form, come back to the form with the reason
+    for (const [fields, why] of [
+      [[["commandLine", "claude mcp add local npx some-server"]], "Only an http MCP server"],
+      [[["kind", "http"], ["mode", "read-only"]], "error="],
+    ] as const) {
+      const bad = await post("/admin/connections", "Ann", fields as unknown as [string, string][]);
+      expect(decodeURIComponent(bad.headers.get("location") ?? "")).toContain(why);
+    }
   });
 
   it("saving the main form keeps the stored headers byte-identical", async () => {
