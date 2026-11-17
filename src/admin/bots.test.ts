@@ -132,6 +132,16 @@ describe("bots screen", () => {
     expect(c.config).toMatchObject({ headerName: "Authorization" });
     expect(c.secretCipher).toBeTruthy();
     expect(await (await get("/admin/connections", "Ann")).text()).not.toContain("tok-secret");
+    // pasting into the edit form moves it to the new URL and secret, under the same name
+    const edited = await post(`/admin/connections/${c.id}/update`, "Ann", [
+      ["commandLine", 'claude mcp add --transport http other-name https://xero2.example.test/mcp --header "X-Key: tok-2"'], ["mode", "read-only"],
+    ]);
+    expect(edited.headers.get("location")).toBe("/admin/connections?saved=1");
+    const after = (await getConnection(db, T, "xero-a32tx7ke7f"))!;
+    expect(after).toMatchObject({ target: "https://xero2.example.test/mcp" });
+    expect(after.config).toMatchObject({ headerName: "X-Key" });
+    expect(after.secretCipher).not.toBe(c.secretCipher);
+    expect(await getConnection(db, T, "other-name")).toBeUndefined();
     // a command it can't take, and an empty form, come back to the form with the reason
     for (const [fields, why] of [
       [[["commandLine", "claude mcp add local npx some-server"]], "Only an http MCP server"],

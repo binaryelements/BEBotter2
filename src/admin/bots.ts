@@ -195,6 +195,7 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
 ${c.kind === "ssh" || c.kind === "sql" ? html`<label>username<input name="username" value="${text(cfg.username)}" autocomplete="off"></label><label>port<input name="port" inputmode="numeric" value="${text(cfg.port)}" autocomplete="off"></label>` : ""}
 ${c.kind === "sql" ? html`<label>engine<select name="engine">${SQL_ENGINES.map((e) => html`<option ${e === cfg.engine ? "selected" : ""}>${e}</option>`)}</select></label><label>database<input name="database" value="${text(cfg.database)}" autocomplete="off"></label>` : ""}
 ${oauth ? html`<label>sign-in<span class="hint">this server signs in with OAuth; changing its address needs a new sign-in</span><span class="be-chip c">OAuth</span></label>` : c.kind === "http" || c.kind === "mcp" ? html`<label>header name<span class="hint">leave blank to keep it as it is</span><input name="headerName" value="${text(cfg.headerName ?? (cfg.auth as { name?: string } | undefined)?.name)}" autocomplete="off"></label><label>new secret<span class="hint">blank keeps the stored one</span><input type="password" name="secret" autocomplete="new-password" data-lpignore="true"></label>` : c.kind === "sql" ? html`<label>new password<span class="hint">blank keeps the stored one</span><input type="password" name="secret" autocomplete="new-password" data-lpignore="true"></label>` : ""}
+${c.kind === "mcp" && !oauth ? html`<label class="wide">paste a claude mcp add command<span class="hint">optional: replaces the URL, header and secret above; the name stays ${c.name}</span><textarea name="commandLine" rows="2" autocomplete="off" spellcheck="false" placeholder="claude mcp add --transport http name https://… --header &quot;Authorization: Bearer …&quot;"></textarea></label>` : ""}
 ${c.kind === "mcp" && !oauth ? html`<label>tools that only read<span class="hint">comma separated; they run without a card</span><input name="readOnlyTools" value="${((cfg.readOnlyTools as string[] | undefined) ?? []).join(", ")}" autocomplete="off"></label>` : ""}
 </div>
 <label>what it is for<textarea name="description" rows="3">${c.description ?? ""}</textarea></label>
@@ -319,10 +320,24 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       if (!c) return page(res, 404, "Connection not found.");
       const kind = c.kind as ConnectionKind;
       const prev = c.config as Record<string, unknown>;
-      const target = field(req, "target").trim() || c.target;
+      const formError = (message: string) => res.redirect(303, `/admin/connections?error=${encodeURIComponent(message)}`);
+      // a pasted command replaces the URL, header and secret; the connection keeps its own name
+      let cmd: ReturnType<typeof parseMcpAdd> | undefined;
+      try {
+        const pasted = field(req, "commandLine").trim();
+        cmd = pasted ? parseMcpAdd(pasted) : undefined;
+        if (cmd && (kind !== "mcp" || oauthOf(c))) throw new DirectoryError("A pasted command only updates an MCP server that uses a header");
+        if (cmd && cmd.transport !== "http") throw new DirectoryError("Only an http MCP server can be a connection: paste a command with --transport http");
+        if (cmd && Object.keys(cmd.headers ?? {}).length > 1) throw new DirectoryError("A connection takes one header; this command has more");
+      } catch (e) {
+        if (e instanceof DirectoryError) return formError(e.message);
+        throw e;
+      }
+      const [pastedHeader] = Object.entries(cmd?.headers ?? {});
+      const target = cmd?.url ?? (field(req, "target").trim() || c.target);
       const port = field(req, "port").trim() ? Number(field(req, "port")) : undefined;
-      const headerName = field(req, "headerName").trim() || undefined;
-      const secret = field(req, "secret");
+      const headerName = pastedHeader?.[0] ?? (field(req, "headerName").trim() || undefined);
+      const secret = pastedHeader?.[1] ?? field(req, "secret");
       let config: Record<string, unknown> = {};
       if (kind === "ssh") config = { username: field(req, "username").trim() || prev.username, port: port ?? prev.port ?? 22 };
       if (kind === "sql") config = { engine: field(req, "engine") || prev.engine, port: port ?? prev.port, database: field(req, "database").trim() || prev.database, username: field(req, "username").trim() || prev.username };
@@ -334,9 +349,7 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       try {
         await updateConnection(connDeps, actor.tenantId, req.params.id, { target, mode: (field(req, "mode") as ConnectionMode) || undefined, description: field(req, "description"), config: config as never, secret });
       } catch (e) {
-        if (e instanceof ConnectionError || e instanceof DirectoryError) {
-          return res.redirect(303, `/admin/connections?error=${encodeURIComponent(e instanceof Error ? e.message : "Could not save the connection.")}`);
-        }
+        if (e instanceof ConnectionError || e instanceof DirectoryError) return formError(e.message);
         throw e;
       }
       res.redirect(303, "/admin/connections?saved=1");
