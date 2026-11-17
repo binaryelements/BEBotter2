@@ -715,8 +715,8 @@ main input:focus, main select:focus, main textarea:focus {
 }
 main input[type="checkbox"], main input[type="radio"] { accent-color: var(--ui-accent); }
 main textarea { width: 100%; min-height: 8rem; }
-/* the page head and tabs sit above, the save button below; keep both on screen */
-main textarea.persona-edit { display: block; margin-top: 6px; min-height: max(12rem, calc(100vh - 330px)); line-height: 1.6; }
+/* half the window, so the save button stays on screen below it */
+main textarea.persona-edit { display: block; margin-top: 6px; min-height: max(12rem, 50vh); line-height: 1.6; }
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px 16px; margin: 12px 0; }
 .fields label { display: flex; flex-direction: column; gap: 4px; font: 500 12px var(--font-sans); color: var(--ui-ink); }
 .fields .hint { font: 11px var(--font-mono); color: var(--ui-muted); }
