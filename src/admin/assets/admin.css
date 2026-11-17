@@ -521,7 +521,9 @@ main h2, main h3 {
 .be-table.lean td { border-bottom: 1px solid var(--ui-line); white-space: nowrap; }
 .be-table.lean td.w { width: 100%; }
 .be-table.lean td.n { font: 12px var(--font-mono); color: var(--ui-muted); }
-.be-table.activity td:nth-child(2), .be-table.activity td:nth-child(3), .be-table.activity td:nth-child(5) { white-space: nowrap; }
+.be-table.activity td:nth-child(2), .be-table.activity td:nth-child(5) { white-space: nowrap; }
+.be-table.activity .act-error { white-space: normal; max-width: 22rem; overflow-wrap: anywhere; }
+.be-table.activity .act-sum { min-width: 14rem; overflow-wrap: anywhere; }
 main table:not(.be-table) { border-collapse: collapse; width: 100%; display: block; max-width: 100%; overflow-x: auto; }
 main th, main td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--ui-line); vertical-align: middle; }
 main th {
