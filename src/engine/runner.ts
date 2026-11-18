@@ -523,7 +523,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const { live, done: liveDone } = trackTurn({ tenantId, chatId, definitionId: definition.id, startedBy });
   try {
     turnContexts.set(key, context);
-    registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
+    // a background job gets its own browser: jobs run side by side in one chat, and a shared tab is navigated out from under them
+    registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key: turn.routine?.background ? `${key}:${turn.routine.id}` : key, pool: deps.mcpPool });
     tools = await registry.listTools();
     const result = await runEngine();
     // a superseded turn leaves no trace: no session, no message audit row, no reply

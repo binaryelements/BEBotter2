@@ -84,6 +84,11 @@ describe("scheduler", () => {
     expect(sent).toEqual([["c1", "**Ops**\n\nI couldn't finish that background job."]]);
   });
 
+  it("a job that ends without an answer says so instead of posting an empty message", async () => {
+    await runRoutine({ db, runTurn: fakeRunTurn(async () => " ").run, send }, await routine({ background: true }));
+    expect(sent).toEqual([["c1", "**Ops**\n\nI couldn't finish that job: it ended without an answer."]]);
+  });
+
   it("records sentAt on the run's row and logs one timing line", async () => {
     await routine();
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
