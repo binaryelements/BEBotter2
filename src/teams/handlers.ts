@@ -372,7 +372,8 @@ export async function handleMessage(
   const graphToken = definition.identity === "person" ? io.graphToken : undefined;
   // the route was chosen before the assignment or flag changed; the next message goes through sign-in
   if (definition.identity === "person" && !graphToken) return void (await io.send("Say that again, please."));
-  void io.typing?.();
+  // a failed typing indicator must not crash the process: Teams revokes the context once a later message's handler returns early
+  void io.typing?.().catch(() => {});
   await submitBurst(`${msg.chatId}:${definition.id}:${person.id}`, msg, deps.burstQuietMs ?? 0, async (batch, signal) => {
     const latest = batch[batch.length - 1]!;
     // everything the person said while the bot was busy goes to the model as one message
