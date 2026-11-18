@@ -69,9 +69,13 @@ describe("m365 mcp", () => {
     expect(g.seen[1]!.url.searchParams.get("$top")).toBe("10");
     await s.call("list_mail", {});
     expect(g.seen[2]!.url.pathname).toBe("/v1.0/me/mailFolders/inbox/messages");
+    expect(g.seen[2]!.url.searchParams.get("$filter")).toBeNull();
+    await s.call("list_mail", { since: "2026-11-17T09:00:00+11:00" });
+    expect(g.seen[3]!.url.searchParams.get("$filter")).toBe("receivedDateTime ge 2026-11-16T22:00:00.000Z");
+    expect(g.seen[3]!.url.searchParams.get("$top")).toBe("100");
 
     const read = out(await s.call("read_mail", { id: "m/1" })) as { body: string; preview?: string };
-    expect(g.seen[3]!.headers.Prefer).toBe('outlook.body-content-type="text"');
+    expect(g.seen[4]!.headers.Prefer).toBe('outlook.body-content-type="text"');
     expect(read.body).toHaveLength(20_000);
     expect(read.preview).toBeUndefined();
   });
