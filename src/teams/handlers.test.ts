@@ -843,6 +843,26 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(typing).toHaveBeenCalledTimes(1);
   });
 
+  it("a typing indicator that fails does not leave an unhandled rejection", async () => {
+    const s = await chat();
+    const a = await s.service("it", "IT Support");
+    await upsertChat(s.db, { id: "g1", tenantId: "t1", conversationType: "groupChat" });
+    await setChatDefinition(s.db, "t1", "g1", a.id);
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      // a plain function: vi.fn watches the promise it returns, which would count as handling the rejection
+      let calls = 0;
+      const typing = () => (calls++, Promise.reject(new TypeError("Cannot perform 'set' on a proxy that has been revoked")));
+      await handleMessage(s.deps, { ...msg("groupChat"), chatId: "g1", text: "IT Support, the printer is down", mentioned: false }, { ...s.io, typing });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(calls).toBe(1);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("in a group chat, naming another company bot switches the chat to it", async () => {
     const s = await chat();
     const it = await s.service("it", "IT Support");
