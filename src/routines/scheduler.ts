@@ -94,7 +94,8 @@ export async function runRoutine(deps: SchedulerDeps, routine: HeadlessRun): Pro
     // a quiet routine still says what it changed under its grant (spec 4.6)
     if (routine.quiet && !result.changed) return;
     try {
-      await post(result.text);
+      // an empty message is refused by Teams, which would leave the chat with nothing
+      await post(result.text.trim() ? result.text : "I couldn't finish that job: it ended without an answer.");
     } catch (err) {
       console.error(err);
       return fail("its reply could not be posted");
