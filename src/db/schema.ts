@@ -644,6 +644,7 @@ export const workflowPending = pgTable(
     toolName: text("tool_name"),
     input: jsonb("input"),
     inputHash: text("input_hash"),
+    auditId: text("audit_id"), // the held call's audit row, denied if a reply cancels the hold
     choices: jsonb("choices").$type<string[]>(),
     askPersonId: text("ask_person_id").references(() => people.id),
     status: text("status").notNull().default("pending"), // pending | approved | declined | answered | cancelled

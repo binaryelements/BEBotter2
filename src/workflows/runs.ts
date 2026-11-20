@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
-import { workflowPending, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { auditEvents, workflowPending, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
 import type { Workflow, WorkflowRun } from "../db/schema.js";
 import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
@@ -180,6 +180,16 @@ export async function deliverEvent(db: Db, runId: string, event: RunEvent, notif
       .set({ keys, pendingEvents: [...run.pendingEvents, queued], updatedAt: new Date() })
       .where(eq(workflowRuns.id, run.id))
       .returning();
+    // nothing is sent after the customer replied: held approvals, and answered ones not yet used, are revoked
+    const revoked = await tx
+      .update(workflowPending)
+      .set({ status: "cancelled" })
+      .where(and(eq(workflowPending.runId, run.id), eq(workflowPending.kind, "approval"), or(eq(workflowPending.status, "pending"), and(inArray(workflowPending.status, ["approved", "declined"]), isNull(workflowPending.answer)))))
+      .returning({ auditId: workflowPending.auditId });
+    const held = revoked.flatMap((r) => (r.auditId ? [r.auditId] : []));
+    // denied, not pending, so the step's no-write retry runs and wroteSince doesn't count a call that never ran
+    if (held.length)
+      await tx.update(auditEvents).set({ status: "denied", error: "Not run: the customer replied before it was approved.", finishedAt: new Date() }).where(and(inArray(auditEvents.id, held), eq(auditEvents.status, "pending")));
     if (waiting) {
       await tx.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.runId, run.id), eq(workflowPending.status, "pending")));
       await step(tx, updated, NEW_MESSAGE, notify, undefined, after);

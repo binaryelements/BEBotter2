@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_pending" ADD COLUMN "audit_id" text;

@@ -336,7 +336,7 @@ export async function handleMessage(
     }
   }
   // A confirmation is a question: a typed yes/no answers it, and other messages do not queue behind the waiting turn.
-  // shortcut: typed answers don't resolve workflow approval cards (they are stored, not in `confirmations`); only the buttons do. Add a lookup here if people type answers to them.
+  // shortcut: typed answers don't resolve workflow approval cards (they are stored, not in `confirmations`, and their cards say nothing about typing); only the buttons do. Add a lookup here if people type answers to them.
   const pending = deps.confirmations?.pendingFor(msg.chatId, person.id, definition?.id);
   if (pending) {
     const answer = confirmationWord(msg.text);

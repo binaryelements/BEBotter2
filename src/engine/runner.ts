@@ -74,7 +74,8 @@ export type RunnerDeps = {
   personToken?: (chatId: string) => Promise<string | undefined>;
 };
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
-export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
+/** buttonsOnly: a workflow approval, which a typed yes/no doesn't answer. */
+export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown>; buttonsOnly?: boolean };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
 export type RunResult = { text: string; costUsd: number; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean; /** A newer message stopped this turn before it answered; nothing was saved and the caller answers the newer message instead. */ aborted?: boolean };
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
@@ -444,13 +445,14 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
           return { allow: false, message: "Waiting for approval of an earlier change. End the step now." };
         }
         heldOne = true;
-        const pendingId = await holdForApproval(db, { id: runId, nodeId }, toolName, input);
+        const pendingId = await holdForApproval(db, { id: runId, nodeId }, toolName, input, auditId);
         try {
-          await turn.askConfirmation({ actionId: pendingId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input: cardInput(input) });
+          await turn.askConfirmation({ actionId: pendingId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input: cardInput(input), buttonsOnly: true });
         } catch (err) {
           console.error("confirmation card failed", err);
-          // nobody can answer a card that never arrived, so the run must not wait for it
-          await db.update(workflowPending).set({ status: "cancelled" }).where(eq(workflowPending.id, pendingId));
+          // nobody can answer a card that never arrived, so the run must not wait for it, nor later writes be told to
+          heldOne = false;
+          await db.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.id, pendingId), eq(workflowPending.status, "pending")));
           await completeAction(db, auditId, { status: "failed" });
           return { allow: false, message: NOT_DONE.failed };
         }
