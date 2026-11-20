@@ -61,7 +61,6 @@ describe("workflow runs", () => {
 
   it("takeExit to a wait sets dueAt", async () => {
     const r = await start();
-    await db.update(workflowRuns).set({ pendingEvents: [] }).where(eq(workflowRuns.id, r.id));
     await takeExit(db, r, "done", notify);
     const w = await reload(r);
     expect(w).toMatchObject({ nodeId: "w", status: "waiting" });
@@ -95,22 +94,85 @@ describe("workflow runs", () => {
     const after = await reload(r);
     expect(after).toMatchObject({ nodeId: "a", status: "ready" });
     expect(after.pendingEvents).toHaveLength(1);
-    expect(after.keys).toEqual({ threadIds: ["th1"], emails: ["Bob@Acme.com"], domain: "acme.com" });
+    expect(after.keys).toEqual({ threadIds: ["th1"], emails: ["bob@acme.com"], domain: "acme.com" });
     expect((await db.select().from(workflowPending))[0].status).toBe("cancelled");
   });
 
   it("deliverEvent on a ready run queues it", async () => {
     const r = await start();
     await deliverEvent(db, r.id, email(2), notify);
-    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "ready", pendingEvents: [email(1), email(2)] });
+    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "ready", pendingEvents: [{ ...email(1), woke: true }, { ...email(2), woke: false }] });
   });
 
-  it("entering a wait with a queued event takes new_message at once", async () => {
+  it("entering a wait with an unused queued event takes new_message at once", async () => {
     const r = await start();
-    await takeExit(db, r, "done", notify); // event 1 is still queued
+    await deliverEvent(db, r.id, email(2), notify); // a reply that arrived during the step
+    await takeExit(db, r, "done", notify);
     const after = await reload(r);
     expect(after).toMatchObject({ nodeId: "a", status: "ready" });
-    expect(after.pendingEvents).toHaveLength(1);
+    expect(after.pendingEvents).toHaveLength(2);
+    expect(after.pendingEvents.every((e) => e.woke)).toBe(true);
+  });
+
+  const useGraph = async (nodes: WorkflowGraph["nodes"], edges: WorkflowGraph["edges"]) => {
+    await saveDraft(db, "t1", wf.id, { nodes, edges, holidays: [] });
+    await publish(db, "t1", wf.id, personId, { w: "needs_person", a: "needs_person", t: "needs_person" });
+  };
+  const trig = { ...b, id: "t", label: "Start", type: "trigger" as const, trigger: "email" as const };
+  const ask = { ...b, id: "k", label: "Ask", type: "ask" as const, question: "ok?", choices: ["yes"], timeoutMinutes: 5 };
+  const wait = (id: string) => ({ ...b, id, label: id, type: "wait" as const, minutes: 60, businessHours: false });
+  const fin = { ...b, id: "e", label: "Fin", type: "end" as const, outcome: "x" };
+
+  it("one email wakes only one wait or ask: wait -> ask -> wait keeps the second wait", async () => {
+    await useGraph([trig, wait("w1"), ask, wait("w2"), fin], [
+      { from: "t", exit: "next", to: "w1" }, { from: "w1", exit: "new_message", to: "k" }, { from: "w1", exit: "time_up", to: "e" },
+      { from: "k", exit: "yes", to: "w2" }, { from: "w2", exit: "time_up", to: "e" },
+    ]);
+    const r = await start();
+    expect(await reload(r)).toMatchObject({ nodeId: "w1", status: "waiting" }); // trigger -> wait keeps the wait
+    await deliverEvent(db, r.id, email(2), notify);
+    expect(await reload(r)).toMatchObject({ nodeId: "k", status: "waiting" });
+    await takeExit(db, await reload(r), "yes", notify);
+    expect(await reload(r)).toMatchObject({ nodeId: "w2", status: "waiting" });
+  });
+
+  it("trigger -> ask -> wait keeps the wait", async () => {
+    await useGraph([trig, ask, wait("w2"), fin], [
+      { from: "t", exit: "next", to: "k" }, { from: "k", exit: "yes", to: "w2" }, { from: "w2", exit: "time_up", to: "e" },
+    ]);
+    const r = await start();
+    expect(await reload(r)).toMatchObject({ nodeId: "k", status: "waiting" });
+    await takeExit(db, r, "yes", notify);
+    expect(await reload(r)).toMatchObject({ nodeId: "w2", status: "waiting" });
+  });
+
+  it("two events delivered together are both queued", async () => {
+    const r = await start();
+    await Promise.all([deliverEvent(db, r.id, email(2), notify), deliverEvent(db, r.id, email(3), notify)]);
+    expect((await reload(r)).pendingEvents).toHaveLength(3);
+  });
+
+  it("takeExit called twice at once enters the next node once", async () => {
+    const r = await start();
+    await takeExit(db, r, "done", notify);
+    const waiting = await reload(r);
+    expect(waiting.status).toBe("waiting");
+    await Promise.all([takeExit(db, waiting, "time_up", notify), takeExit(db, waiting, "time_up", notify)]);
+    expect(await reload(r)).toMatchObject({ nodeId: "e", status: "done" });
+    const steps = await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, r.id));
+    expect(steps.filter((e) => e.kind === "step" && e.nodeId === "e")).toHaveLength(1);
+  });
+
+  it("moveRun refuses the trigger", async () => {
+    const r = await start();
+    await takeExit(db, r, "needs_person", notify, "stuck");
+    await expect(moveRun(db, "t1", r.id, "t", personId, notify)).rejects.toThrow("Runs can't be moved onto the trigger");
+  });
+
+  it("lowercases sender emails in keys", async () => {
+    const r = await start();
+    await deliverEvent(db, r.id, email(2), notify);
+    expect((await reload(r)).keys.emails).toEqual(["bob@acme.com"]);
   });
 
   it("deliverEvent on a run needing a person queues and notifies; moveRun puts it back", async () => {

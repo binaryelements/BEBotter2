@@ -1,7 +1,7 @@
 import { boolean, customType, doublePrecision, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { EngineMessage } from "../engine/engine.js";
-import type { ReportedResult, RunEvent, RunKeys, WorkflowGraph } from "../workflows/types.js";
+import type { QueuedEvent, ReportedResult, RunKeys, WorkflowGraph } from "../workflows/types.js";
 
 export type McpServerRecord = {
   name: string;
@@ -606,7 +606,7 @@ export const workflowRuns = pgTable(
     attempts: integer("attempts").notNull().default(0),
     keys: jsonb("keys").$type<RunKeys>().notNull(),
     fields: jsonb("fields").$type<Record<string, string>>().notNull(),
-    pendingEvents: jsonb("pending_events").$type<RunEvent[]>().notNull().default([]),
+    pendingEvents: jsonb("pending_events").$type<QueuedEvent[]>().notNull().default([]),
     reportedResult: jsonb("reported_result").$type<ReportedResult>(),
     outcome: text("outcome"),
     title: text("title").notNull(),

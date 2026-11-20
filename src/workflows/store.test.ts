@@ -135,6 +135,15 @@ describe("workflow store", () => {
     expect((await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, r2))).map((e) => e.reason)).toContain("moved onto an Ask step");
   });
 
+  it("publish refuses to move a run onto the trigger", async () => {
+    await saveDraft(db, "t1", wfId, graph({ minutes: 60 }));
+    await publish(db, "t1", wfId, personId, {});
+    const r = await addRun("w1", "waiting");
+    await saveDraft(db, "t1", wfId, graph(null));
+    await expect(publish(db, "t1", wfId, personId, { w1: "t" })).rejects.toThrow("Runs can't be moved onto the trigger");
+    expect((await runOf(r)).nodeId).toBe("w1");
+  });
+
   it("publish recalculates a changed wait", async () => {
     await saveDraft(db, "t1", wfId, graph({ minutes: 60 }));
     await publish(db, "t1", wfId, personId, {});

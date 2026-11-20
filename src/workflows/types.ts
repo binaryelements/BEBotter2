@@ -8,5 +8,7 @@ export type WorkflowNode = TriggerNode | AiNode | WaitNode | AskNode | EndNode;
 export type Edge = { from: string; exit: string; to: string };
 export type WorkflowGraph = { nodes: WorkflowNode[]; edges: Edge[]; holidays: string[] };
 export type RunEvent = { type: "email"; from: string; subject: string; messageId: string; threadId: string | null } | { type: "manual"; fields: Record<string, string> };
+/** A queued event; `woke` is set once it has taken new_message so it never wakes a second wait. */
+export type QueuedEvent = RunEvent & { woke?: boolean };
 export type RunKeys = { threadIds: string[]; emails: string[]; domain: string | null };
 export type ReportedResult = { result: string; reason: string; fields?: Record<string, string> };

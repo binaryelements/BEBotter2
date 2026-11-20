@@ -91,6 +91,7 @@ export async function publish(db: Db, tenantId: string, workflowId: string, pers
         const label = prev?.nodes.find((n) => n.id === r.nodeId)?.label ?? r.nodeId;
         throw new DirectoryError(`Choose where runs on ${label} go`);
       }
+      if (draft.nodes.find((n) => n.id === to)?.type === "trigger") throw new DirectoryError("Runs can't be moved onto the trigger");
     }
     const now = new Date();
     const tz = (await getTenantSettings(tx as unknown as Db, tenantId)).timezone;
