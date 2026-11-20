@@ -87,10 +87,23 @@ export async function startRun(
 // A call acts only if the locked row is still where the caller saw it; a concurrent call that got there first wins.
 const stillThere = (cur: WorkflowRun, seen: WorkflowRun) => cur.nodeId === seen.nodeId && cur.status === seen.status;
 
-export const takeExit = (db: Db, run: WorkflowRun, exit: string, notify: Notify, reason?: string) =>
+/** `dueBy`: act only if the run is still due by then, so a run that came back to the same node with a fresh dueAt waits again. */
+export const takeExit = (db: Db, run: WorkflowRun, exit: string, notify: Notify, reason?: string, dueBy?: Date) =>
   atomically(db, run.id, async (tx, cur, after) => {
+    if (dueBy && !(cur.dueAt && cur.dueAt <= dueBy)) return;
     if (stillThere(cur, run)) await step(tx, cur, exit, notify, reason, after);
   });
+
+/** Takes the queued events off a run running on `nodeId`, for its step's prompt; events delivered later stay queued. */
+export async function takeQueuedEvents(db: Db, runId: string, nodeId: string): Promise<QueuedEvent[]> {
+  let taken: QueuedEvent[] = [];
+  await atomically(db, runId, async (tx, run) => {
+    if (run.nodeId !== nodeId || run.status !== "running") return;
+    taken = run.pendingEvents;
+    await tx.update(workflowRuns).set({ pendingEvents: [] }).where(eq(workflowRuns.id, runId));
+  });
+  return taken;
+}
 
 export const enterNode = (db: Db, run: WorkflowRun, nodeId: string, notify: Notify, reason?: string) =>
   atomically(db, run.id, async (tx, cur, after) => {
@@ -110,7 +123,7 @@ async function enter(tx: Tx, run: WorkflowRun, nodeId: string, notify: Notify, r
   const node = nodeId === NEEDS_PERSON ? undefined : graph?.nodes.find((n) => n.id === nodeId);
   if (!node || !graph) {
     const why = nodeId === NEEDS_PERSON ? (reason ?? "it needs a person") : "its step no longer exists";
-    await tx.update(workflowRuns).set({ status: "needs_person", dueAt: null, updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));
+    await tx.update(workflowRuns).set({ status: "needs_person", dueAt: null, reportedResult: null, updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));
     await addEvent(tx, run.id, run.nodeId, "needs_person", { reason: why });
     const label = graph?.nodes.find((n) => n.id === run.nodeId)?.label ?? run.nodeId;
     after.push(() => notify(wf.chatId, `${run.title} needs a person at ${label}: ${why}`));

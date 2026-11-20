@@ -67,6 +67,16 @@ describe("workflow runs", () => {
     expect(w.dueAt!.getTime() - w.waitStartedAt!.getTime()).toBe(60 * 60000);
   });
 
+  it("takeExit with dueBy waits for a run whose dueAt is later", async () => {
+    const r = await start();
+    await takeExit(db, r, "done", notify);
+    const w = await reload(r);
+    await takeExit(db, w, "time_up", notify, undefined, new Date(w.dueAt!.getTime() - 1));
+    expect(await reload(r)).toMatchObject({ nodeId: "w", status: "waiting" });
+    await takeExit(db, w, "time_up", notify, undefined, w.dueAt!);
+    expect(await reload(r)).toMatchObject({ nodeId: "e", status: "done" });
+  });
+
   it("unconnected exit goes to needs a person and notifies", async () => {
     const r = await start();
     await takeExit(db, r, "needs_person", notify, "cannot tell");
