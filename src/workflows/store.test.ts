@@ -70,6 +70,30 @@ describe("workflow store", () => {
     expect(w.publishedVersion).toBe(1);
   });
 
+  it("a refused publish leaves every run untouched, even when another stranded node is mapped", async () => {
+    await saveDraft(db, "t1", wfId, graph({ minutes: 60 }));
+    await publish(db, "t1", wfId, personId, {});
+    const mapped = await addRun("w1", "waiting");
+    const unmapped = await addRun("gone", "ready");
+    await saveDraft(db, "t1", wfId, graph(null, true));
+    await expect(publish(db, "t1", wfId, personId, { w1: "ai2" })).rejects.toThrow("Choose where runs on gone go");
+    expect(await runOf(mapped)).toMatchObject({ nodeId: "w1", status: "waiting" });
+    expect(await runOf(unmapped)).toMatchObject({ nodeId: "gone", status: "ready" });
+    expect(await db.select().from(workflowRunEvents)).toEqual([]);
+  });
+
+  it("a run parked as needs_person by one publish does not block the next", async () => {
+    await saveDraft(db, "t1", wfId, graph({ minutes: 60 }));
+    await publish(db, "t1", wfId, personId, {});
+    const r = await addRun("w1", "waiting");
+    await saveDraft(db, "t1", wfId, graph(null));
+    await publish(db, "t1", wfId, personId, { w1: "needs_person" });
+    expect(await runsOnRemovedNodes(db, "t1", wfId)).toEqual([]);
+    await saveDraft(db, "t1", wfId, graph(null, true));
+    expect(await publish(db, "t1", wfId, personId, {})).toBe(3);
+    expect(await runOf(r)).toMatchObject({ nodeId: "w1", status: "needs_person" });
+  });
+
   it("publish moves runs", async () => {
     await saveDraft(db, "t1", wfId, graph({ minutes: 60 }));
     await publish(db, "t1", wfId, personId, {});

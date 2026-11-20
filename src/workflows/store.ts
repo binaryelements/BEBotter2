@@ -48,13 +48,13 @@ export async function publishedGraph(db: Db, workflowId: string): Promise<Workfl
   return w ? graphOf(db, workflowId, w.v) : undefined;
 }
 
-/** Open runs whose node is not in the draft. */
+/** Open runs whose node is not in the draft; needs_person runs are parked and a person moves them later. */
 async function strandedRuns(db: Pick<Db, "select">, tenantId: string, w: Workflow) {
   const kept = new Set(w.draft.nodes.map((n) => n.id));
   const runs = await db
     .select({ id: workflowRuns.id, nodeId: workflowRuns.nodeId })
     .from(workflowRuns)
-    .where(and(eq(workflowRuns.workflowId, w.id), eq(workflowRuns.tenantId, tenantId), notInArray(workflowRuns.status, CLOSED)));
+    .where(and(eq(workflowRuns.workflowId, w.id), eq(workflowRuns.tenantId, tenantId), notInArray(workflowRuns.status, [...CLOSED, "needs_person"])));
   return runs.filter((r) => !kept.has(r.nodeId));
 }
 
