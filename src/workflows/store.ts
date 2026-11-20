@@ -7,6 +7,7 @@ import { getTenantSettings } from "../org/org.js";
 import { checkGraph, NEEDS_PERSON, parseGraph } from "./graph.js";
 import type { WorkflowGraph } from "./graph.js";
 import { waitUntil } from "./hours.js";
+import { nodeEntry } from "./runs.js";
 
 export type Moves = Record<string, string>; // removed node id -> node id in the new version, or "needs_person"
 
@@ -92,16 +93,20 @@ export async function publish(db: Db, tenantId: string, workflowId: string, pers
       }
     }
     const now = new Date();
+    const tz = (await getTenantSettings(tx as unknown as Db, tenantId)).timezone;
     for (const r of stranded) {
       const to = moves[r.nodeId];
+      const target = draft.nodes.find((n) => n.id === to);
+      // shortcut: publish can't post Ask cards, so a run moved onto an Ask step waits for a person; post the card from publish when the canvas API exists
+      const parked = !target || target.type === "ask";
       await tx
         .update(workflowRuns)
-        .set(to === NEEDS_PERSON ? { status: "needs_person", dueAt: null, updatedAt: now } : { nodeId: to, status: "ready", dueAt: null, waitStartedAt: null, updatedAt: now })
+        .set(parked ? { status: "needs_person", dueAt: null, updatedAt: now } : { ...nodeEntry(target, now, tz, draft.holidays), nodeId: to, updatedAt: now })
         .where(eq(workflowRuns.id, r.id));
-      await tx.insert(workflowRunEvents).values({ id: crypto.randomUUID(), runId: r.id, nodeId: r.nodeId, kind: "move", data: { from: r.nodeId, to } });
+      const reason = target?.type === "ask" ? "moved onto an Ask step" : undefined;
+      await tx.insert(workflowRunEvents).values({ id: crypto.randomUUID(), runId: r.id, nodeId: r.nodeId, kind: "move", reason, data: { from: r.nodeId, to } });
     }
     // Waits whose length changed get a new due time, counted from when they started.
-    const tz = (await getTenantSettings(tx as unknown as Db, tenantId)).timezone;
     for (const n of draft.nodes) {
       const old = prev?.nodes.find((p) => p.id === n.id);
       if (n.type !== "wait" || old?.type !== "wait" || (old.minutes === n.minutes && old.businessHours === n.businessHours)) continue;

@@ -114,6 +114,27 @@ describe("workflow store", () => {
     expect((await runOf(r)).status).toBe("needs_person");
   });
 
+  it("publish moves a run onto a wait (gets dueAt) and onto an ask (parked)", async () => {
+    await saveDraft(db, "t1", wfId, graph(null, true));
+    await publish(db, "t1", wfId, personId, {});
+    const r1 = await addRun("ai2", "ready");
+    const r2 = await addRun("ai2", "ready");
+    const g = graph({ minutes: 60 });
+    g.nodes.push({ ...b, id: "k", label: "Ask Bob", type: "ask", question: "ok?", choices: ["yes"], timeoutMinutes: 5 });
+    g.edges.push({ from: "w1", exit: "new_message", to: "k" }, { from: "k", exit: "yes", to: "e" });
+    await saveDraft(db, "t1", wfId, g);
+    await publish(db, "t1", wfId, personId, { ai2: "w1" });
+    expect(await runOf(r1)).toMatchObject({ nodeId: "w1", status: "waiting" });
+    expect((await runOf(r1)).dueAt).toBeInstanceOf(Date);
+    await saveDraft(db, "t1", wfId, graph(null, true));
+    await publish(db, "t1", wfId, personId, { w1: "ai2" });
+    await db.update(workflowRuns).set({ nodeId: "ai2", status: "ready" }).where(eq(workflowRuns.id, r2));
+    await saveDraft(db, "t1", wfId, g);
+    await publish(db, "t1", wfId, personId, { ai2: "k" });
+    expect((await runOf(r2)).status).toBe("needs_person");
+    expect((await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, r2))).map((e) => e.reason)).toContain("moved onto an Ask step");
+  });
+
   it("publish recalculates a changed wait", async () => {
     await saveDraft(db, "t1", wfId, graph({ minutes: 60 }));
     await publish(db, "t1", wfId, personId, {});
