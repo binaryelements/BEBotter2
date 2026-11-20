@@ -9,7 +9,6 @@ import { defaultClass } from "../engine/gate.js";
 import type { SchedulerDeps } from "../routines/scheduler.js";
 import { confirmationCard, withRoleLabel } from "../teams/cards.js";
 import { latestDecision } from "./approvals.js";
-import { cancelAsks } from "./ask.js";
 import { NEEDS_PERSON } from "./graph.js";
 import type { AiNode } from "./graph.js";
 import { enterNode, revokeApprovals, settleStep, takeExit, takeQueuedEvents } from "./runs.js";
@@ -170,11 +169,7 @@ export async function tickWorkflows(deps: SchedulerDeps, now = new Date()): Prom
   for (const run of due) {
     try {
       const node = (await publishedGraph(db, run.workflowId))?.nodes.find((n) => n.id === run.nodeId);
-      if (node?.type === "wait" || node?.type === "ask") {
-        const began = new Date();
-        await takeExit(db, run, node.type === "wait" ? "time_up" : "no_answer", notify, undefined, now);
-        if (node.type === "ask") await cancelAsks(db, run.id, node.id, began);
-      }
+      if (node?.type === "wait" || node?.type === "ask") await takeExit(db, run, node.type === "wait" ? "time_up" : "no_answer", notify, undefined, now);
       else await enterNode(db, run, run.nodeId, notify); // its step no longer exists
     } catch (err) {
       console.error(`workflow run ${run.id}: timeout failed`, err);

@@ -256,7 +256,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
       conversation?.tenantId && from?.aadObjectId ? await findPersonId(deps.db, conversation.tenantId, from.aadObjectId) : undefined;
     const d = ((data as { data?: unknown } | null)?.data ?? data ?? {}) as { pendingId?: unknown; choice?: unknown };
     const text = personId
-      ? await answerAsk(deps.db, String(d.pendingId ?? ""), personId, from?.name ?? "", String(d.choice ?? ""), async (chatId, t) => void (await deps.sendTo?.(chatId, t)))
+      ? await answerAsk(deps.db, String(d.pendingId ?? ""), personId, from?.name ?? "", String(d.choice ?? ""), async (chatId, t) => void (await deps.sendTo?.(chatId, t).catch((e) => console.error(`workflow notice to ${chatId} failed`, e))))
       : "I couldn't tell who you are, so I can't take that answer.";
     return resultCard(text) as { type: "AdaptiveCard" };
   });

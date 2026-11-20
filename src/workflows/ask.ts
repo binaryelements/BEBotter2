@@ -1,4 +1,4 @@
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { confirmerPolicy } from "../admin/access.js";
 import type { Db } from "../db/client.js";
 import { workflowPending, workflowRuns, workflows } from "../db/schema.js";
@@ -63,19 +63,10 @@ export async function answerAsk(db: Db, pendingId: string, personId: string, per
     .where(and(eq(workflowPending.id, pendingId), eq(workflowPending.status, "pending")))
     .returning({ id: workflowPending.id });
   if (!won.length) return CLOSED;
-  await takeExit(db, run, choice, notify);
-  // takeExit does nothing if the run moved meanwhile (a reply, the timeout); any move changes updatedAt
-  const [after] = await db.select({ updatedAt: workflowRuns.updatedAt }).from(workflowRuns).where(eq(workflowRuns.id, run.id));
-  if (after?.updatedAt.getTime() === run.updatedAt.getTime()) {
+  // takeExit moves nothing if the run moved meanwhile (a reply, the timeout, a loop back to this ask)
+  if (!(await takeExit(db, run, choice, notify, undefined, undefined, true))) {
     await db.update(workflowPending).set({ status: "cancelled" }).where(eq(workflowPending.id, pendingId));
     return CLOSED;
   }
   return `${choice}, by ${personName}`;
 }
-
-/** The tick's no_answer: a late click on the card says closed. Rows made after `before` belong to a run that came back to the ask. */
-export const cancelAsks = (db: Db, runId: string, nodeId: string, before: Date) =>
-  db
-    .update(workflowPending)
-    .set({ status: "cancelled" })
-    .where(and(eq(workflowPending.runId, runId), eq(workflowPending.nodeId, nodeId), eq(workflowPending.kind, "ask"), eq(workflowPending.status, "pending"), lt(workflowPending.createdAt, before)));

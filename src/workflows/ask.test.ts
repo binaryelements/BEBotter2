@@ -34,6 +34,11 @@ const graph = (personId?: string): WorkflowGraph => ({
   holidays: [],
 });
 
+const looping = (): WorkflowGraph => {
+  const g = graph();
+  return { ...g, nodes: g.nodes.filter((n) => n.id !== "q"), edges: g.edges.map((e) => (e.exit === "no_answer" ? { ...e, to: "k" } : e)) };
+};
+
 describe("ask a person", () => {
   let db: Db;
   let wf: Workflow;
@@ -130,5 +135,33 @@ describe("ask a person", () => {
     const [row] = await pending(r);
     expect(row!.status).toBe("cancelled");
     expect(await answerAsk(db, row!.id, ann, "Ann", "yes", notify)).toBe("This question has closed.");
+  });
+
+  it("takeExit says whether it moved the run, and can require the run untouched", async () => {
+    const { takeExit } = await import("./runs.js");
+    const r = await start();
+    const seen = await reload(r);
+    await db.update(workflowRuns).set({ updatedAt: new Date(Date.now() + 5000) }).where(eq(workflowRuns.id, r.id));
+    expect(await takeExit(db, seen, "yes", notify, undefined, undefined, true)).toBe(false);
+    expect(await takeExit(db, await reload(r), "yes", notify, undefined, undefined, true)).toBe(true);
+    expect(await takeExit(db, seen, "yes", notify)).toBe(false);
+  });
+
+  it("no_answer looping back to the same ask keeps the new card pending", async () => {
+    await publishGraph(looping());
+    const r = await start();
+    const [old] = await pending(r);
+    await tickWorkflows({ db, send: async (_c, m) => void sent.push(m), runTurn: async () => { throw new Error("no step"); } }, new Date(Date.now() + 31 * 60_000));
+    const rows = await pending(r);
+    expect(rows.find((p) => p.id === old!.id)!.status).toBe("cancelled");
+    expect(rows.filter((p) => p.status === "pending")).toHaveLength(1);
+  });
+
+  it("a failed send posts the plain-text notice and leaves the run waiting", async () => {
+    const texts: (string | AdaptiveCard)[] = [];
+    setPostAsk((run, node) => postAsk(db, async (_c, m) => { if (typeof m !== "string") throw new Error("teams down"); texts.push(m); }, run, node));
+    const r = await start();
+    expect(texts).toEqual(["Couldn't post the question for PO-7: Ship it?"]);
+    expect(await reload(r)).toMatchObject({ nodeId: "k", status: "waiting" });
   });
 });

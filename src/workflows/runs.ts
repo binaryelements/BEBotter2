@@ -89,12 +89,21 @@ export async function startRun(
 const stillThere = (cur: WorkflowRun, seen: WorkflowRun, claim?: Date | null) =>
   cur.nodeId === seen.nodeId && cur.status === seen.status && (claim === undefined || cur.stepStartedAt?.getTime() === claim?.getTime());
 
-/** `dueBy`: act only if the run is still due by then, so a run that came back to the same node with a fresh dueAt waits again. */
-export const takeExit = (db: Db, run: WorkflowRun, exit: string, notify: Notify, reason?: string, dueBy?: Date) =>
-  atomically(db, run.id, async (tx, cur, after) => {
+/**
+ * True only if the run moved. `dueBy`: act only if the run is still due by then, so a run that came back to the same node with a fresh dueAt waits again.
+ * `untouched`: act only if the run's updatedAt is still the one in `run`, so a run that left and came back to the same node is not moved.
+ */
+export const takeExit = async (db: Db, run: WorkflowRun, exit: string, notify: Notify, reason?: string, dueBy?: Date, untouched?: boolean): Promise<boolean> => {
+  let moved = false;
+  await atomically(db, run.id, async (tx, cur, after) => {
     if (dueBy && !(cur.dueAt && cur.dueAt <= dueBy)) return;
-    if (stillThere(cur, run)) await step(tx, cur, exit, notify, reason, after);
+    if (untouched && cur.updatedAt.getTime() !== run.updatedAt.getTime()) return;
+    if (!stillThere(cur, run)) return;
+    await step(tx, cur, exit, notify, reason, after);
+    moved = true;
   });
+  return moved;
+};
 
 /**
  * The queued events of a run running on `nodeId`, for its step's prompt. They are marked `inStep` and stay queued
@@ -133,6 +142,8 @@ async function step(tx: Tx, run: WorkflowRun, exit: string, notify: Notify, reas
 
 async function enter(tx: Tx, run: WorkflowRun, nodeId: string, notify: Notify, reason: string | undefined, after: After): Promise<void> {
   const { wf, graph } = await context(tx, run);
+  // leaving an ask by any exit closes its card, so a late click says closed
+  await tx.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.runId, run.id), eq(workflowPending.nodeId, run.nodeId), eq(workflowPending.kind, "ask"), eq(workflowPending.status, "pending")));
   const node = nodeId === NEEDS_PERSON ? undefined : graph?.nodes.find((n) => n.id === nodeId);
   if (!node || !graph) {
     const why = nodeId === NEEDS_PERSON ? (reason ?? "it needs a person") : "its step no longer exists";
