@@ -244,6 +244,7 @@ export function createTeamsApp(deps: TeamsAppDeps): AgentApplication<TurnState> 
       clickPayload(data),
       personId,
       from?.name ?? "",
+      deps.db,
     );
     return resultCard(text) as { type: "AdaptiveCard" };
   });

@@ -21,12 +21,13 @@ import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { runbookIndex } from "../knowledge/store.js";
 import { routineMcpServer } from "../routines/mcp.js";
 import { workflowMcpServer } from "../workflows/mcp.js";
+import { holdForApproval, inputHash } from "../workflows/approvals.js";
 import { attachmentsMcpServer, chatAttachment } from "../teams/attachments.js";
 import { learningsMcpServer } from "../learnings/mcp.js";
 import { learningsNote, listLearnings } from "../learnings/store.js";
 import { memoryNote, searchMemory, touchMemory } from "../memory/store.js";
 import type { Db } from "../db/client.js";
-import { assistantRequests, chats, departmentMembers, mailboxes, people, sessions } from "../db/schema.js";
+import { assistantRequests, chats, departmentMembers, mailboxes, people, sessions, workflowPending } from "../db/schema.js";
 import { getTenantSettings } from "../org/org.js";
 import type { TenantSettings } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
@@ -90,7 +91,7 @@ const NOT_DONE = {
   failed: "Not done: the confirmation could not be sent.",
 };
 
-/** A turn that runs one step of a workflow run. `approved` is carried for the approval flow (not acted on yet). */
+/** A turn that runs one step of a workflow run. `approved`: a decision on the step's held write, allowing that exact call once. */
 export type WorkflowTurn = { runId: string; nodeId: string; /** the claim (ISO stepStartedAt) this turn acts for */ stepStartedAt: string; results: string[]; saves: string[]; approved?: { pendingId: string; toolName: string; inputHash: string; personId: string } };
 
 /** What the app's tools act for on one conversation key; a warm process outlives its turns. */
@@ -356,6 +357,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     lastConfirmer = undefined;
   };
   const STALE = { allow: false as const, message: "Not done: the attempt that asked has ended." };
+  // a workflow step holds one write for approval at a time, and its approval allows one matching call
+  let approvalSpent = false;
+  let heldOne = false;
 
   const authoriseTool = async (callId: string, toolName: string, input: Record<string, unknown>): Promise<ToolDecision> => {
     const run = attemptNo;
@@ -425,6 +429,33 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         await completeAction(db, auditId, { status: "failed", error: "Not run: the turn was stopped first." });
         releaseApprove(callId);
         return STALE;
+      }
+      // a workflow step doesn't wait: its write is stored, the card sent, and the run resumes when someone answers
+      if (turn.workflow && kind === "write") {
+        const { approved, runId, nodeId } = turn.workflow;
+        if (approved && !approvalSpent && approved.toolName === toolName && approved.inputHash === inputHash(toolName, input)) {
+          approvalSpent = true;
+          await recordAuthority(db, auditId, { type: "confirmation", personId: approved.personId });
+          inFlight.set(callId, auditId);
+          return { allow: true };
+        }
+        if (heldOne) {
+          await completeAction(db, auditId, { status: "denied" });
+          return { allow: false, message: "Waiting for approval of an earlier change. End the step now." };
+        }
+        heldOne = true;
+        const pendingId = await holdForApproval(db, { id: runId, nodeId }, toolName, input);
+        try {
+          await turn.askConfirmation({ actionId: pendingId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input: cardInput(input) });
+        } catch (err) {
+          console.error("confirmation card failed", err);
+          // nobody can answer a card that never arrived, so the run must not wait for it
+          await db.update(workflowPending).set({ status: "cancelled" }).where(eq(workflowPending.id, pendingId));
+          await completeAction(db, auditId, { status: "failed" });
+          return { allow: false, message: NOT_DONE.failed };
+        }
+        // the audit row stays pending: it marks the held write, so a crash before the answer counts as a write
+        return { allow: false, message: "Sent for approval. Don't retry it. End the step now without calling report_result." };
       }
       const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId), chatId, personId: person.id, definitionId: definition.id });
       let o: Outcome | { result: "failed" } | { result: "aborted" };

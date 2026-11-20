@@ -883,15 +883,16 @@ describe("runTurn", () => {
           started.push(input);
           if (started.length === 2) release();
           await bothStarted;
-          // r1 reports and ends first; r2 reports after r1's turn has been torn down
+          // the first to start reports and ends first; the other reports after that turn has been torn down
           if (input === started[1]) await new Promise((r) => setTimeout(r, 200));
-          const mine = input === started[0] ? "r1" : "r2";
+          // each turn's own run, from its prompt: the two may reach the engine in either order
+          const mine = JSON.stringify(input.history).includes("step r1") ? "r1" : "r2";
           await reportTool(input)({ result: "done", reason: mine });
           return { text: "Done.", messages: [...input.history], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, steps: 1, stopReason: "text" };
         },
       };
       const turn = (id: string) => runTurn(deps(db, engine), {
-        tenantId: "t1", chatId: "c1", definition, person, text: "step", askConfirmation: async () => {},
+        tenantId: "t1", chatId: "c1", definition, person, text: `step ${id}`, askConfirmation: async () => {},
         routine: { id: `wf:${id}`, grantPersonId: null, post: async () => {}, background: true }, workflow: wfTurn(id),
       });
       await Promise.all([turn("r1"), turn("r2")]);

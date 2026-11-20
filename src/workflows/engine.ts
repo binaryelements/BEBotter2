@@ -8,6 +8,7 @@ import type { WorkflowRun } from "../db/schema.js";
 import { defaultClass } from "../engine/gate.js";
 import type { SchedulerDeps } from "../routines/scheduler.js";
 import { confirmationCard, withRoleLabel } from "../teams/cards.js";
+import { latestDecision } from "./approvals.js";
 import { NEEDS_PERSON } from "./graph.js";
 import type { AiNode } from "./graph.js";
 import { enterNode, settleStep, takeExit, takeQueuedEvents } from "./runs.js";
@@ -67,6 +68,8 @@ export async function runAiStep(deps: SchedulerDeps, run: WorkflowRun, heartbeat
   const node = graph?.nodes.find((n) => n.id === run.nodeId);
   if (!wf || !graph || !node) return enterNode(db, run, run.nodeId, notify); // needs a person: its step no longer exists
   if (node.type !== "ai") return needsPerson("its step is not an AI step");
+  // taken first, so a decision is used by this run of the step whatever happens to it
+  const decision = await latestDecision(db, run.id, node.id);
 
   // the same checks as runRoutine
   const { tenantId, chatId, definitionId } = wf;
@@ -97,11 +100,11 @@ export async function runAiStep(deps: SchedulerDeps, run: WorkflowRun, heartbeat
         chatId,
         definition: noWeb ? { ...definition, webSearch: false } : definition,
         person,
-        text: stepPrompt(node, run, events),
+        text: stepPrompt(node, run, events, decision.line),
         receivedAt: new Date(),
         askConfirmation: (req) => deps.send(chatId, confirmationCard(req)),
         routine: { id: `wf:${run.id}`, grantPersonId: null, post, background: true },
-        workflow: { runId: run.id, nodeId: node.id, stepStartedAt: run.stepStartedAt!.toISOString(), results: node.results.map((r) => r.name), saves: node.saves ?? [] },
+        workflow: { runId: run.id, nodeId: node.id, stepStartedAt: run.stepStartedAt!.toISOString(), results: node.results.map((r) => r.name), saves: node.saves ?? [], ...(decision.approved ? { approved: decision.approved } : {}) },
       });
     } catch (err) {
       console.error(`workflow run ${run.id}: step failed`, err); // counts as a step without a report
@@ -109,15 +112,20 @@ export async function runAiStep(deps: SchedulerDeps, run: WorkflowRun, heartbeat
 
     const [cur] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id));
     if (!cur || cur.nodeId !== node.id || cur.status !== "running" || cur.stepStartedAt?.getTime() !== run.stepStartedAt?.getTime()) return; // moved on, or claimed again, during the turn
-    const [approval] = await db
-      .select({ id: workflowPending.id })
-      .from(workflowPending)
-      .where(and(eq(workflowPending.runId, run.id), eq(workflowPending.nodeId, node.id), eq(workflowPending.kind, "approval"), eq(workflowPending.status, "pending")));
-    if (approval) {
-      // its events stay, so the step resumed after the approval sees them
-      await db.update(workflowRuns).set({ status: "waiting", updatedAt: new Date() }).where(here);
-      return;
-    }
+    // a held write parks the step (its events stay, so the resumed step sees them); one answered during the turn readies it.
+    // Under the run's lock, as resolveApproval takes it, so a click is never lost between the two.
+    let parked = false;
+    await db.transaction(async (tx) => {
+      if (!(await tx.select({ id: workflowRuns.id }).from(workflowRuns).where(here).for("update")).length) return;
+      const held = await tx
+        .select({ status: workflowPending.status })
+        .from(workflowPending)
+        .where(and(eq(workflowPending.runId, run.id), eq(workflowPending.nodeId, node.id), eq(workflowPending.kind, "approval"), inArray(workflowPending.status, ["pending", "approved", "declined"]), isNull(workflowPending.answer)));
+      if (!held.length) return;
+      parked = true;
+      await tx.update(workflowRuns).set({ status: held.some((h) => h.status === "pending") ? "waiting" : "ready", updatedAt: new Date() }).where(here);
+    });
+    if (parked) return;
     // settle with `run`, the executor's own claim, so a newer claim is never settled from here
     if (cur.reportedResult) return await settleStep(db, run, cur.reportedResult.result, notify, cur.reportedResult.reason);
     // a step that changed something is never run again on its own
