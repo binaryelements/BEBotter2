@@ -2,7 +2,7 @@ import type { ConfirmationRequest } from "../engine/runner.js";
 
 export type AdaptiveCard = Record<string, unknown>;
 
-const card = (body: unknown[], actions?: unknown[]): AdaptiveCard => ({
+export const card = (body: unknown[], actions?: unknown[]): AdaptiveCard => ({
   type: "AdaptiveCard",
   $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
   version: "1.5",

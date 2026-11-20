@@ -1,0 +1,134 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { assignToChat, upsertDefinition } from "../bots/definitions.js";
+import type { Db } from "../db/client.js";
+import { testDb } from "../db/test-db.js";
+import { workflowPending, workflowRuns } from "../db/schema.js";
+import type { Workflow, WorkflowRun } from "../db/schema.js";
+import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
+import type { AdaptiveCard } from "../teams/cards.js";
+import { answerAsk, postAsk } from "./ask.js";
+import { tickWorkflows } from "./engine.js";
+import type { WorkflowGraph } from "./graph.js";
+import { deliverEvent, setPostAsk, startRun } from "./runs.js";
+import { createWorkflow, publish, saveDraft } from "./store.js";
+
+const b = { x: 0, y: 0 };
+const graph = (personId?: string): WorkflowGraph => ({
+  nodes: [
+    { ...b, id: "t", label: "Start", type: "trigger", trigger: "manual" },
+    { ...b, id: "k", label: "Ask", type: "ask", question: "Ship it?", choices: ["yes", "no"], timeoutMinutes: 30, ...(personId ? { personId } : {}) },
+    { ...b, id: "y", label: "Yes", type: "end", outcome: "shipped" },
+    { ...b, id: "n", label: "No", type: "end", outcome: "held" },
+    { ...b, id: "q", label: "Quiet", type: "end", outcome: "nobody answered" },
+    { ...b, id: "r", label: "Replied", type: "end", outcome: "replied" },
+  ],
+  edges: [
+    { from: "t", exit: "next", to: "k" },
+    { from: "k", exit: "yes", to: "y" },
+    { from: "k", exit: "no", to: "n" },
+    { from: "k", exit: "no_answer", to: "q" },
+    { from: "k", exit: "new_message", to: "r" },
+  ],
+  holidays: [],
+});
+
+describe("ask a person", () => {
+  let db: Db;
+  let wf: Workflow;
+  let defId: string;
+  let ann: string;
+  let bob: string;
+  let sent: (string | AdaptiveCard)[];
+  const notify = async () => {};
+  const reload = async (r: WorkflowRun) => (await db.select().from(workflowRuns).where(eq(workflowRuns.id, r.id)))[0]!;
+  const pending = async (r: WorkflowRun) => db.select().from(workflowPending).where(eq(workflowPending.runId, r.id));
+  const start = () => startRun(db, wf, { title: "PO-7", keys: { threadIds: [], emails: [], domain: null }, event: { type: "manual", fields: {} } });
+  const publishGraph = async (g: WorkflowGraph) => {
+    await saveDraft(db, "t1", wf.id, g);
+    await publish(db, "t1", wf.id, ann, {});
+  };
+
+  beforeEach(async () => {
+    sent = [];
+    db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    defId = (await upsertDefinition(db, randomBytes(32), "t1", { name: "ops", label: "Ops", persona: "p" })).id;
+    await upsertChat(db, { id: "c1", tenantId: "t1", conversationType: "groupChat" });
+    await assignToChat(db, "c1", defId);
+    ann = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" })).id;
+    bob = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "b1", name: "Bob" })).id;
+    wf = await createWorkflow(db, "t1", { definitionId: defId, name: "wf", chatId: "c1", runAsPersonId: ann });
+    setPostAsk((run, node) => postAsk(db, async (_c, m) => void sent.push(m), run, node));
+    await publishGraph(graph());
+  });
+
+  it("an ask node posts a card and waits", async () => {
+    const r = await start();
+    expect(await reload(r)).toMatchObject({ nodeId: "k", status: "waiting" });
+    const [row] = await pending(r);
+    expect(row).toMatchObject({ nodeId: "k", kind: "ask", choices: ["yes", "no"], askPersonId: null, status: "pending" });
+    const json = JSON.stringify(sent[0]);
+    expect(json).toContain("Ship it?");
+    expect(json).toContain("PO-7");
+    expect(json).toContain(`"verb":"wfask"`);
+    expect(json).toContain(`"data":{"pendingId":"${row!.id}","choice":"no"}`);
+  });
+
+  it("an answer takes that choice's exit", async () => {
+    const r = await start();
+    const [row] = await pending(r);
+    expect(await answerAsk(db, row!.id, ann, "Ann", "no", notify)).toBe("no, by Ann");
+    expect(await reload(r)).toMatchObject({ nodeId: "n", status: "done" });
+    expect((await pending(r))[0]).toMatchObject({ status: "answered", answeredByPersonId: ann, answer: "no" });
+  });
+
+  it("a second answer says closed", async () => {
+    const r = await start();
+    const [row] = await pending(r);
+    await answerAsk(db, row!.id, ann, "Ann", "yes", notify);
+    expect(await answerAsk(db, row!.id, ann, "Ann", "no", notify)).toBe("This question has closed.");
+    expect(await reload(r)).toMatchObject({ nodeId: "y" });
+  });
+
+  it("someone else can't answer a node with personId", async () => {
+    await publishGraph(graph(bob));
+    const r = await start();
+    const [row] = await pending(r);
+    expect(row!.askPersonId).toBe(bob);
+    expect(await answerAsk(db, row!.id, ann, "Ann", "yes", notify)).toBe("You can't answer this question.");
+    expect(await reload(r)).toMatchObject({ nodeId: "k", status: "waiting" });
+    expect(await answerAsk(db, row!.id, bob, "Bob", "yes", notify)).toBe("yes, by Bob");
+  });
+
+  it("a choice not on the card is refused", async () => {
+    const r = await start();
+    const [row] = await pending(r);
+    expect(await answerAsk(db, row!.id, ann, "Ann", "maybe", notify)).toBe("That isn't one of the choices.");
+    expect((await pending(r))[0]!.status).toBe("pending");
+  });
+
+  it("an answer after the run moved on says closed", async () => {
+    const r = await start();
+    const [row] = await pending(r);
+    await db.update(workflowPending).set({ status: "pending" }).where(eq(workflowPending.id, row!.id));
+    // a reply cancels the card and moves the run
+    await deliverEvent(db, r.id, { type: "email", from: "c@acme.com", subject: "hi", messageId: "m2", threadId: null }, notify);
+    expect(await answerAsk(db, row!.id, ann, "Ann", "yes", notify)).toBe("This question has closed.");
+    // the row is still pending but the run is elsewhere: cancelled, not answered
+    await db.update(workflowPending).set({ status: "pending" }).where(eq(workflowPending.id, row!.id));
+    expect(await answerAsk(db, row!.id, ann, "Ann", "yes", notify)).toBe("This question has closed.");
+    expect((await pending(r))[0]!.status).toBe("cancelled");
+    expect(await reload(r)).toMatchObject({ nodeId: "r" });
+  });
+
+  it("no_answer cancels the pending row", async () => {
+    const r = await start();
+    await tickWorkflows({ db, send: async () => {}, runTurn: async () => { throw new Error("no step"); } }, new Date(Date.now() + 31 * 60_000));
+    expect(await reload(r)).toMatchObject({ nodeId: "q" });
+    const [row] = await pending(r);
+    expect(row!.status).toBe("cancelled");
+    expect(await answerAsk(db, row!.id, ann, "Ann", "yes", notify)).toBe("This question has closed.");
+  });
+});
