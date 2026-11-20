@@ -91,7 +91,7 @@ const NOT_DONE = {
 };
 
 /** A turn that runs one step of a workflow run. `approved` is carried for the approval flow (not acted on yet). */
-export type WorkflowTurn = { runId: string; nodeId: string; results: string[]; saves: string[]; approved?: { pendingId: string; toolName: string; inputHash: string; personId: string } };
+export type WorkflowTurn = { runId: string; nodeId: string; /** the claim (ISO stepStartedAt) this turn acts for */ stepStartedAt: string; results: string[]; saves: string[]; approved?: { pendingId: string; toolName: string; inputHash: string; personId: string } };
 
 /** What the app's tools act for on one conversation key; a warm process outlives its turns. */
 type TurnContext = {
@@ -256,7 +256,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const { db } = deps;
   const { tenantId, chatId, definition, person } = turn;
   const signal = turn.signal ?? new AbortController().signal;
-  // shortcut: a bot told via tell_bot runs without workflow, so its writes aren't stamped and recoverRuns can't see them; stamp told turns when workflows use tell_bot
+  // shortcut: a bot told via tell_bot runs without workflow, so its writes aren't stamped and recoverStale can't see them; stamp told turns when workflows use tell_bot
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id, ...(turn.workflow ? { workflowRunId: turn.workflow.runId } : {}) };
   const received = turn.receivedAt ?? new Date();
   const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };

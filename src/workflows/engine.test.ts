@@ -189,6 +189,38 @@ describe("workflow engine", () => {
     expect(seen!.getTime()).toBeGreaterThan(old.getTime());
   });
 
+  it("a step re-claimed while its old turn still runs is left to the new claim", async () => {
+    const r = await start();
+    const t0 = new Date(Date.now() - 60_000);
+    const [claimed] = await db.update(workflowRuns).set({ status: "running", stepStartedAt: t0, heartbeatAt: t0 }).where(eq(workflowRuns.id, r.id)).returning();
+    let bStarted!: () => void;
+    const started = new Promise<void>((res) => (bStarted = res));
+    let releaseB!: () => void;
+    const released = new Promise<void>((res) => (releaseB = res));
+    let tickB: Promise<void> | undefined;
+    let beatBefore: Date | null = null;
+    let beatAfter: Date | null = null;
+    // turn A outlives its lease: recovery readies the run and turn B claims it; A then ends without a report
+    await runAiStep(deps(async () => {
+      await recoverStale(db, notify, later(3));
+      tickB = tickWorkflows(deps(async (t) => {
+        bStarted();
+        await released;
+        await report(t.workflow!.runId, "stop");
+      }));
+      await started;
+      beatBefore = (await reload(r)).heartbeatAt;
+      await new Promise((res) => setTimeout(res, 150));
+      beatAfter = (await reload(r)).heartbeatAt;
+    }), claimed!, 20);
+    expect(beatAfter).toEqual(beatBefore); // A's heartbeat no longer touches the run
+    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "running", attempts: 0 }); // A's settle did nothing
+    releaseB();
+    await tickB;
+    expect(await reload(r)).toMatchObject({ nodeId: "x", status: "waiting" });
+    expect(sent).toEqual([]);
+  });
+
   it("no report after a write is not retried and needs a person", async () => {
     const r = await start();
     await tickWorkflows(deps(async (t) => void (await audit(t.workflow!.runId, WRITE))));

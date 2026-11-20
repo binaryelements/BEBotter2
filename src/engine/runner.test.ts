@@ -847,11 +847,12 @@ describe("runTurn", () => {
   describe("workflow turns", () => {
     type Handler = (args: Record<string, unknown>) => Promise<{ isError?: boolean }>;
     const reportTool = (input: EngineRunInput) => (input.mcpServers.workflow as unknown as { instance: { _registeredTools: Record<string, { handler: Handler }> } }).instance._registeredTools.report_result.handler;
-    const wfTurn = (runId: string) => ({ runId, nodeId: "a", results: ["done"], saves: [] as string[] });
+    const claimedAt = new Date("2026-11-20T01:00:00.000Z");
+    const wfTurn = (runId: string) => ({ runId, nodeId: "a", stepStartedAt: claimedAt.toISOString(), results: ["done"], saves: [] as string[] });
     async function runs(db: Db, definitionId: string, personId: string) {
       await assignToChat(db, "c1", definitionId);
       const wf = await createWorkflow(db, "t1", { definitionId, name: "wf", chatId: "c1", runAsPersonId: personId });
-      for (const id of ["r1", "r2"]) await db.insert(workflowRuns).values({ id, tenantId: "t1", workflowId: wf.id, nodeId: "a", status: "running", title: id, keys: { threadIds: [], emails: [], domain: null }, fields: {} });
+      for (const id of ["r1", "r2"]) await db.insert(workflowRuns).values({ id, tenantId: "t1", workflowId: wf.id, nodeId: "a", status: "running", stepStartedAt: claimedAt, title: id, keys: { threadIds: [], emails: [], domain: null }, fields: {} });
     }
 
     it("lists the workflow server only when the turn has a workflow, and stamps its audit rows with the run", async () => {

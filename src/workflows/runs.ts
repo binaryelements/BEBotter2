@@ -85,7 +85,9 @@ export async function startRun(
 }
 
 // A call acts only if the locked row is still where the caller saw it; a concurrent call that got there first wins.
-const stillThere = (cur: WorkflowRun, seen: WorkflowRun) => cur.nodeId === seen.nodeId && cur.status === seen.status;
+// `claim`: also the same claim of the step (its stepStartedAt), so a turn whose lease ran out cannot act for a newer claim.
+const stillThere = (cur: WorkflowRun, seen: WorkflowRun, claim?: Date | null) =>
+  cur.nodeId === seen.nodeId && cur.status === seen.status && (claim === undefined || cur.stepStartedAt?.getTime() === claim?.getTime());
 
 /** `dueBy`: act only if the run is still due by then, so a run that came back to the same node with a fresh dueAt waits again. */
 export const takeExit = (db: Db, run: WorkflowRun, exit: string, notify: Notify, reason?: string, dueBy?: Date) =>
@@ -108,10 +110,10 @@ export async function takeQueuedEvents(db: Db, runId: string, nodeId: string): P
   return taken;
 }
 
-/** Ends an AI step: drops the events it was given and takes `exit`, in one transaction. */
+/** Ends an AI step: drops the events it was given and takes `exit`, in one transaction. A no-op unless `run`'s claim still holds. */
 export const settleStep = (db: Db, run: WorkflowRun, exit: string, notify: Notify, reason?: string) =>
   atomically(db, run.id, async (tx, cur, after) => {
-    if (!stillThere(cur, run)) return;
+    if (!stillThere(cur, run, run.stepStartedAt)) return;
     const [kept] = await tx.update(workflowRuns).set({ pendingEvents: cur.pendingEvents.filter((e) => !e.inStep) }).where(eq(workflowRuns.id, run.id)).returning();
     await step(tx, kept, exit, notify, reason, after);
   });

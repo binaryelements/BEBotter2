@@ -7,7 +7,7 @@ import { workflowRuns } from "../db/schema.js";
 import { NEEDS_PERSON } from "./graph.js";
 
 // read on every call: a warm engine outlives the turn that built it
-type Ctx = { readonly runId: string; readonly nodeId: string; readonly results: string[]; readonly saves: string[] };
+type Ctx = { readonly runId: string; readonly nodeId: string; readonly stepStartedAt: string; readonly results: string[]; readonly saves: string[] };
 
 const text = (t: string, isError = false) => ({ ...(isError ? { isError: true } : {}), content: [{ type: "text" as const, text: t }] });
 const ALWAYS = ["thread_id", "email"];
@@ -28,7 +28,8 @@ export function workflowMcpServer(deps: { db: Db }, ctx: Ctx): McpServerHandle {
           const moved = await deps.db.transaction(async (tx) => {
             // locked, so a concurrent merge of keys and fields cannot lose an update
             const [run] = await tx.select().from(workflowRuns).where(eq(workflowRuns.id, ctx.runId)).for("update");
-            if (!run || run.nodeId !== ctx.nodeId || run.status !== "running") return true;
+            // a turn from an older claim of the same step (its lease ran out and the step was claimed again) must not report for the new one
+            if (!run || run.nodeId !== ctx.nodeId || run.status !== "running" || run.stepStartedAt?.toISOString() !== ctx.stepStartedAt) return true;
             const keys = { ...run.keys, threadIds: [...run.keys.threadIds], emails: [...run.keys.emails] };
             const thread = fields?.thread_id?.trim();
             if (thread && !keys.threadIds.includes(thread)) keys.threadIds.push(thread);
@@ -37,7 +38,7 @@ export function workflowMcpServer(deps: { db: Db }, ctx: Ctx): McpServerHandle {
             await tx
               .update(workflowRuns)
               .set({ reportedResult: { result, reason, ...(fields ? { fields } : {}) }, fields: { ...run.fields, ...(fields ?? {}) }, keys, updatedAt: new Date() })
-              .where(and(eq(workflowRuns.id, ctx.runId), eq(workflowRuns.nodeId, ctx.nodeId), eq(workflowRuns.status, "running")));
+              .where(and(eq(workflowRuns.id, ctx.runId), eq(workflowRuns.nodeId, ctx.nodeId), eq(workflowRuns.status, "running"), eq(workflowRuns.stepStartedAt, new Date(ctx.stepStartedAt))));
             return false;
           });
           return moved ? text("This step has moved on", true) : text("Recorded. End the step now.");

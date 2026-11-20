@@ -80,7 +80,9 @@ export async function runAiStep(deps: SchedulerDeps, run: WorkflowRun, heartbeat
   if (!person) return needsPerson("the person it runs as no longer exists");
   if (!(await mayUseDefinition(db, tenantId, person.id, definitionId))) return needsPerson("the person it runs as no longer has access to this bot");
 
-  const here = and(eq(workflowRuns.id, run.id), eq(workflowRuns.nodeId, node.id), eq(workflowRuns.status, "running"));
+  // stepStartedAt is the claim: once the lease runs out and the step is claimed again, every change below is a no-op.
+  // shortcut: tool calls this turn makes after its lease ran out are not fenced (up to the 2-minute window); fence them in the runner if that bites
+  const here = and(eq(workflowRuns.id, run.id), eq(workflowRuns.nodeId, node.id), eq(workflowRuns.status, "running"), eq(workflowRuns.stepStartedAt, run.stepStartedAt!));
   // the lease: while this beats, recovery leaves the step to this server
   const beat = setInterval(() => void db.update(workflowRuns).set({ heartbeatAt: new Date() }).where(here).catch((e) => console.error(`workflow run ${run.id}: heartbeat`, e)), heartbeatMs);
   try {
@@ -99,14 +101,14 @@ export async function runAiStep(deps: SchedulerDeps, run: WorkflowRun, heartbeat
         receivedAt: new Date(),
         askConfirmation: (req) => deps.send(chatId, confirmationCard(req)),
         routine: { id: `wf:${run.id}`, grantPersonId: null, post, background: true },
-        workflow: { runId: run.id, nodeId: node.id, results: node.results.map((r) => r.name), saves: node.saves ?? [] },
+        workflow: { runId: run.id, nodeId: node.id, stepStartedAt: run.stepStartedAt!.toISOString(), results: node.results.map((r) => r.name), saves: node.saves ?? [] },
       });
     } catch (err) {
       console.error(`workflow run ${run.id}: step failed`, err); // counts as a step without a report
     }
 
     const [cur] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id));
-    if (!cur || cur.nodeId !== node.id || cur.status !== "running") return; // moved on during the turn
+    if (!cur || cur.nodeId !== node.id || cur.status !== "running" || cur.stepStartedAt?.getTime() !== run.stepStartedAt?.getTime()) return; // moved on, or claimed again, during the turn
     const [approval] = await db
       .select({ id: workflowPending.id })
       .from(workflowPending)
@@ -116,14 +118,15 @@ export async function runAiStep(deps: SchedulerDeps, run: WorkflowRun, heartbeat
       await db.update(workflowRuns).set({ status: "waiting", updatedAt: new Date() }).where(here);
       return;
     }
-    if (cur.reportedResult) return await settleStep(db, cur, cur.reportedResult.result, notify, cur.reportedResult.reason);
+    // settle with `run`, the executor's own claim, so a newer claim is never settled from here
+    if (cur.reportedResult) return await settleStep(db, run, cur.reportedResult.result, notify, cur.reportedResult.reason);
     // a step that changed something is never run again on its own
-    const wrote = await wroteSince(db, cur);
+    const wrote = await wroteSince(db, run);
     if (!wrote && cur.attempts === 0) {
       await db.update(workflowRuns).set({ status: "ready", attempts: 1, stepStartedAt: null, heartbeatAt: null, updatedAt: new Date() }).where(here);
       return;
     }
-    await settleStep(db, cur, NEEDS_PERSON, notify, wrote ? "the step changed something but didn't report a result" : "the step didn't report a result");
+    await settleStep(db, run, NEEDS_PERSON, notify, wrote ? "the step changed something but didn't report a result" : "the step didn't report a result");
   } finally {
     clearInterval(beat);
   }

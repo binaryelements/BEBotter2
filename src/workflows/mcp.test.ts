@@ -15,7 +15,8 @@ const report = (s: ReturnType<typeof workflowMcpServer>) => (s.instance as unkno
 describe("workflow mcp", () => {
   let db: Db;
   const run = async () => (await db.select().from(workflowRuns).where(eq(workflowRuns.id, "r1")))[0];
-  const server = (nodeId = "a") => workflowMcpServer({ db }, { runId: "r1", nodeId, results: ["done", "stop"], saves: ["order_no"] });
+  const claimedAt = new Date("2026-11-20T01:00:00.000Z");
+  const server = (nodeId = "a", stepStartedAt = claimedAt.toISOString()) => workflowMcpServer({ db }, { runId: "r1", nodeId, stepStartedAt, results: ["done", "stop"], saves: ["order_no"] });
   beforeEach(async () => {
     db = await testDb();
     await upsertTenant(db, { id: "t1" });
@@ -24,7 +25,7 @@ describe("workflow mcp", () => {
     await assignToChat(db, "c1", defId);
     const personId = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" })).id;
     const wf = await createWorkflow(db, "t1", { definitionId: defId, name: "wf", chatId: "c1", runAsPersonId: personId });
-    await db.insert(workflowRuns).values({ id: "r1", tenantId: "t1", workflowId: wf.id, nodeId: "a", status: "running", title: "x", keys: { threadIds: [], emails: ["bob@acme.com"], domain: null }, fields: {} });
+    await db.insert(workflowRuns).values({ id: "r1", tenantId: "t1", workflowId: wf.id, nodeId: "a", status: "running", stepStartedAt: claimedAt, title: "x", keys: { threadIds: [], emails: ["bob@acme.com"], domain: null }, fields: {} });
   });
 
   it("stores a valid result on the run", async () => {
@@ -57,6 +58,12 @@ describe("workflow mcp", () => {
     expect(r).toMatchObject({ isError: true, content: [{ text: "This step has moved on" }] });
     await db.update(workflowRuns).set({ status: "waiting" }).where(eq(workflowRuns.id, "r1"));
     expect((await report(server())({ result: "done", reason: "ok" })).isError).toBe(true);
+    expect((await run()).reportedResult).toBeNull();
+  });
+
+  it("refuses a turn from an older claim of the same step", async () => {
+    const r = await report(server("a", new Date(claimedAt.getTime() - 60_000).toISOString()))({ result: "done", reason: "ok" });
+    expect(r).toMatchObject({ isError: true, content: [{ text: "This step has moved on" }] });
     expect((await run()).reportedResult).toBeNull();
   });
 });
