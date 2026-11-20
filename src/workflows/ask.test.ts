@@ -165,3 +165,85 @@ describe("ask a person", () => {
     expect(await reload(r)).toMatchObject({ nodeId: "k", status: "waiting" });
   });
 });
+
+describe("email-match questions", () => {
+  let db: Db;
+  let wf: Workflow;
+  let ann: string;
+  const notes: string[] = [];
+  const notify = async (_c: string, t: string) => void notes.push(t);
+  const mail = { type: "email" as const, from: "Sue@acme.com", subject: "Another PO", messageId: "m9", threadId: "th9" };
+  const reload = async (id: string) => (await db.select().from(workflowRuns).where(eq(workflowRuns.id, id)))[0]!;
+  const start = () => startRun(db, wf, { title: "PO-7", keys: { threadIds: [], emails: ["bob@acme.com"], domain: "acme.com" }, event: { type: "manual", fields: {} } });
+  const addMatch = async (r: WorkflowRun, choices: string[]) => {
+    const id = crypto.randomUUID();
+    await db.insert(workflowPending).values({ id, runId: r.id, nodeId: r.nodeId, kind: "match", choices, input: mail });
+    return id;
+  };
+
+  beforeEach(async () => {
+    notes.length = 0;
+    db = await testDb();
+    await upsertTenant(db, { id: "t1" });
+    const defId = (await upsertDefinition(db, randomBytes(32), "t1", { name: "ops", label: "Ops", persona: "p" })).id;
+    await upsertChat(db, { id: "c1", tenantId: "t1", conversationType: "groupChat" });
+    await assignToChat(db, "c1", defId);
+    ann = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a1", name: "Ann" })).id;
+    wf = await createWorkflow(db, "t1", { definitionId: defId, name: "wf", chatId: "c1", runAsPersonId: ann });
+    setPostAsk((run, node) => postAsk(db, async () => {}, run, node));
+    await saveDraft(db, "t1", wf.id, graph());
+    await publish(db, "t1", wf.id, ann, {});
+  });
+
+  it("Attach delivers the email to the run; a second answer is closed", async () => {
+    const r = await start();
+    const id = await addMatch(await reload(r.id), ["Attach", "Start new"]);
+    expect(await answerAsk(db, id, ann, "Ann", "Attach", notify)).toBe("Attach, by Ann");
+    const after = await reload(r.id);
+    expect(after).toMatchObject({ nodeId: "r", status: "done" }); // the ask's new_message exit
+    expect(after.keys).toMatchObject({ threadIds: ["th9"], emails: ["bob@acme.com", "sue@acme.com"] });
+    expect(await answerAsk(db, id, ann, "Ann", "Start new", notify)).toBe("This question has closed.");
+    expect(await db.select().from(workflowRuns)).toHaveLength(1);
+  });
+
+  it("Reopen puts an ended run on needs a person with the email queued", async () => {
+    const r = await start();
+    const [ask] = await db.select().from(workflowPending).where(eq(workflowPending.runId, r.id));
+    await answerAsk(db, ask!.id, ann, "Ann", "yes", notify);
+    const id = await addMatch(await reload(r.id), ["Reopen", "Start new"]);
+    expect(await answerAsk(db, id, ann, "Ann", "Reopen", notify)).toBe("Reopen, by Ann");
+    const after = await reload(r.id);
+    expect(after).toMatchObject({ status: "needs_person", outcome: null, endedAt: null });
+    expect(after.pendingEvents.at(-1)).toEqual({ ...mail, woke: false });
+    expect(notes).toContain("PO-7 was reopened by a new email and needs a person.");
+  });
+
+  it("Start new starts a run titled by the email, and Attach to a run that ended meanwhile does too", async () => {
+    const r = await start();
+    const id = await addMatch(await reload(r.id), ["Attach", "Start new"]);
+    expect(await answerAsk(db, id, ann, "Ann", "Start new", notify)).toBe("Start new, by Ann");
+    const runs = await db.select().from(workflowRuns);
+    expect(runs).toHaveLength(2);
+    expect(runs.find((x) => x.id !== r.id)).toMatchObject({ title: "Another PO (Sue@acme.com)", keys: { threadIds: ["th9"], emails: ["sue@acme.com"], domain: "acme.com" } });
+    expect((await reload(r.id)).status).toBe("waiting");
+
+    await db.update(workflowRuns).set({ status: "done" }).where(eq(workflowRuns.id, r.id));
+    const late = await addMatch(await reload(r.id), ["Attach", "Start new"]);
+    expect(await answerAsk(db, late, ann, "Ann", "Attach", notify)).toBe("Attach, by Ann");
+    expect(await db.select().from(workflowRuns)).toHaveLength(3);
+  });
+
+  it("someone without write access can't answer", async () => {
+    const r = await start();
+    const id = await addMatch(await reload(r.id), ["Attach", "Start new"]);
+    const eve = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "e1", name: "Eve" })).id;
+    expect(await answerAsk(db, id, eve, "Eve", "Attach", notify)).toBe("You can't answer this question.");
+  });
+
+  it("a reply that wakes the run leaves its match question open", async () => {
+    const r = await start();
+    const id = await addMatch(await reload(r.id), ["Attach", "Start new"]);
+    await deliverEvent(db, r.id, { type: "email", from: "bob@acme.com", subject: "re", messageId: "m2", threadId: null }, notify);
+    expect((await db.select().from(workflowPending).where(eq(workflowPending.id, id)))[0]!.status).toBe("pending");
+  });
+});

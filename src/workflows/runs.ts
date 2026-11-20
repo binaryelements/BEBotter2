@@ -187,18 +187,26 @@ export async function revokeApprovals(tx: Tx, runId: string): Promise<void> {
     await tx.update(auditEvents).set({ status: "denied", error: "Not run: the customer replied before it was approved.", finishedAt: new Date() }).where(and(inArray(auditEvents.id, held), eq(auditEvents.status, "pending")));
 }
 
-export async function deliverEvent(db: Db, runId: string, event: RunEvent, notify: Notify): Promise<void> {
+/** The run's keys with an email's thread and lowercased sender added, so later mail on them finds the run. */
+function withEmail(keys: WorkflowRun["keys"], event: RunEvent): WorkflowRun["keys"] {
+  if (event.type !== "email") return keys;
+  const from = event.from.toLowerCase();
+  return {
+    threadIds: event.threadId ? [...new Set([...keys.threadIds, event.threadId])] : keys.threadIds,
+    emails: [...new Set([...keys.emails, from])],
+    domain: keys.domain ?? from.split("@")[1] ?? null,
+  };
+}
+
+/** False if the run has ended, so nothing was delivered. */
+export async function deliverEvent(db: Db, runId: string, event: RunEvent, notify: Notify): Promise<boolean> {
+  let delivered = false;
   await atomically(db, runId, async (tx, run, after) => {
     if (run.status === "done" || run.status === "failed") return;
+    delivered = true;
     const { wf, graph } = await context(tx, run);
     await addEvent(tx, run.id, run.nodeId, "event", { data: event });
-    const keys = { ...run.keys };
-    if (event.type === "email") {
-      const from = event.from.toLowerCase();
-      if (event.threadId) keys.threadIds = [...new Set([...keys.threadIds, event.threadId])];
-      keys.emails = [...new Set([...keys.emails, from])];
-      keys.domain ??= from.split("@")[1] ?? null;
-    }
+    const keys = withEmail(run.keys, event);
     const waiting = run.status === "waiting";
     const queued: QueuedEvent = { ...event, woke: waiting };
     const [updated] = await tx
@@ -208,13 +216,33 @@ export async function deliverEvent(db: Db, runId: string, event: RunEvent, notif
       .returning();
     await revokeApprovals(tx, run.id);
     if (waiting) {
-      await tx.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.runId, run.id), eq(workflowPending.status, "pending")));
+      // ask cards only: a pending email-match question is about another email and stays open
+      await tx.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.runId, run.id), eq(workflowPending.kind, "ask"), eq(workflowPending.status, "pending")));
       await step(tx, updated, NEW_MESSAGE, notify, undefined, after);
     } else if (run.status === "needs_person") {
       const label = graph?.nodes.find((n) => n.id === run.nodeId)?.label ?? run.nodeId;
       after.push(() => notify(wf.chatId, `${run.title} needs a person at ${label}: a new message arrived`));
     }
   });
+  return delivered;
+}
+
+/** Reopens an ended run for a new email: it needs a person, with the email queued. False if the run is not ended. */
+export async function reopenRun(db: Db, runId: string, event: RunEvent, notify: Notify): Promise<boolean> {
+  let reopened = false;
+  await atomically(db, runId, async (tx, run, after) => {
+    if (run.status !== "done" && run.status !== "failed") return;
+    reopened = true;
+    const { wf } = await context(tx, run);
+    // shortcut: reopen lands on needs a person; part 2's status page moves it to a chosen step
+    await tx
+      .update(workflowRuns)
+      .set({ status: "needs_person", outcome: null, endedAt: null, dueAt: null, keys: withEmail(run.keys, event), pendingEvents: [...run.pendingEvents, { ...event, woke: false }], updatedAt: new Date() })
+      .where(eq(workflowRuns.id, run.id));
+    await addEvent(tx, run.id, run.nodeId, "event", { data: event, reason: "reopened by a new email" });
+    after.push(() => notify(wf.chatId, `${run.title} was reopened by a new email and needs a person.`));
+  });
+  return reopened;
 }
 
 export async function moveRun(db: Db, tenantId: string, runId: string, nodeId: string, personId: string, notify: Notify): Promise<void> {

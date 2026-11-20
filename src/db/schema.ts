@@ -640,7 +640,7 @@ export const workflowPending = pgTable(
     id: text("id").primaryKey(),
     runId: text("run_id").notNull().references(() => workflowRuns.id),
     nodeId: text("node_id").notNull(),
-    kind: text("kind").notNull(), // approval | ask
+    kind: text("kind").notNull(), // approval | ask | match (which run a new email belongs to)
     toolName: text("tool_name"),
     input: jsonb("input"),
     inputHash: text("input_hash"),

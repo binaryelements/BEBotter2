@@ -209,7 +209,7 @@ describe("workflow approvals", () => {
     expect(done).toHaveLength(1);
   });
 
-  const reply = (runId: string) => deliverEvent(db, runId, { type: "email", from: "c@acme.com", subject: "changes", messageId: "m2", threadId: null }, async () => {});
+  const reply = async (runId: string) => void (await deliverEvent(db, runId, { type: "email", from: "c@acme.com", subject: "changes", messageId: "m2", threadId: null }, async () => {}));
 
   it("a reply during the turn cancels its hold, denies the held call and the step is retried", async () => {
     const r = await start();

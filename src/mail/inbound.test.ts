@@ -4,7 +4,9 @@ import express from "express";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as audit from "../audit/audit.js";
-import { auditEvents, botDefinitions, chatAssignments, chats, mailboxes } from "../db/schema.js";
+import { auditEvents, botDefinitions, chatAssignments, chats, mailboxes, workflowPending, workflowRunEvents, workflowRuns } from "../db/schema.js";
+import type { WorkflowGraph } from "../workflows/graph.js";
+import { createWorkflow, publish, saveDraft } from "../workflows/store.js";
 import { testDb } from "../db/test-db.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import type { HeadlessRun } from "../routines/scheduler.js";
@@ -34,7 +36,7 @@ async function setup() {
     await db.insert(chatAssignments).values({ chatId: id, definitionId: "d1" });
   }
   await db.insert(mailboxes).values({ definitionId: "d1", tenantId: "t1", agent: "bb2-d1", address: "ada@mail.test", status: "active", webhookSecretCipher: encrypt(secretsKey, SECRET) });
-  const sent: [string, string][] = [];
+  const sent: [string, unknown][] = [];
   const runs: HeadlessRun[] = [];
   // json first, like startServer, so the test proves the route still sees the raw bytes
   const app = express();
@@ -54,9 +56,100 @@ async function setup() {
   return { db, sent, runs, post };
 }
 
-const event = (o: { id?: string; from?: string; subject?: string; agent?: string } = {}) => ({
+const event = (o: { id?: string; from?: string; subject?: string; agent?: string; thread?: string } = {}) => ({
   id: o.id ?? "ev1", type: "message.received", agent: o.agent ?? "bb2-d1", inbox: "i1",
-  message: { id: "m1", from_address: o.from ?? "bob@example.com", subject: o.subject ?? "Invoice\nattached", body: "SECRET BODY TEXT" },
+  message: { id: "m1", thread_id: o.thread, from_address: o.from ?? "bob@example.com", subject: o.subject ?? "Invoice\nattached", body: "SECRET BODY TEXT" },
+});
+
+const b = { x: 0, y: 0 };
+// t -> wait; a reply ends it as "replied"
+const emailGraph: WorkflowGraph = {
+  nodes: [
+    { ...b, id: "t", label: "Start", type: "trigger", trigger: "email" },
+    { ...b, id: "w", label: "Wait", type: "wait", minutes: 600, businessHours: false },
+    { ...b, id: "r", label: "Replied", type: "end", outcome: "replied" },
+    { ...b, id: "q", label: "Quiet", type: "end", outcome: "quiet" },
+  ],
+  edges: [
+    { from: "t", exit: "next", to: "w" },
+    { from: "w", exit: "new_message", to: "r" },
+    { from: "w", exit: "time_up", to: "q" },
+  ],
+  holidays: [],
+};
+
+async function withWorkflow(db: Awaited<ReturnType<typeof testDb>>, published = true) {
+  const ann = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "aad-ann", name: "Ann" })).id;
+  // act mode on as well, to prove the workflow takes the email instead
+  await db.update(botDefinitions).set({ mailMode: "act", mailChatId: "c2", mailInstruction: "Answer it.", mailBy: ann }).where(eq(botDefinitions.id, "d1"));
+  const wf = await createWorkflow(db, "t1", { definitionId: "d1", name: "wf", chatId: "c1", runAsPersonId: ann });
+  await saveDraft(db, "t1", wf.id, emailGraph);
+  if (published) await publish(db, "t1", wf.id, ann, {});
+  return wf;
+}
+
+describe("mail inbound with an email workflow", () => {
+  it("a bot with an email workflow starts a run and skips act mode", async () => {
+    const { db, sent, runs, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ thread: "th1" }));
+    expect(runs).toEqual([]);
+    expect(sent.map((s) => s[0]).sort()).toEqual(["c1", "c2"]); // the notices still go out
+    const [run, ...rest] = await db.select().from(workflowRuns);
+    expect(rest).toEqual([]);
+    expect(run).toMatchObject({ title: "Invoice attached (bob@example.com)", nodeId: "w", status: "waiting", keys: { threadIds: ["th1"], emails: ["bob@example.com"], domain: "example.com" } });
+    expect(JSON.stringify(run)).not.toContain("SECRET BODY");
+  });
+
+  it("a reply on the thread wakes the run", async () => {
+    const { db, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ thread: "th1" }));
+    await post(event({ id: "ev2", thread: "th1", from: "carol@other.test" }));
+    const all = await db.select().from(workflowRuns);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ nodeId: "r", status: "done" });
+  });
+
+  it("a repeated delivery wakes once", async () => {
+    const { db, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ thread: "th1" }));
+    await post(event({ id: "ev2", thread: "th1" }));
+    await post(event({ id: "ev2", thread: "th1" }));
+    const [run] = await db.select().from(workflowRuns);
+    expect((await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, run!.id))).filter((e) => e.kind === "event")).toHaveLength(2);
+    expect(await db.select().from(workflowPending)).toEqual([]); // no "this ended, reopen?" card for the repeat
+  });
+
+  it("someone else at the same company gets an Attach or Start new card", async () => {
+    const { db, sent, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ thread: "th1" }));
+    await post(event({ id: "ev2", from: "sue@example.com", subject: "[x](http://evil.test)" }));
+    const [p] = await db.select().from(workflowPending);
+    expect(p).toMatchObject({ kind: "match", nodeId: "w", choices: ["Attach", "Start new"], status: "pending", input: { type: "email", from: "sue@example.com", threadId: null } });
+    const card = JSON.stringify(sent.find((s) => typeof s[1] !== "string")![1]);
+    expect(card).toContain("This looks like Invoice attached");
+    expect(card).toContain("Attach or start new?");
+    expect(card).not.toContain("[x](http"); // the sender's subject never renders as a link
+    expect(await db.select().from(workflowRuns)).toHaveLength(1);
+  });
+
+  it("an automatic sender starts no run", async () => {
+    const { db, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ from: "no-reply@shop.example" }));
+    expect(await db.select().from(workflowRuns)).toEqual([]);
+  });
+
+  it("a bot whose workflow is not published still uses act mode", async () => {
+    const { db, runs, post } = await setup();
+    await withWorkflow(db, false);
+    await post(event({ thread: "th1" }));
+    expect(runs).toHaveLength(1);
+    expect(await db.select().from(workflowRuns)).toEqual([]);
+  });
 });
 
 describe("mail inbound", () => {

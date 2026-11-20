@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { confirmerPolicy } from "../admin/access.js";
 import type { Db } from "../db/client.js";
 import { workflowPending, workflowRuns, workflows } from "../db/schema.js";
@@ -6,6 +6,7 @@ import type { WorkflowRun } from "../db/schema.js";
 import { card } from "../teams/cards.js";
 import type { AdaptiveCard } from "../teams/cards.js";
 import type { AskNode } from "./graph.js";
+import { resolveMatch } from "./match.js";
 import { takeExit } from "./runs.js";
 import type { Notify } from "./runs.js";
 
@@ -42,27 +43,33 @@ export async function answerAsk(db: Db, pendingId: string, personId: string, per
     .from(workflowPending)
     .innerJoin(workflowRuns, eq(workflowRuns.id, workflowPending.runId))
     .innerJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
-    .where(and(eq(workflowPending.id, pendingId), eq(workflowPending.kind, "ask")));
-  // Task 10 routes nodeId "match" rows to resolveMatch
-  if (!row || row.p.status !== "pending" || row.p.nodeId === "match") return CLOSED;
+    .where(and(eq(workflowPending.id, pendingId), inArray(workflowPending.kind, ["ask", "match"])));
+  if (!row || row.p.status !== "pending") return CLOSED;
   if (!row.p.choices?.includes(choice)) return "That isn't one of the choices.";
   const allowed = row.p.askPersonId
     ? row.p.askPersonId === personId
     : await confirmerPolicy(db, row.tenantId, row.definitionId, row.runAsPersonId, "write", row.chatId)(personId).catch(() => false);
   if (!allowed) return "You can't answer this question.";
+  // the guarded update is the lock on the row: one click wins
+  const win = async () =>
+    (await db
+      .update(workflowPending)
+      .set({ status: "answered", answeredByPersonId: personId, answer: choice })
+      .where(and(eq(workflowPending.id, pendingId), eq(workflowPending.status, "pending")))
+      .returning({ id: workflowPending.id })).length > 0;
+  // an email-match question is about where an email goes, not the run's current node
+  if (row.p.kind === "match") {
+    if (!(await win())) return CLOSED;
+    await resolveMatch(db, pendingId, choice, notify);
+    return `${choice}, by ${personName}`;
+  }
   const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, row.p.runId));
   const close = async () => {
     await db.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.id, pendingId), eq(workflowPending.status, "pending")));
     return CLOSED;
   };
   if (!run || run.status !== "waiting" || run.nodeId !== row.p.nodeId) return close();
-  // the guarded update is the lock on the row: one click wins
-  const won = await db
-    .update(workflowPending)
-    .set({ status: "answered", answeredByPersonId: personId, answer: choice })
-    .where(and(eq(workflowPending.id, pendingId), eq(workflowPending.status, "pending")))
-    .returning({ id: workflowPending.id });
-  if (!won.length) return CLOSED;
+  if (!(await win())) return CLOSED;
   // takeExit moves nothing if the run moved meanwhile (a reply, the timeout, a loop back to this ask)
   if (!(await takeExit(db, run, choice, notify, undefined, undefined, true))) {
     await db.update(workflowPending).set({ status: "cancelled" }).where(eq(workflowPending.id, pendingId));
