@@ -21,6 +21,8 @@ export function nextNode(g: WorkflowGraph, nodeId: string, exit: string): string
   return g.edges.find((e) => e.from === nodeId && e.exit === exit)?.to ?? NEEDS_PERSON;
 }
 
+const dupes = (xs: string[]) => [...new Set(xs.filter((x, i) => xs.indexOf(x) !== i))];
+
 export function checkGraph(g: WorkflowGraph): string[] {
   const problems: string[] = [];
   const triggers = g.nodes.filter((n) => n.type === "trigger");
@@ -34,10 +36,17 @@ export function checkGraph(g: WorkflowGraph): string[] {
     if (n.type === "ai") {
       if (n.results.length === 0) problems.push(`"${n.label}" has no results`);
       for (const r of n.results) if (r.name === NEEDS_PERSON || r.name === NEW_MESSAGE) problems.push(`"${n.label}" has a result named "${r.name}", which is reserved`);
+      dupes(n.results.map((r) => r.name)).forEach((d) => problems.push(`"${n.label}" has two results named "${d}"`));
     }
     if (n.type === "wait" && n.minutes < 1) problems.push(`"${n.label}" must wait at least 1 minute`);
-    if (n.type === "ask" && n.choices.length === 0) problems.push(`"${n.label}" has no choices`);
+    if (n.type === "ask") {
+      if (n.choices.length === 0) problems.push(`"${n.label}" has no choices`);
+      for (const c of n.choices) if (c === "no_answer" || c === NEW_MESSAGE) problems.push(`"${n.label}" has a choice named "${c}", which is reserved`);
+      dupes(n.choices).forEach((d) => problems.push(`"${n.label}" has two choices named "${d}"`));
+      if (n.timeoutMinutes < 1) problems.push(`"${n.label}" must wait at least 1 minute for an answer`);
+    }
   }
+  dupes(g.edges.map((e) => `${e.from}\u0000${e.exit}`)).forEach((d) => problems.push(`Two links leave the same exit "${d.split("\u0000")[1]}" of step "${d.split("\u0000")[0]}"`));
   for (const e of g.edges) {
     const from = byId.get(e.from);
     if (!from) problems.push(`A link starts at unknown step "${e.from}"`);

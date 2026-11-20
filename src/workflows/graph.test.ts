@@ -60,6 +60,34 @@ describe("checkGraph", () => {
   });
 });
 
+describe("checkGraph ambiguous exits", () => {
+  const withAsk = (a: Partial<typeof ask> & { choices?: string[]; timeoutMinutes?: number }): WorkflowGraph => ({
+    nodes: [trigger, { ...ask, ...a } as WorkflowNode, end],
+    edges: [{ from: "t", exit: "next", to: "k" }, { from: "k", exit: "no_answer", to: "e" }],
+    holidays: [],
+  });
+  it("flags duplicate ai result names", () => {
+    const g = valid();
+    g.nodes[1] = { ...ai, results: [{ name: "done", meaning: "a" }, { name: "done", meaning: "b" }] };
+    expect(checkGraph(g)).toHaveLength(1);
+  });
+  it("flags a reserved ask choice", () => {
+    expect(checkGraph(withAsk({ choices: ["yes", "no_answer"] }))).toHaveLength(1);
+    expect(checkGraph(withAsk({ choices: ["yes", "new_message"] }))).toHaveLength(1);
+  });
+  it("flags a duplicate ask choice", () => {
+    expect(checkGraph(withAsk({ choices: ["yes", "yes"] }))).toHaveLength(1);
+  });
+  it("flags two edges from the same exit", () => {
+    const g = valid();
+    g.edges.push({ from: "t", exit: "next", to: "e" });
+    expect(checkGraph(g)).toHaveLength(1);
+  });
+  it("flags ask timeoutMinutes below 1", () => {
+    expect(checkGraph(withAsk({ timeoutMinutes: 0 }))).toHaveLength(1);
+  });
+});
+
 describe("parseGraph", () => {
   it("accepts a valid graph", () => expect(parseGraph(valid()).nodes).toHaveLength(4));
   it("throws on a node without type", () => {
