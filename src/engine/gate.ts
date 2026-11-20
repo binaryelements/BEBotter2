@@ -25,6 +25,7 @@ const BUILT_IN: Record<string, ToolClass> = {
   ...Object.fromEntries(["remember", "recall"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
   ...Object.fromEntries(["activity", "conversation", "learnings", "memory", "remember", "update_memory", "forget_memory", "learn", "update_learning", "forget"].map((t) => [`mcp__reflection__${t}`, "read" as const])),
   mcp__routine__post: "read",
+  mcp__workflow__report_result: "read", // only records the step's result on its own run
   mcp__bots__tell_bot: "read", // the told bot's own tools ask their own confirmations
   mcp__attachments__read_attachment: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
