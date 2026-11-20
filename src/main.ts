@@ -32,7 +32,7 @@ import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startReflectionScheduler } from "./reflections/scheduler.js";
 import { runRoutine, startScheduler } from "./routines/scheduler.js";
-import { recoverRuns, startWorkflows } from "./workflows/engine.js";
+import { recoverStale, startWorkflows } from "./workflows/engine.js";
 import { startMetrics } from "./system/metrics.js";
 import { createTeamsApp, graphToken } from "./teams/app.js";
 import { personToken, sendToChat } from "./teams/proactive.js";
@@ -129,7 +129,7 @@ startMetrics(db);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler(schedulerDeps);
 // a step cut off by the restart is settled before the ticker can claim anything
-await recoverRuns(db, (chatId, text) => schedulerDeps.send(chatId, text)).catch((e) => console.error("workflow recovery failed", e));
+await recoverStale(db, (chatId, text) => schedulerDeps.send(chatId, text)).catch((e) => console.error("workflow recovery failed", e));
 startWorkflows(schedulerDeps);
 startReflectionScheduler({ db, engine, send: (chatId, text) => sendToChat(proactive, chatId, text) });
 if (mail) startAlertScheduler({ db, admin: mail.admin, publicUrl: config.publicUrl, ...(balance ? { balance } : {}) });

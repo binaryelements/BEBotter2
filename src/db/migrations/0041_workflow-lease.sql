@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_runs" ADD COLUMN "heartbeat_at" timestamp with time zone;

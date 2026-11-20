@@ -5,14 +5,14 @@ import { beginAction, completeAction } from "../audit/audit.js";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
-import { workflowRuns } from "../db/schema.js";
+import { chats, workflowPending, workflowRuns } from "../db/schema.js";
 import type { Workflow, WorkflowRun } from "../db/schema.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { saveConversationReference, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { AdaptiveCard } from "../teams/cards.js";
 import type { AiNode, WorkflowGraph } from "./graph.js";
-import { recoverRuns, stepPrompt, tickWorkflows } from "./engine.js";
-import { deliverEvent, enterNode, startRun, takeExit } from "./runs.js";
+import { recoverStale, runAiStep, stepPrompt, tickWorkflows } from "./engine.js";
+import { deliverEvent, enterNode, startRun, takeExit, takeQueuedEvents } from "./runs.js";
 import type { RunEvent } from "./runs.js";
 import { createWorkflow, publish, saveDraft } from "./store.js";
 
@@ -138,24 +138,104 @@ describe("workflow engine", () => {
     expect(await reload(r)).toMatchObject({ nodeId: "e", status: "done" });
   });
 
-  const crashMidStep = async (toolName: string) => {
+  const WRITE = "mcp__tickets__create_ticket";
+  const audit = async (runId: string, toolName: string, status: "done" | "pending" = "done") => {
+    const id = await beginAction(db, { tenantId: "t1", chatId: "c1", definitionId: defId, personId, kind: "tool", toolName, summary: "x", workflowRunId: runId });
+    if (status === "done") await completeAction(db, id, { status: "done" });
+  };
+  // a step cut off mid-turn: claimed, its events taken, its heartbeat `heartbeatAt`
+  const crashMidStep = async (toolName?: string, status: "done" | "pending" = "done", heartbeatAt: Date | null = null) => {
     const r = await start();
-    const stepStartedAt = new Date(Date.now() - 60_000);
-    await db.update(workflowRuns).set({ status: "running", stepStartedAt }).where(eq(workflowRuns.id, r.id));
-    const id = await beginAction(db, { tenantId: "t1", chatId: "c1", definitionId: defId, personId, kind: "tool", toolName, summary: "x", workflowRunId: r.id });
-    await completeAction(db, id, { status: "done" });
-    await recoverRuns(db, notify);
+    await db.update(workflowRuns).set({ status: "running", stepStartedAt: new Date(Date.now() - 60_000), heartbeatAt }).where(eq(workflowRuns.id, r.id));
+    await takeQueuedEvents(db, r.id, "a");
+    if (toolName) await audit(r.id, toolName, status);
+    await recoverStale(db, notify);
     return reload(r);
   };
 
-  it("recovery re-runs a step with no write", async () => {
-    expect(await crashMidStep("WebSearch")).toMatchObject({ nodeId: "a", status: "ready", stepStartedAt: null });
+  it("recovery re-runs a step with no write, and the re-run still sees the email", async () => {
+    const r = await crashMidStep("WebSearch");
+    expect(r).toMatchObject({ nodeId: "a", status: "ready", stepStartedAt: null });
     expect(sent).toEqual([]);
+    await tickWorkflows(deps());
+    expect(turns[0]!.text).toContain("message id m1");
   });
 
   it("recovery sends a step with a done write to needs a person", async () => {
-    expect(await crashMidStep("mcp__tickets__create_ticket")).toMatchObject({ nodeId: "a", status: "needs_person" });
+    const r = await crashMidStep(WRITE);
+    expect(r).toMatchObject({ nodeId: "a", status: "needs_person", pendingEvents: [] });
     expect(sent).toEqual([["c1", "Acme order needs a person at Read: the server restarted after this step changed something"]]);
+  });
+
+  it("recovery treats a pending write as a write", async () => {
+    expect(await crashMidStep(WRITE, "pending")).toMatchObject({ status: "needs_person" });
+  });
+
+  it("recovery leaves a step with a fresh heartbeat alone, and takes a stale one", async () => {
+    expect(await crashMidStep(undefined, "done", new Date())).toMatchObject({ status: "running" });
+    expect(await crashMidStep(undefined, "done", new Date(Date.now() - 3 * 60_000))).toMatchObject({ status: "ready" });
+  });
+
+  it("the heartbeat is refreshed while a long turn runs", async () => {
+    const r = await start();
+    const old = new Date(Date.now() - 60_000);
+    const [claimed] = await db.update(workflowRuns).set({ status: "running", stepStartedAt: old, heartbeatAt: old }).where(eq(workflowRuns.id, r.id)).returning();
+    let seen: Date | null = null;
+    await runAiStep(deps(async (t) => {
+      await new Promise((res) => setTimeout(res, 300));
+      seen = (await reload(r)).heartbeatAt;
+      await report(t.workflow!.runId, "done");
+    }), claimed!, 50);
+    expect(seen!.getTime()).toBeGreaterThan(old.getTime());
+  });
+
+  it("no report after a write is not retried and needs a person", async () => {
+    const r = await start();
+    await tickWorkflows(deps(async (t) => void (await audit(t.workflow!.runId, WRITE))));
+    expect(turns).toHaveLength(1);
+    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "needs_person", attempts: 0 });
+    expect(sent).toEqual([["c1", "Acme order needs a person at Read: the step changed something but didn't report a result"]]);
+  });
+
+  it("a wired needs_person edge is followed when the step doesn't report", async () => {
+    await saveDraft(db, "t1", wf.id, { ...graph, edges: [...graph.edges, { from: "a", exit: "needs_person", to: "x" }] });
+    await publish(db, "t1", wf.id, personId, {});
+    const r = await start();
+    const d = deps(async () => {});
+    await tickWorkflows(d);
+    await tickWorkflows(d);
+    expect(await reload(r)).toMatchObject({ nodeId: "x", status: "waiting" });
+  });
+
+  it("an approval parks the step and keeps its events", async () => {
+    const r = await start();
+    await tickWorkflows(deps(async (t) => void (await db.insert(workflowPending).values({ id: "p1", runId: t.workflow!.runId, nodeId: "a", kind: "approval" }))));
+    const parked = await reload(r);
+    expect(parked).toMatchObject({ nodeId: "a", status: "waiting" });
+    expect(parked.pendingEvents.map((e) => e.type === "email" && e.messageId)).toEqual(["m1"]);
+  });
+
+  it("a failed reachability check needs a person", async () => {
+    const r = await start();
+    await db.update(chats).set({ conversationReference: null }).where(eq(chats.id, "c1"));
+    await tickWorkflows(deps());
+    expect(turns).toHaveLength(0);
+    expect(await reload(r)).toMatchObject({ status: "needs_person" });
+  });
+
+  it("a thrown turn counts as one attempt", async () => {
+    const r = await start();
+    await tickWorkflows(deps(async () => {
+      throw new Error("boom");
+    }));
+    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "ready", attempts: 1 });
+  });
+
+  it("two ticks at once claim a run once", async () => {
+    await start();
+    const d = deps();
+    await Promise.all([tickWorkflows(d), tickWorkflows(d)]);
+    expect(turns).toHaveLength(1);
   });
 
   it("stepPrompt never contains an email body", async () => {

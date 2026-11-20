@@ -94,16 +94,27 @@ export const takeExit = (db: Db, run: WorkflowRun, exit: string, notify: Notify,
     if (stillThere(cur, run)) await step(tx, cur, exit, notify, reason, after);
   });
 
-/** Takes the queued events off a run running on `nodeId`, for its step's prompt; events delivered later stay queued. */
+/**
+ * The queued events of a run running on `nodeId`, for its step's prompt. They are marked `inStep` and stay queued
+ * (a retry, a re-run after a restart or a step resumed after an approval sees them again) until settleStep drops them.
+ */
 export async function takeQueuedEvents(db: Db, runId: string, nodeId: string): Promise<QueuedEvent[]> {
   let taken: QueuedEvent[] = [];
   await atomically(db, runId, async (tx, run) => {
     if (run.nodeId !== nodeId || run.status !== "running") return;
-    taken = run.pendingEvents;
-    await tx.update(workflowRuns).set({ pendingEvents: [] }).where(eq(workflowRuns.id, runId));
+    taken = run.pendingEvents.map((e) => ({ ...e, inStep: true }));
+    await tx.update(workflowRuns).set({ pendingEvents: taken }).where(eq(workflowRuns.id, runId));
   });
   return taken;
 }
+
+/** Ends an AI step: drops the events it was given and takes `exit`, in one transaction. */
+export const settleStep = (db: Db, run: WorkflowRun, exit: string, notify: Notify, reason?: string) =>
+  atomically(db, run.id, async (tx, cur, after) => {
+    if (!stillThere(cur, run)) return;
+    const [kept] = await tx.update(workflowRuns).set({ pendingEvents: cur.pendingEvents.filter((e) => !e.inStep) }).where(eq(workflowRuns.id, run.id)).returning();
+    await step(tx, kept, exit, notify, reason, after);
+  });
 
 export const enterNode = (db: Db, run: WorkflowRun, nodeId: string, notify: Notify, reason?: string) =>
   atomically(db, run.id, async (tx, cur, after) => {

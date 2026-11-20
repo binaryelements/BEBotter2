@@ -603,6 +603,7 @@ export const workflowRuns = pgTable(
     dueAt: ts("due_at"),
     waitStartedAt: ts("wait_started_at"),
     stepStartedAt: ts("step_started_at"),
+    heartbeatAt: ts("heartbeat_at"), // refreshed while a step's turn runs; a stale one means its server is gone
     attempts: integer("attempts").notNull().default(0),
     keys: jsonb("keys").$type<RunKeys>().notNull(),
     fields: jsonb("fields").$type<Record<string, string>>().notNull(),
