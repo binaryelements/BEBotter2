@@ -7,7 +7,7 @@ import { recordTools, setToolRule, toolRule, toolRulesFor } from "../engine/tool
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { upsertPerson, upsertTenant } from "../org/org.js";
 import { GRAPH_CAPABILITIES, botDefinitions, definitionDepartments, people, connections, chatAssignments, chats, mailboxes, auditEvents, routines } from "../db/schema.js";
-import { getConnection, getConnectionGrant, listConnectionsFor } from "../connections/store.js";
+import { callHandoversFor, getConnection, getConnectionGrant, listConnectionsFor } from "../connections/store.js";
 import { fakeSsh } from "../connections/ssh.js";
 import { encrypt } from "../secrets/cipher.js";
 import { createRoutine, listRoutines } from "../routines/store.js";
@@ -386,6 +386,21 @@ describe("bots screen", () => {
       expect(hits).toContain('name="q"');
       const none = await (await get(`/admin/bots/${d.id}?tab=connections&q=zzzz`, "Ann")).text();
       expect(none).toContain("No connections match");
+    });
+
+    it("shows a ring-group transfer for a BE Voice connection the bot calls through, and saves the choice", async () => {
+      const d = await def("helper");
+      const c = await conn("bevoice", { kind: "mcp", target: "https://voice.example.test/mcp", config: { readOnlyTools: [] }, mode: "change", publicKey: null });
+      await post(`/admin/bots/${d.id}/connections/${c}/link`, "Ann", [["linked", "on"]]);
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).not.toContain("transfer to a person");
+      await recordTools(db, d.id, ["mcp__conn-bevoice__place_call"]);
+      const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
+      expect(page).toContain("Calls: transfer to a person");
+      expect(page).toContain("Ring groups could not be listed"); // this app's fetch is down: the page still renders
+      expect((await post(`/admin/bots/${d.id}/connections/${c}/handover`, "Hal", [["target", "ring_group:rg_1"], ["then", ""]])).status).toBe(403);
+      expect((await post(`/admin/bots/${d.id}/connections/${c}/handover`, "Ann", [["target", "ring_group:rg_1"], ["then", "ext: 101"]])).status).toBe(303);
+      expect((await callHandoversFor(db, d.id)).get(c)).toEqual({ target: "ring_group:rg_1", then: "ext:101" });
+      expect(await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text()).toContain('value="ring_group:rg_1" selected');
     });
 
     it("lets an admin change a connection's own mode and caps old write grants", async () => {

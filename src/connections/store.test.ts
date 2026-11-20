@@ -10,7 +10,7 @@ import { decrypt, encrypt } from "../secrets/cipher.js";
 import { fakeSsh } from "./ssh.js";
 import type { SqlRunner } from "./sql.js";
 import {
-  adminVerify, approveConnection, connectionGrantForTool, connectionGrantsFor, connectionMcpConfigs, createConnection, getConnection, getConnectionGrant, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, updateConnection, resetHostKey, revokeConnection, runSsh, setConnectionGrant, setLinked, verifyConnection,
+  adminVerify, approveConnection, callHandoversFor, listRingGroups, setCallHandover, withHandover, connectionGrantForTool, connectionGrantsFor, connectionMcpConfigs, createConnection, getConnection, getConnectionGrant, runHttp, runSql, listConnections, listConnectionsFor, requestConnection, updateConnection, resetHostKey, revokeConnection, runSsh, setConnectionGrant, setLinked, verifyConnection,
 } from "./store.js";
 
 const key = randomBytes(32);
@@ -207,7 +207,12 @@ describe("connections store", () => {
   const mcpServer = (url: string, init: RequestInit) => {
     const msg = JSON.parse(String(init.body)) as { id?: number; method: string };
     if (msg.method === "notifications/initialized") return new Response(null, { status: 202 });
-    const result = msg.method === "initialize" ? { protocolVersion: "2025-06-18" } : { tools: [{ name: "list_tickets" }, { name: "close_ticket" }] };
+    const result =
+      msg.method === "initialize"
+        ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } }
+        : msg.method === "tools/call"
+          ? { content: [{ type: "text", text: "1 ring group" }], structuredContent: { ring_groups: [{ id: "rg_1", name: "Sales", members: 3, target: "ring_group:rg_1" }, { name: "bad", target: "ext:1" }] } }
+          : { tools: [{ name: "list_tickets" }, { name: "close_ticket" }] };
     return Response.json({ jsonrpc: "2.0", id: msg.id, result });
   };
 
@@ -273,9 +278,32 @@ describe("connections store", () => {
     expect(await connectionMcpConfigs(db, key, "t1", defId)).toEqual({
       servers: { "conn-tickets": { type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Api-Key": "mcp-tok" } } },
       readOnly: [{ name: "conn-tickets", readOnlyTools: ["list_tickets"] }],
+      handovers: {},
     });
     expect((await connectionMcpConfigs(db, key, "t1", otherDefId)).servers).toEqual({});
     expect((await connectionMcpConfigs(db, key, "t2", defId)).servers).toEqual({});
+  });
+
+  it("a bot's call handover: picked from BE Voice's ring groups, checked, and added to every place_call", async () => {
+    await request(mcp);
+    await setSecret("tickets", "mcp-tok");
+    respond = mcpServer;
+    await approveConnection(db, "t1", "tickets", personId);
+    await verifyConnection(deps, "t1", defId, "tickets");
+    const c = (await getConnection(db, "t1", "tickets"))!;
+    expect(await listRingGroups(deps, c)).toEqual([{ name: "Sales", members: 3, target: "ring_group:rg_1" }]);
+    await expect(setCallHandover(db, "t1", otherDefId, c.id, "ring_group:rg_1", "")).rejects.toThrow(/Give the bot the connection first/);
+    await expect(setCallHandover(db, "t1", defId, c.id, "ext:101", "")).rejects.toThrow(/ring groups/);
+    await expect(setCallHandover(db, "t1", defId, c.id, "ring_group:rg_1", "0400 000 000")).rejects.toThrow(/backup/);
+    await setCallHandover(db, "t1", defId, c.id, "ring_group:rg_1", "ext:101");
+    const { handovers } = await connectionMcpConfigs(db, key, "t1", defId);
+    expect(handovers).toEqual({ "conn-tickets": { target: "ring_group:rg_1", then: "ext:101" } });
+    // the admin's choice wins over whatever the model passed; other tools and servers are untouched
+    expect(withHandover("mcp__conn-tickets__place_call", { to: "+61400000000", human: { target: "+61499999999" } }, handovers)).toEqual({ to: "+61400000000", human: { target: "ring_group:rg_1", then: "ext:101" } });
+    expect(withHandover("mcp__conn-tickets__get_call", { call_id: "c" }, handovers)).toEqual({ call_id: "c" });
+    expect(withHandover("mcp__conn-other__place_call", { to: "x" }, handovers)).toEqual({ to: "x" });
+    await setCallHandover(db, "t1", defId, c.id, "", "");
+    expect((await callHandoversFor(db, defId)).size).toBe(0);
   });
 
   it("http_read refuses POST; http_change refuses a read-only connection", async () => {

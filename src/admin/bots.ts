@@ -9,7 +9,7 @@ import {
 import { and, count, eq, gte, inArray, max, sql } from "drizzle-orm";
 import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
-import { activeMcp, adminVerify, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, resetHostKey, revokeConnection, setConnectionGrant, setConnectionMode, setDescription, setLinked, updateConnection } from "../connections/store.js";
+import { activeMcp, adminVerify, callHandoversFor, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, listRingGroups, resetHostKey, revokeConnection, setCallHandover, setConnectionGrant, setConnectionMode, setDescription, setLinked, updateConnection } from "../connections/store.js";
 import type { ConnectionGrantMode, ConnectionKind, ConnectionMode } from "../connections/store.js";
 import { SQL_ENGINES } from "../connections/sql.js";
 import type { SqlRunner } from "../connections/sql.js";
@@ -706,12 +706,33 @@ ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` 
           const othersAll = visible.filter((c) => !linkedIds.has(c.id) && c.ownerDefinitionId !== def.id && c.status !== "revoked");
           const mine = mineAll.filter(matches);
           const others = othersAll.filter(matches);
+          // BE Voice connections this bot places calls through: where a caller who asks for a person goes
+          const known = new Set(await knownTools(db, def.id));
+          const callers = mineAll.filter((c) => c.kind === "mcp" && c.status === "active" && known.has(`mcp__conn-${c.name}__place_call`));
+          const handovers = await callHandoversFor(db, def.id);
+          const handoverForm = async (c: Connection) => {
+            const current = handovers.get(c.id);
+            const listed = await listRingGroups(connDeps, c).then((groups) => ({ groups, error: "" }), (e: unknown) => ({ groups: [], error: e instanceof ConnectionError ? e.message : "it could not be reached" }));
+            const gone = current && !listed.error && !listed.groups.some((g) => g.target === current.target);
+            const options = [
+              html`<option value="">no transfer: the AI offers a call back</option>`,
+              ...listed.groups.map((g) => html`<option value="${g.target}" ${g.target === current?.target ? "selected" : ""}>${g.name} (${g.members} ${g.members === 1 ? "person" : "people"})</option>`),
+              ...(current && !listed.groups.some((g) => g.target === current.target) ? [html`<option value="${current.target}" selected>${gone ? "deleted ring group" : current.target}</option>`] : []),
+            ];
+            return html`<form class="inline-edit" method="post" action="/admin/bots/${def.id}/connections/${c.id}/handover">${csrf}<input type="hidden" name="tab" value="connections"><strong>${c.name}</strong> <select class="be-select" name="target" aria-label="Ring group for ${c.name}">${options}</select> <input class="be-input" name="then" value="${current?.then ?? ""}" placeholder="backup: ext:101 or +61…" aria-label="Backup if nobody in the group answers" maxlength="20"> <button class="be-btn sm">save</button>${
+              listed.error ? html`<div class="small" style="color:var(--ui-bad)">Ring groups could not be listed: ${listed.error}</div>` : !listed.groups.length ? html`<div class="small muted">This BE Voice account has no ring groups yet; add one in BE Voice.</div>` : ""}${
+              gone ? html`<div class="small" style="color:var(--ui-bad)">The chosen ring group no longer exists in BE Voice, so calls will be refused. Pick another.</div>` : ""}</form>`;
+          };
+          const handoverSection = callers.length
+            ? html`<h2>Calls: transfer to a person</h2><p class="hint">When someone on this bot's call asks for a real person, BE Voice puts them through to this ring group. If nobody answers, the backup rings, then the AI carries on. It is added to every call this bot places.</p>${await Promise.all(callers.map(handoverForm))}`
+            : "";
           const search = html`<form class="search-form" method="get" action="/admin/bots/${def.id}" role="search"><input type="hidden" name="tab" value="connections"><input id="bot-connections-q" class="be-input" type="search" name="q" value="${q}" placeholder="Search name, kind, target or description…" aria-label="Search connections" data-live-filter="#bot-connections" data-live-count="#bot-connections-count"><button class="be-btn">search</button>${q ? html`<a class="be-btn quiet" href="/admin/bots/${def.id}?tab=connections">clear</a>` : ""}</form>`;
           section = html`<div class="toolbar">${search}<span class="spacer"></span><span class="muted" id="bot-connections-count">${mine.length + others.length} of ${mineAll.length + othersAll.length}</span></div>
 <div id="bot-connections">${q && !mine.length && !others.length ? html`<div class="be-empty">No connections match “${q}”. <a href="/admin/bots/${def.id}?tab=connections">clear</a></div>` : html`<h2>Connections this bot uses</h2>
 <p class="hint"><strong>This bot</strong> sets what this bot may do on each connection: read only, ask before a change, change freely, or no access. It overrides the bot's Actions rules, so one SSH host can be read-only while another is free.</p>
 ${mine.length ? connTable(mine, true) : q ? html`<div class="be-empty">No used connections match “${q}”.</div>` : html`<div class="be-empty">none yet: ${othersAll.length ? "give it one below" : html`add an ssh, sql, MCP or http connection on the <a href="/admin/connections#add">Connections page</a>`}, or ask the bot in chat to set one up</div>`}
 ${others.length ? html`<h2>Other company connections</h2>${connTable(others, false)}` : ""}`}</div>
+${handoverSection}
 <h2>MCP servers</h2>
 ${def.mcpServers.length ? scroll(html`<table class="be-table"><thead><tr><th>Name</th><th>Transport</th><th>Read-only tools</th><th>Headers</th><th></th><th></th></tr></thead><tbody>${def.mcpServers.map(
             (s) => html`<tr><td>${s.name}</td><td>${s.transport}</td><td>${s.readOnlyTools.join(", ") || "none"}</td><td>${s.headersCipher ? "headers set" : "none"}</td><td>${s.transport === "http" ? html`<form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/tools">${csrf}<button class="be-btn sm" title="connects, lists its tools on the Actions tab so you can choose which run freely">list tools</button></form>` : ""}</td><td><form method="post" action="/admin/bots/${def.id}/servers/${encodeURIComponent(s.name)}/delete">${csrf}<button class="be-btn sm danger">remove</button></form></td></tr>`,
@@ -1027,6 +1048,16 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       const mode = field(req, "mode") as ConnectionGrantMode;
       if (!["read", "confirm", "free", "deny"].includes(mode)) throw new DirectoryError("Unknown permission");
       await setConnectionGrant(db, actor.tenantId, req.params.id, req.params.connectionId, mode);
+      res.redirect(303, back(req, req.params.id));
+    }),
+  );
+
+  router.post(
+    "/bots/:id/connections/:connectionId/handover",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      if (!isAdmin(actor)) return deny(res);
+      await setCallHandover(db, actor.tenantId, req.params.id, req.params.connectionId, field(req, "target").trim(), field(req, "then").replace(/\s/g, ""));
       res.redirect(303, back(req, req.params.id));
     }),
   );
