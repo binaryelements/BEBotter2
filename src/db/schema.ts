@@ -405,6 +405,19 @@ export const connectionGrants = pgTable(
 );
 export type ConnectionGrant = typeof connectionGrants.$inferSelect;
 
+/** Where this bot's phone calls through one connection (BE Voice) put a caller who asks for a person: added to every place_call. */
+export const callHandovers = pgTable(
+  "call_handovers",
+  {
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id").notNull().references(() => connections.id, { onDelete: "cascade" }),
+    target: text("target").notNull(), // ring_group:rg_…, as list_ring_groups gives it
+    thenTarget: text("then_target"), // ext:101 or +61…, tried when nobody in the group answers
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.definitionId, t.connectionId] })],
+);
+
 export const knowledgeVersions = pgTable(
   "knowledge_versions",
   {

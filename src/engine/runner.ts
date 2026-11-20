@@ -15,7 +15,7 @@ import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
 import { connectionsMcpServer } from "../connections/mcp.js";
 import type { SshRunner } from "../connections/ssh.js";
-import { connectionMcpConfigs } from "../connections/store.js";
+import { connectionMcpConfigs, withHandover } from "../connections/store.js";
 import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { runbookIndex } from "../knowledge/store.js";
@@ -508,7 +508,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       tools,
       callTool: async (name, args, callSignal) => {
         if (!registry) return { text: "No tool runtime.", isError: true };
-        const result = await registry.call(name, args, callSignal ?? signal);
+        const result = await registry.call(name, withHandover(name, args, setup.conn.handovers), callSignal ?? signal);
         // the bot's own mailbox hands back files as base64: read them the way chat and Outlook files are read
         return name === "mcp__mail__get_attachment" ? readMailAttachment(result, deps.readDocument) : result;
       },

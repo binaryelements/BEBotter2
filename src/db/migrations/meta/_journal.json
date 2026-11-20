@@ -274,6 +274,13 @@
       "when": 1794500800000,
       "tag": "0038_audit-error",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1795151484934,
+      "tag": "0039_call-handover",
+      "breakpoints": true
     }
   ]
 }
