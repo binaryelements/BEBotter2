@@ -81,7 +81,7 @@ export function routineMcpServer(deps: { db: Db }, ctx: Ctx): McpServerHandle {
       : [
           tool(
             "background",
-            "Start a job now that runs on its own while this chat carries on, and posts its results here when it is done. Decide before you start working: anything likely to take more than a minute (comparing several websites, finding the cheapest, research across many pages) goes here straight away instead of into your reply. The job does not see this chat, so `task` must say everything it needs: dates, places, what to compare, how to report, and every preference the person has given in this chat. Then tell the person it will take a few minutes, that you have started it, and that the results will be posted here.",
+            "Start a job now that runs on its own while this chat carries on, and posts its results here when it is done. Decide before you start working: anything likely to take more than a minute (comparing several websites, finding the cheapest, research across many pages) goes here straight away instead of into your reply. Each job has about 100 tool calls (one browser page load or click each, so roughly 10 to 15 websites checked) and fails if it runs out, so split bigger work into up to " + MAX_BACKGROUND + " jobs started together, one per date, route or group of sites, each reporting its own part. The job does not see this chat, so `task` must say everything it needs: dates, places, what to compare, how to report, and every preference the person has given in this chat. Then tell the person it will take a few minutes, that you have started it, and that the results will be posted here.",
             { task: z.string() },
             async ({ task }) => {
               try {
