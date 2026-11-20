@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { testDb } from "./test-db.js";
 import { eq } from "drizzle-orm";
-import { tenants, people, chats, botDefinitions, departments, departmentMembers, definitionDepartments, connections, secretLinks, definitionConnections, knowledgeVersions, routines } from "./schema.js";
+import { tenants, people, chats, botDefinitions, departments, departmentMembers, definitionDepartments, connections, secretLinks, definitionConnections, knowledgeVersions, routines, workflows, workflowRuns } from "./schema.js";
 
 describe("schema", () => {
   it("creates the tables and enforces the person uniqueness", async () => {
@@ -69,5 +69,24 @@ describe("schema", () => {
     await db.insert(connections).values(row("k1", "t1"));
     await expect(db.insert(connections).values(row("k2", "t1"))).rejects.toThrow();
     await db.insert(connections).values(row("k3", "t2"));
+  });
+  it("creates the workflow tables", async () => {
+    const db = await testDb();
+    await db.insert(tenants).values({ id: "t1", name: "Example" });
+    await db.insert(people).values({ id: "p1", tenantId: "t1", aadObjectId: "a1", name: "Ann" });
+    await db.insert(botDefinitions).values({
+      id: "d1", tenantId: "t1", name: "bot", label: "Bot", persona: "x", model: "m", webSearch: false, computer: false, mcpServers: [],
+    });
+    await db.insert(chats).values({ id: "c1", tenantId: "t1", conversationType: "personal" });
+    await db.insert(workflows).values({
+      id: "w1", tenantId: "t1", definitionId: "d1", name: "Chase", chatId: "c1", runAsPersonId: "p1",
+      draft: { nodes: [], edges: [], holidays: [] },
+    });
+    await db.insert(workflowRuns).values({
+      id: "r1", tenantId: "t1", workflowId: "w1", nodeId: "n1", title: "Run", keys: { threadIds: [], emails: [], domain: null }, fields: {},
+    });
+    const [run] = await db.select().from(workflowRuns);
+    expect(run!.keys.threadIds).toEqual([]);
+    expect(run!.status).toBe("ready");
   });
 });
