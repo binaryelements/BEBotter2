@@ -9,12 +9,13 @@ vi.mock("../audit/audit.js", async (orig) => {
   const actual = await orig<typeof auditModule>();
   return { ...actual, completeAction: vi.fn(actual.completeAction) };
 });
-import { upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, chats, connections, mailboxes, sessions } from "../db/schema.js";
+import { botDefinitions, chats, connections, mailboxes, sessions, workflowRuns } from "../db/schema.js";
+import { createWorkflow } from "../workflows/store.js";
 import { addLearning } from "../learnings/store.js";
 import { writeNote } from "../knowledge/store.js";
 import { rememberMemory } from "../memory/store.js";
@@ -841,5 +842,60 @@ describe("runTurn", () => {
     const send = rows.find((r) => r.toolName === "mcp__m365__send_mail")!;
     expect(send.toolInput).toEqual({ to: ["bea@example.test"], subject: "Quarterly figures" });
     expect(send.summary).toContain("Quarterly figures");
+  });
+
+  describe("workflow turns", () => {
+    type Handler = (args: Record<string, unknown>) => Promise<{ isError?: boolean }>;
+    const reportTool = (input: EngineRunInput) => (input.mcpServers.workflow as unknown as { instance: { _registeredTools: Record<string, { handler: Handler }> } }).instance._registeredTools.report_result.handler;
+    const wfTurn = (runId: string) => ({ runId, nodeId: "a", results: ["done"], saves: [] as string[] });
+    async function runs(db: Db, definitionId: string, personId: string) {
+      await assignToChat(db, "c1", definitionId);
+      const wf = await createWorkflow(db, "t1", { definitionId, name: "wf", chatId: "c1", runAsPersonId: personId });
+      for (const id of ["r1", "r2"]) await db.insert(workflowRuns).values({ id, tenantId: "t1", workflowId: wf.id, nodeId: "a", status: "running", title: id, keys: { threadIds: [], emails: [], domain: null }, fields: {} });
+    }
+
+    it("lists the workflow server only when the turn has a workflow, and stamps its audit rows with the run", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      await runs(db, definition.id, person.id);
+      const plain = fakeEngine({ calls: [] });
+      await runTurn(deps(db, plain.engine), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+      expect(Object.keys(plain.seen[0]!.mcpServers)).not.toContain("workflow");
+      expect((await listActions(db, { tenantId: "t1" })).every((r) => r.workflowRunId === null)).toBe(true);
+
+      const q = fakeEngine({ calls: [["mcp__computer__bash", { command: "uptime" }]] });
+      await runTurn(deps(db, q.engine), { tenantId: "t1", chatId: "c1", definition, person, text: "step", askConfirmation: async () => {}, workflow: wfTurn("r1") });
+      expect(Object.keys(q.seen[0]!.mcpServers)).toContain("workflow");
+      const stamped = (await listActions(db, { tenantId: "t1" })).filter((r) => r.workflowRunId === "r1");
+      expect(stamped.map((r) => r.kind).sort()).toEqual(["message", "tool"]);
+    });
+
+    it("two overlapping background turns in one chat each report to their own run", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      await runs(db, definition.id, person.id);
+      const started: EngineRunInput[] = [];
+      let release!: () => void;
+      const bothStarted = new Promise<void>((r) => (release = r));
+      const engine: Engine = {
+        async run(input) {
+          started.push(input);
+          if (started.length === 2) release();
+          await bothStarted;
+          // r1 reports and ends first; r2 reports after r1's turn has been torn down
+          if (input === started[1]) await new Promise((r) => setTimeout(r, 200));
+          const mine = input === started[0] ? "r1" : "r2";
+          await reportTool(input)({ result: "done", reason: mine });
+          return { text: "Done.", messages: [...input.history], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, steps: 1, stopReason: "text" };
+        },
+      };
+      const turn = (id: string) => runTurn(deps(db, engine), {
+        tenantId: "t1", chatId: "c1", definition, person, text: "step", askConfirmation: async () => {},
+        routine: { id: `wf:${id}`, grantPersonId: null, post: async () => {}, background: true }, workflow: wfTurn(id),
+      });
+      await Promise.all([turn("r1"), turn("r2")]);
+      const rows = await db.select().from(workflowRuns);
+      expect(Object.fromEntries(rows.map((r) => [r.id, r.reportedResult?.reason]))).toEqual({ r1: "r1", r2: "r2" });
+    });
   });
 });

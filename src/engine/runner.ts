@@ -103,12 +103,11 @@ type TurnContext = {
   signInLost: () => void;
   askConfirmation: RunTurnInput["askConfirmation"];
   relay: number;
-  workflow?: WorkflowTurn;
 };
 const turnContexts = new Map<string, TurnContext>();
 
 /** Everything a turn's engine depends on. */
-async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean, key: string, workflow: boolean) {
+async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean, key: string, workflow: WorkflowTurn | undefined) {
   const { db } = deps;
   // a computer that can't start (no Docker on this host, image missing) costs the bot its computer, not the whole reply
   const containerId = definition.computer
@@ -199,20 +198,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       knowledge: knowledgeMcpServer(deps, ctx, false),
       connections: connectionsMcpServer(deps, ctx),
       routine: routineMcpServer(deps, ctx),
-      ...(workflow
-        ? {
-            workflow: workflowMcpServer(
-              { db },
-              {
-                // read per call, so a warm engine reports for the step running now
-                get runId() { return turn().workflow!.runId; },
-                get nodeId() { return turn().workflow!.nodeId; },
-                get results() { return turn().workflow!.results; },
-                get saves() { return turn().workflow!.saves; },
-              },
-            ),
-          }
-        : {}),
+      ...(workflow ? { workflow: workflowMcpServer({ db }, workflow) } : {}),
       attachments: attachmentsMcpServer(deps, ctx),
       learnings: learningsMcpServer(deps, ctx, personal),
       // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
@@ -226,7 +212,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     },
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, workflow, rules, learnt.map((l) => [l.id, l.text]), mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, !!workflow, rules, learnt.map((l) => [l.id, l.text]), mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, processOptions, fingerprint };
 }
 
@@ -270,6 +256,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const { db } = deps;
   const { tenantId, chatId, definition, person } = turn;
   const signal = turn.signal ?? new AbortController().signal;
+  // shortcut: a bot told via tell_bot runs without workflow, so its writes aren't stamped and recoverRuns can't see them; stamp told turns when workflows use tell_bot
   const base = { tenantId, chatId, definitionId: definition.id, personId: person.id, ...(turn.workflow ? { workflowRunId: turn.workflow.runId } : {}) };
   const received = turn.receivedAt ?? new Date();
   const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };
@@ -319,8 +306,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     .select()
     .from(sessions)
     .where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
-  const key = `${chatId}:${definition.id}`;
-  const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine, key, !!turn.workflow);
+  // a background job runs beside the chat's own turn (the scheduler queues it under this same key), so its context is its own
+  const key = turn.routine?.background ? `${chatId}:${definition.id}:${turn.routine.id}` : `${chatId}:${definition.id}`;
+  const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine, key, turn.workflow);
   const { conn } = setup;
   // the long tail of memory: only the few relevant to this message are put in the prompt, never the whole table
   const personal = definition.identity === "person";
@@ -499,7 +487,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   // the app's tools read the turn through the key, so a warm process acts for whoever is talking now
   const context: TurnContext = {
     personId: person.id, person, confirmedBy, post: turn.routine?.post, graphToken: turn.graphToken, signInLost: () => void (signInLost = true),
-    askConfirmation: turn.askConfirmation, relay: turn.relay ?? 0, workflow: turn.workflow,
+    askConfirmation: turn.askConfirmation, relay: turn.relay ?? 0,
   };
   const prompt = withDefaults(turn.text, await getTenantSettings(db, tenantId), received, person);
 
@@ -545,7 +533,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   try {
     turnContexts.set(key, context);
     // a background job gets its own browser: jobs run side by side in one chat, and a shared tab is navigated out from under them
-    registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key: turn.routine?.background ? `${key}:${turn.routine.id}` : key, pool: deps.mcpPool });
+    registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
     tools = await registry.listTools();
     const result = await runEngine();
     // a superseded turn leaves no trace: no session, no message audit row, no reply

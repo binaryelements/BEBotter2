@@ -30,7 +30,8 @@ export function workflowMcpServer(deps: { db: Db }, ctx: Ctx): McpServerHandle {
             const [run] = await tx.select().from(workflowRuns).where(eq(workflowRuns.id, ctx.runId)).for("update");
             if (!run || run.nodeId !== ctx.nodeId || run.status !== "running") return true;
             const keys = { ...run.keys, threadIds: [...run.keys.threadIds], emails: [...run.keys.emails] };
-            if (fields?.thread_id && !keys.threadIds.includes(fields.thread_id)) keys.threadIds.push(fields.thread_id);
+            const thread = fields?.thread_id?.trim();
+            if (thread && !keys.threadIds.includes(thread)) keys.threadIds.push(thread);
             const email = fields?.email?.trim().toLowerCase();
             if (email && !keys.emails.includes(email)) keys.emails.push(email);
             await tx
