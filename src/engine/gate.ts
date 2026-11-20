@@ -59,3 +59,10 @@ export function classify(toolName: string, def: BotDefinition, connectionServers
   if (base === "approve" || !rule) return base;
   return rule === "free" ? "read" : "write";
 }
+
+/** A call's class as the runner decides it: classify, then a per-connection grant on a change (deny and read-only grants refuse the call first). */
+export function callClass(toolName: string, def: BotDefinition, connectionServers: ConnectionServers, rule: ToolRule | undefined, grant?: { mode: string; change: boolean }): ToolClass {
+  if (grant?.change && grant.mode === "confirm") return "write";
+  if (grant?.change && grant.mode === "free") return "read";
+  return classify(toolName, def, connectionServers, rule);
+}

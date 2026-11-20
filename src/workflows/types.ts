@@ -1,6 +1,6 @@
 export type NodeBase = { id: string; label: string; x: number; y: number };
 export type TriggerNode = NodeBase & { type: "trigger"; trigger: "email" | "manual"; fields?: string[] };
-export type AiNode = NodeBase & { type: "ai"; instruction: string; success: string; results: { name: string; meaning: string }[]; saves?: string[]; tools?: string[] };
+export type AiNode = NodeBase & { type: "ai"; instruction: string; success: string; results: { name: string; meaning: string }[]; saves?: string[] };
 export type WaitNode = NodeBase & { type: "wait"; minutes: number; businessHours: boolean };
 export type AskNode = NodeBase & { type: "ask"; question: string; choices: string[]; personId?: string; timeoutMinutes: number };
 export type EndNode = NodeBase & { type: "end"; outcome: string };

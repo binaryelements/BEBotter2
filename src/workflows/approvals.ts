@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { confirmerPolicy } from "../admin/access.js";
 import type { Db } from "../db/client.js";
-import { people, workflowPending, workflowRuns, workflows } from "../db/schema.js";
+import { auditEvents, people, workflowPending, workflowRuns, workflows } from "../db/schema.js";
 import type { WorkflowTurn } from "../engine/runner.js";
 
 type Answer = "confirmed" | "denied" | "not_allowed" | "unknown";
@@ -37,6 +37,12 @@ export async function resolveApproval(db: Db, pendingId: string, personId: strin
     const [row] = await tx.select().from(workflowPending).where(eq(workflowPending.id, pendingId)).for("update");
     if (!run || row?.status !== "pending") return void (out = given(row?.status)); // cancelled by a reply, or answered, while the policy was checked
     await tx.update(workflowPending).set({ status: answer === "yes" ? "approved" : "declined", answeredByPersonId: personId }).where(eq(workflowPending.id, pendingId));
+    // the held call never runs itself: an approved one runs again, under its own audit row, when the step re-runs
+    if (row.auditId)
+      await tx
+        .update(auditEvents)
+        .set(answer === "yes" ? { status: "failed", error: "Held for approval; the step ran it again after the answer.", finishedAt: new Date() } : { status: "denied", finishedAt: new Date() })
+        .where(and(eq(auditEvents.id, row.auditId), eq(auditEvents.status, "pending")));
     // a step still running (a quick click) is readied by runAiStep when its turn ends
     if (run.status === "waiting" && run.nodeId === row.nodeId)
       await tx.update(workflowRuns).set({ status: "ready", updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));

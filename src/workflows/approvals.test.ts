@@ -175,6 +175,22 @@ describe("workflow approvals", () => {
     expect(turns[2]!.text).not.toContain("Declined");
   });
 
+  it("an answered hold completes its held audit row, and the re-run is not counted as a write by it", async () => {
+    const auditOf = async (pendingId: string) => {
+      const [p] = await db.select().from(workflowPending).where(eq(workflowPending.id, pendingId));
+      return (await listActions(db, { tenantId: "t1" })).find((a) => a.id === p!.auditId);
+    };
+    const { r, id } = await held();
+    await clickApproval(db, id, ann, "yes");
+    expect(await auditOf(id)).toMatchObject({ status: "failed", error: "Held for approval; the step ran it again after the answer." });
+    await step([]); // the re-run doesn't make the call: nothing written, so it is retried
+    expect(await reload(r)).toMatchObject({ status: "ready", attempts: 1 });
+    await step([[WRITE, { id: 8 }]]);
+    const again = (await pending(r.id)).find((p) => p.status === "pending")!;
+    await clickApproval(db, again.id, ann, "no");
+    expect(await auditOf(again.id)).toMatchObject({ status: "denied" });
+  });
+
   it("a person not allowed to confirm gets not_allowed", async () => {
     const { r, id } = await held();
     expect(await clickApproval(db, id, bob, "yes")).toBe("not_allowed");

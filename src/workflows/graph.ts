@@ -71,7 +71,7 @@ const node = z.discriminatedUnion("type", [
   z.object({
     ...base, type: z.literal("ai"), instruction: z.string(), success: z.string(),
     results: z.array(z.object({ name: z.string(), meaning: z.string() })),
-    saves: z.array(z.string()).optional(), tools: z.array(z.string()).optional(),
+    saves: z.array(z.string()).optional(),
   }),
   z.object({ ...base, type: z.literal("wait"), minutes: z.number(), businessHours: z.boolean() }),
   z.object({ ...base, type: z.literal("ask"), question: z.string(), choices: z.array(z.string()), personId: z.string().optional(), timeoutMinutes: z.number() }),

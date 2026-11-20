@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
-import { workflowRuns } from "../db/schema.js";
+import { workflowPending, workflowRuns } from "../db/schema.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import { createWorkflow } from "./store.js";
 import { workflowMcpServer } from "./mcp.js";
@@ -64,6 +64,13 @@ describe("workflow mcp", () => {
   it("refuses a turn from an older claim of the same step", async () => {
     const r = await report(server("a", new Date(claimedAt.getTime() - 60_000).toISOString()))({ result: "done", reason: "ok" });
     expect(r).toMatchObject({ isError: true, content: [{ text: "This step has moved on" }] });
+    expect((await run()).reportedResult).toBeNull();
+  });
+
+  it("refuses a report made after a write was held for approval", async () => {
+    await db.insert(workflowPending).values({ id: "p1", runId: "r1", nodeId: "a", kind: "approval" });
+    const r = await report(server())({ result: "done", reason: "ok" });
+    expect(r).toMatchObject({ isError: true, content: [{ text: "A change is waiting for approval; end the step without reporting." }] });
     expect((await run()).reportedResult).toBeNull();
   });
 });

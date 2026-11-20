@@ -93,4 +93,9 @@ describe("parseGraph", () => {
   it("throws on a node without type", () => {
     expect(() => parseGraph({ nodes: [{ id: "t", label: "x", x: 0, y: 0 }], edges: [], holidays: [] })).toThrow();
   });
+  it("drops an AI step's tools list, which nothing enforces yet", () => {
+    const g = valid();
+    g.nodes = g.nodes.map((n) => (n.type === "ai" ? { ...n, tools: ["mcp__x__y"] } : n));
+    expect(parseGraph(g).nodes.find((n) => n.type === "ai")).not.toHaveProperty("tools");
+  });
 });

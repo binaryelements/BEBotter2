@@ -8,7 +8,7 @@ import { workflowPending, workflowRunEvents, workflowRuns } from "../db/schema.j
 import type { Workflow, WorkflowRun } from "../db/schema.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "./graph.js";
-import { deliverEvent, enterNode, moveRun, startRun, takeExit } from "./runs.js";
+import { deliverEvent, enterNode, moveRun, settleStep, startRun, takeExit, takeQueuedEvents } from "./runs.js";
 import type { RunEvent } from "./runs.js";
 import { createWorkflow, publish, saveDraft } from "./store.js";
 
@@ -199,5 +199,21 @@ describe("workflow runs", () => {
     const r = await start();
     await enterNode(db, r, "gone", notify);
     expect(sent[0][1]).toBe("Acme order needs a person at Read: its step no longer exists");
+  });
+
+  it("a reply that came during a step whose result ends the run needs a person instead", async () => {
+    const r = await start();
+    const [claimed] = await db.update(workflowRuns).set({ status: "running", stepStartedAt: new Date() }).where(eq(workflowRuns.id, r.id)).returning();
+    await takeQueuedEvents(db, r.id, "a");
+    await deliverEvent(db, r.id, email(2), notify);
+    await settleStep(db, claimed!, "stop", notify);
+    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "needs_person" });
+    expect(sent).toEqual([["c1", "Acme order needs a person at Read: a new message arrived as it ended"]]);
+  });
+
+  it("escapes markdown in the reason a run needs a person", async () => {
+    const r = await start();
+    await enterNode(db, r, "needs_person", notify, "see [here](http://evil.test)");
+    expect(sent).toEqual([["c1", "Acme order needs a person at Read: see \\[here\\]\\(http://evil.test\\)"]]);
   });
 });

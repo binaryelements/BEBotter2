@@ -135,9 +135,12 @@ export const enterNode = (db: Db, run: WorkflowRun, nodeId: string, notify: Noti
 
 async function step(tx: Tx, run: WorkflowRun, exit: string, notify: Notify, reason: string | undefined, after: After): Promise<void> {
   const { graph } = await context(tx, run);
-  const to = graph ? nextNode(graph, run.nodeId, exit) : NEEDS_PERSON;
+  const next = graph ? nextNode(graph, run.nodeId, exit) : NEEDS_PERSON;
   await addEvent(tx, run.id, run.nodeId, "result", { result: exit, reason });
-  const why = reason ?? (to === NEEDS_PERSON && exit !== NEEDS_PERSON ? `nothing is connected to "${exit}"` : undefined);
+  // a reply that came during the step was never seen; here and not in enter, so a person can still move a run to an end
+  const unseen = graph?.nodes.find((n) => n.id === next)?.type === "end" && run.pendingEvents.some((e) => !e.woke && !e.inStep);
+  const to = unseen ? NEEDS_PERSON : next;
+  const why = unseen ? "a new message arrived as it ended" : (reason ?? (to === NEEDS_PERSON && exit !== NEEDS_PERSON ? `nothing is connected to "${exit}"` : undefined));
   await enter(tx, run, to, notify, why, after);
 }
 
@@ -151,7 +154,7 @@ async function enter(tx: Tx, run: WorkflowRun, nodeId: string, notify: Notify, r
     await tx.update(workflowRuns).set({ status: "needs_person", dueAt: null, reportedResult: null, updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));
     await addEvent(tx, run.id, run.nodeId, "needs_person", { reason: why });
     const label = graph?.nodes.find((n) => n.id === run.nodeId)?.label ?? run.nodeId;
-    after.push(() => notify(wf.chatId, `${plain(run.title)} needs a person at ${label}: ${why}`));
+    after.push(() => notify(wf.chatId, `${plain(run.title)} needs a person at ${label}: ${plain(why)}`));
     return;
   }
   const tz = (await getTenantSettings(tx as unknown as Db, run.tenantId)).timezone;

@@ -12,7 +12,7 @@ import { upsertPerson, upsertTenant } from "../org/org.js";
 import type { HeadlessRun } from "../routines/scheduler.js";
 import { encrypt } from "../secrets/cipher.js";
 import { eq } from "drizzle-orm";
-import { mountMailInbound } from "./inbound.js";
+import { mountMailInbound, routeEmail } from "./inbound.js";
 
 const auditBroken = { chat: "" };
 vi.mock("../audit/audit.js", async (orig) => {
@@ -20,6 +20,11 @@ vi.mock("../audit/audit.js", async (orig) => {
   return { ...real, beginAction: (db: never, i: { chatId: string }) => (i.chatId === auditBroken.chat ? Promise.reject(new Error("audit down")) : real.beginAction(db, i as never)) };
 });
 void audit;
+const routing = { broken: false };
+vi.mock("../workflows/match.js", async (orig) => {
+  const real = await orig<typeof import("../workflows/match.js")>();
+  return { ...real, matchEmail: (...a: Parameters<typeof real.matchEmail>) => (routing.broken ? Promise.reject(new Error("db down")) : real.matchEmail(...a)) };
+});
 
 const secretsKey = Buffer.alloc(32, 7);
 const SECRET = "amwh_test";
@@ -162,6 +167,29 @@ describe("mail inbound with an email workflow", () => {
     expect(await db.select().from(workflowRuns)).toEqual([expect.objectContaining({ id: run!.id, status: "done" })]);
     await post(event({ id: "ev3", from: "Ada <ada@MAIL.test>" })); // own domain, behind a display name
     expect(await db.select().from(workflowRuns)).toHaveLength(1);
+  });
+
+  it("a routing failure tells the workflow chat to start it by hand", async () => {
+    const { db, sent, post } = await setup();
+    await withWorkflow(db);
+    routing.broken = true;
+    try {
+      expect(await post(event({ subject: "[x](http://evil)" }))).toBe(200);
+    } finally {
+      routing.broken = false;
+    }
+    expect(sent).toContainEqual(["c1", "Couldn't route the email from bob\\@example.com about \\[x\\]\\(http://evil\\); start it by hand."]);
+  });
+
+  it("two emails on a new thread arriving together start one run", async () => {
+    const { db } = await setup();
+    const wf = await withWorkflow(db);
+    const mail = (id: string) => ({ type: "email" as const, from: "bob@example.com", subject: "Order", messageId: id, threadId: "th1" });
+    const quiet = async () => {};
+    await Promise.all([routeEmail(db, wf, mail("m1"), quiet, quiet, () => true), routeEmail(db, wf, mail("m2"), quiet, quiet, () => true)]);
+    const all = await db.select().from(workflowRuns);
+    expect(all).toHaveLength(1);
+    expect((await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, all[0]!.id))).filter((e) => e.kind === "event")).toHaveLength(2);
   });
 
   it("an automatic sender starts no run", async () => {

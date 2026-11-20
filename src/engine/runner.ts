@@ -39,7 +39,7 @@ import type { Confirmations, Outcome } from "./confirm.js";
 import { browserMcpServer } from "./browser.js";
 import type { Engine, EngineEvent, EngineMessage, EngineProcessOptions, EngineResult, EngineRunInput, EngineTool, ToolDecision } from "./engine.js";
 import { FAILED_TEXT } from "./engine.js";
-import { classify } from "./gate.js";
+import { callClass } from "./gate.js";
 import type { McpServerConfig } from "./mcp.js";
 import type { McpPool } from "./mcp-pool.js";
 import { McpRegistry } from "./mcp-registry.js";
@@ -399,9 +399,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       await completeAction(db, auditId, { status: "denied" });
       return { allow: false, message: `Not done: this bot's access to ${perConnection.name} is read-only.` };
     }
-    let kind = classify(toolName, definition, conn.readOnly, rule);
-    if (perConnection?.mode === "confirm" && perConnection.change) kind = "write";
-    if (perConnection?.mode === "free" && perConnection.change) kind = "read";
+    const kind = callClass(toolName, definition, conn.readOnly, rule, perConnection);
     if (kind === "read") {
       inFlight.set(callId, auditId);
       return { allow: true };

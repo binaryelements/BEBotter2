@@ -46,11 +46,25 @@ function validSignature(secret: string, timestamp: string, body: Buffer, signatu
 
 const oneLine = (s: unknown, max: number) => (typeof s === "string" ? s : "").replace(/\s+/g, " ").trim().slice(0, max);
 
+const routing = new Map<string, Promise<void>>();
 /**
  * Wakes the run the email belongs to, asks the workflow's chat when it isn't sure, or starts a new run.
  * Only new runs and questions count against the hourly cap: a customer's reply to a live run always gets through.
  */
-async function routeEmail(db: Db, wf: Workflow, mail: EmailEvent, send: InboundDeps["send"], notify: Notify, underCap: () => boolean): Promise<void> {
+export async function routeEmail(db: Db, wf: Workflow, mail: EmailEvent, send: InboundDeps["send"], notify: Notify, underCap: () => boolean): Promise<void> {
+  // one at a time per workflow, so two emails on a new thread can't both start a run
+  // shortcut: in-process only, like underCap; move to a DB lock when running more than one server
+  const mine = (routing.get(wf.id) ?? Promise.resolve()).then(() => route(db, wf, mail, send, notify, underCap));
+  const tail = mine.catch(() => {});
+  routing.set(wf.id, tail);
+  try {
+    await mine;
+  } finally {
+    if (routing.get(wf.id) === tail) routing.delete(wf.id);
+  }
+}
+
+async function route(db: Db, wf: Workflow, mail: EmailEvent, send: InboundDeps["send"], notify: Notify, underCap: () => boolean): Promise<void> {
   const match = await matchEmail(db, wf.id, mail);
   // shortcut: no per-run wake bound; add one if auto-reply loops appear
   if (match.kind === "wake" && (await deliverEvent(db, match.runId, mail, notify))) return;
@@ -147,7 +161,14 @@ export function mailInbound(deps: InboundDeps): RequestHandler[] {
         if (AUTOMATIC.test(sender)) return;
         const mail = { type: "email" as const, from: sender, subject, messageId: oneLine(event.message?.id, 200), threadId: oneLine(event.message?.thread_id, 200) || null };
         const notify: Notify = (chatId, t) => deps.send(chatId, t).catch((e) => console.error("mail workflow notice:", errName(e)));
-        return void (await routeEmail(db, wf, mail, deps.send, notify, () => underCap(box.definitionId)));
+        try {
+          await routeEmail(db, wf, mail, deps.send, notify, () => underCap(box.definitionId));
+        } catch (e) {
+          // the delivery is recorded and answered, so it is never retried: someone has to start it
+          console.error("mail workflow routing:", errName(e));
+          await notify(wf.chatId, `Couldn't route the email from ${plain(sender)} about ${plain(subject)}; start it by hand.`);
+        }
+        return;
       }
 
       if (def.mailMode !== "act" || !def.mailChatId || !def.mailBy || !deps.run) return;

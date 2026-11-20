@@ -345,7 +345,7 @@ export const auditEvents = pgTable("audit_events", {
   workflowRunId: text("workflow_run_id"), // set when a workflow run caused the action
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
-});
+}, (t) => [index("audit_events_workflow_run_idx").on(t.workflowRunId)]);
 
 export const connections = pgTable(
   "connections",
