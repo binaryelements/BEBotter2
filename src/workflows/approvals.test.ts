@@ -60,7 +60,7 @@ describe("workflow approvals", () => {
    * A step whose turn makes `calls` (or the calls it reads from its prompt) through the real runner; `during` runs inside
    * the turn after the calls; `failCards` makes sending a card throw.
    */
-  const step = (calls: Calls | ((prompt: string) => Calls), opts: { during?: (runId: string) => Promise<void>; failCards?: boolean } = {}) => {
+  const step = (calls: Calls | ((prompt: string) => Calls), opts: { before?: (runId: string) => Promise<void>; during?: (runId: string) => Promise<void>; failCards?: boolean } = {}) => {
     let prompt = "";
     const engine: Engine = {
       async run(input) {
@@ -82,6 +82,7 @@ describe("workflow approvals", () => {
       runTurn: async (turn) => {
         turns.push(turn);
         prompt = turn.text;
+        await opts.before?.(turn.workflow!.runId); // the step is claimed and its events taken
         const r = await runTurn(runner, turn);
         await opts.during?.(turn.workflow!.runId);
         return r;
@@ -217,6 +218,17 @@ describe("workflow approvals", () => {
     const row = (await listActions(db, { tenantId: "t1" })).find((a) => a.toolName === WRITE)!;
     expect(row).toMatchObject({ status: "denied", error: "Not run: the customer replied before it was approved." });
     expect(await reload(r)).toMatchObject({ nodeId: "a", status: "ready", attempts: 1 }); // nothing written: the normal retry
+    await step([]);
+    expect(turns[1]!.text).toContain("message id m2");
+  });
+
+  it("a reply during the turn before the hold stops the step parking, and the retry sees it", async () => {
+    const r = await start();
+    await step([[WRITE, { id: 7 }]], { before: reply }); // nothing held yet when the reply lands
+    expect((await pending(r.id))[0]!.status).toBe("cancelled");
+    const row = (await listActions(db, { tenantId: "t1" })).find((a) => a.toolName === WRITE)!;
+    expect(row).toMatchObject({ status: "denied", error: "Not run: the customer replied before it was approved." });
+    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "ready", attempts: 1 });
     await step([]);
     expect(turns[1]!.text).toContain("message id m2");
   });

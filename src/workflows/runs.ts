@@ -161,6 +161,21 @@ async function enter(tx: Tx, run: WorkflowRun, nodeId: string, notify: Notify, r
   if (node.type === "ask") after.push(() => postAskHook(updated, node));
 }
 
+/**
+ * Nothing is sent after the customer replied: the run's held approvals, and answered ones not yet used, are cancelled, and
+ * the held calls' audit rows denied, so the step's no-write retry runs and wroteSince doesn't count a call that never ran.
+ */
+export async function revokeApprovals(tx: Tx, runId: string): Promise<void> {
+  const revoked = await tx
+    .update(workflowPending)
+    .set({ status: "cancelled" })
+    .where(and(eq(workflowPending.runId, runId), eq(workflowPending.kind, "approval"), or(eq(workflowPending.status, "pending"), and(inArray(workflowPending.status, ["approved", "declined"]), isNull(workflowPending.answer)))))
+    .returning({ auditId: workflowPending.auditId });
+  const held = revoked.flatMap((r) => (r.auditId ? [r.auditId] : []));
+  if (held.length)
+    await tx.update(auditEvents).set({ status: "denied", error: "Not run: the customer replied before it was approved.", finishedAt: new Date() }).where(and(inArray(auditEvents.id, held), eq(auditEvents.status, "pending")));
+}
+
 export async function deliverEvent(db: Db, runId: string, event: RunEvent, notify: Notify): Promise<void> {
   await atomically(db, runId, async (tx, run, after) => {
     if (run.status === "done" || run.status === "failed") return;
@@ -180,16 +195,7 @@ export async function deliverEvent(db: Db, runId: string, event: RunEvent, notif
       .set({ keys, pendingEvents: [...run.pendingEvents, queued], updatedAt: new Date() })
       .where(eq(workflowRuns.id, run.id))
       .returning();
-    // nothing is sent after the customer replied: held approvals, and answered ones not yet used, are revoked
-    const revoked = await tx
-      .update(workflowPending)
-      .set({ status: "cancelled" })
-      .where(and(eq(workflowPending.runId, run.id), eq(workflowPending.kind, "approval"), or(eq(workflowPending.status, "pending"), and(inArray(workflowPending.status, ["approved", "declined"]), isNull(workflowPending.answer)))))
-      .returning({ auditId: workflowPending.auditId });
-    const held = revoked.flatMap((r) => (r.auditId ? [r.auditId] : []));
-    // denied, not pending, so the step's no-write retry runs and wroteSince doesn't count a call that never ran
-    if (held.length)
-      await tx.update(auditEvents).set({ status: "denied", error: "Not run: the customer replied before it was approved.", finishedAt: new Date() }).where(and(inArray(auditEvents.id, held), eq(auditEvents.status, "pending")));
+    await revokeApprovals(tx, run.id);
     if (waiting) {
       await tx.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.runId, run.id), eq(workflowPending.status, "pending")));
       await step(tx, updated, NEW_MESSAGE, notify, undefined, after);

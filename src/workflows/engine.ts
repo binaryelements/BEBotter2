@@ -11,7 +11,7 @@ import { confirmationCard, withRoleLabel } from "../teams/cards.js";
 import { latestDecision } from "./approvals.js";
 import { NEEDS_PERSON } from "./graph.js";
 import type { AiNode } from "./graph.js";
-import { enterNode, settleStep, takeExit, takeQueuedEvents } from "./runs.js";
+import { enterNode, revokeApprovals, settleStep, takeExit, takeQueuedEvents } from "./runs.js";
 import type { Notify, RunEvent } from "./runs.js";
 import { publishedGraph } from "./store.js";
 
@@ -116,7 +116,10 @@ export async function runAiStep(deps: SchedulerDeps, run: WorkflowRun, heartbeat
     // Under the run's lock, as resolveApproval takes it, so a click is never lost between the two.
     let parked = false;
     await db.transaction(async (tx) => {
-      if (!(await tx.select({ id: workflowRuns.id }).from(workflowRuns).where(here).for("update")).length) return;
+      const [locked] = await tx.select({ pendingEvents: workflowRuns.pendingEvents }).from(workflowRuns).where(here).for("update");
+      if (!locked) return;
+      // a reply came during the turn, perhaps before the hold, so the held call was written without it: revoke it and retry
+      if (locked.pendingEvents.some((e) => !e.inStep)) return await revokeApprovals(tx, run.id);
       const held = await tx
         .select({ status: workflowPending.status })
         .from(workflowPending)
