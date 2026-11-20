@@ -10,6 +10,12 @@ export const card = (body: unknown[], actions?: unknown[]): AdaptiveCard => ({
   ...(actions ? { actions } : {}),
 });
 
+/** Untrusted text for a Teams text message: markdown, links and mentions are escaped. */
+export const plain = (s: string) => s.replace(/[\\`*_~[\]()<>#|@&]/g, "\\$&");
+
+/** Untrusted text for a card: a TextRun never renders markdown, so it shows exactly as written. */
+export const literal = (text: string, bold = false) => ({ type: "RichTextBlock", inlines: [{ type: "TextRun", text, ...(bold ? { weight: "Bolder" } : {}) }] });
+
 /** A tool's name as words: an MCP tool loses its mcp__<server>__ prefix and underscores; other tools stay as named. */
 export const toolWords = (toolName: string): string => {
   const m = /^mcp__.+?__(.+)$/.exec(toolName);

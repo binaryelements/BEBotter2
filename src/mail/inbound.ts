@@ -8,11 +8,12 @@ import { botDefinitions, chatAssignments, mailboxes, mailDeliveries, people, wor
 import type { Workflow } from "../db/schema.js";
 import type { HeadlessRun } from "../routines/scheduler.js";
 import { decrypt } from "../secrets/cipher.js";
+import { plain } from "../teams/cards.js";
 import type { AdaptiveCard } from "../teams/cards.js";
 import { askCard } from "../workflows/ask.js";
 import { matchEmail, startFromEmail } from "../workflows/match.js";
 import type { EmailEvent } from "../workflows/match.js";
-import { deliverEvent } from "../workflows/runs.js";
+import { deliverEvent, emailAddress, emailDomain } from "../workflows/runs.js";
 import type { Notify } from "../workflows/runs.js";
 import { emailWorkflowFor } from "../workflows/store.js";
 
@@ -43,15 +44,19 @@ function validSignature(secret: string, timestamp: string, body: Buffer, signatu
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
-// sender and subject are untrusted and Teams renders markdown, links and mentions
-const plain = (s: string) => s.replace(/[\\`*_~[\]()<>#|@&]/g, "\\$&");
 const oneLine = (s: unknown, max: number) => (typeof s === "string" ? s : "").replace(/\s+/g, " ").trim().slice(0, max);
 
-/** Wakes the run the email belongs to, asks the workflow's chat when it isn't sure, or starts a new run. */
-async function routeEmail(db: Db, wf: Workflow, mail: EmailEvent, send: InboundDeps["send"], notify: Notify): Promise<void> {
+/**
+ * Wakes the run the email belongs to, asks the workflow's chat when it isn't sure, or starts a new run.
+ * Only new runs and questions count against the hourly cap: a customer's reply to a live run always gets through.
+ */
+async function routeEmail(db: Db, wf: Workflow, mail: EmailEvent, send: InboundDeps["send"], notify: Notify, underCap: () => boolean): Promise<void> {
   const match = await matchEmail(db, wf.id, mail);
+  // shortcut: no per-run wake bound; add one if auto-reply loops appear
   if (match.kind === "wake" && (await deliverEvent(db, match.runId, mail, notify))) return;
+  if (!underCap()) return void (await notify(wf.chatId, `Too many new emails this hour; ${plain(mail.from)} about ${plain(mail.subject)} wasn't started. Start it by hand.`));
   if (match.kind !== "ask") return void (await startFromEmail(db, wf, mail, notify));
+  // shortcut: match questions never expire and each email from the same unmatched sender posts another card; expire or merge them if chats get noisy
   const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, match.runId));
   const [question, choices] =
     match.why === "domain"
@@ -60,7 +65,7 @@ async function routeEmail(db: Db, wf: Workflow, mail: EmailEvent, send: InboundD
   const id = crypto.randomUUID();
   await db.insert(workflowPending).values({ id, runId: run.id, nodeId: run.nodeId, kind: "match", choices, input: mail });
   try {
-    await send(wf.chatId, askCard(id, plain(`New email from ${mail.from}: ${mail.subject}`), plain(question), choices));
+    await send(wf.chatId, askCard(id, `New email from ${mail.from}: ${mail.subject}`, question, choices));
   } catch (e) {
     console.error("mail workflow question:", errName(e));
     await send(wf.chatId, `Couldn't post the question for an email from ${plain(mail.from)}: ${plain(question)}`).catch(() => {});
@@ -108,8 +113,8 @@ export function mailInbound(deps: InboundDeps): RequestHandler[] {
       res.sendStatus(200); // recorded: a Teams failure below must not make BE AgentMail retry
 
       const sender = oneLine(event.message?.from_address, 320);
-      const ownDomain = box.address.slice(box.address.lastIndexOf("@") + 1).toLowerCase();
-      if (!sender || sender.slice(sender.lastIndexOf("@") + 1).toLowerCase() === ownDomain) return;
+      // sender stays as written for display; matching and the own-domain check use its bare address
+      if (!sender || emailDomain(emailAddress(sender)) === emailDomain(box.address.toLowerCase())) return;
       const subject = oneLine(event.message?.subject, 200);
       const text = `New email to ${box.address} from ${plain(sender)}: ${plain(subject)}`;
       const [def] = await db
@@ -139,10 +144,10 @@ export function mailInbound(deps: InboundDeps): RequestHandler[] {
       const wf = await emailWorkflowFor(db, box.definitionId);
       if (wf) {
         // a bot with an email workflow never also runs its act instruction
-        if (AUTOMATIC.test(sender) || !underCap(box.definitionId)) return;
+        if (AUTOMATIC.test(sender)) return;
         const mail = { type: "email" as const, from: sender, subject, messageId: oneLine(event.message?.id, 200), threadId: oneLine(event.message?.thread_id, 200) || null };
         const notify: Notify = (chatId, t) => deps.send(chatId, t).catch((e) => console.error("mail workflow notice:", errName(e)));
-        return void (await routeEmail(db, wf, mail, deps.send, notify));
+        return void (await routeEmail(db, wf, mail, deps.send, notify, () => underCap(box.definitionId)));
       }
 
       if (def.mailMode !== "act" || !def.mailChatId || !def.mailBy || !deps.run) return;

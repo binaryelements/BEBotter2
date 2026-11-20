@@ -3,7 +3,7 @@ import { confirmerPolicy } from "../admin/access.js";
 import type { Db } from "../db/client.js";
 import { workflowPending, workflowRuns, workflows } from "../db/schema.js";
 import type { WorkflowRun } from "../db/schema.js";
-import { card } from "../teams/cards.js";
+import { card, literal, plain } from "../teams/cards.js";
 import type { AdaptiveCard } from "../teams/cards.js";
 import type { AskNode } from "./graph.js";
 import { resolveMatch } from "./match.js";
@@ -12,13 +12,10 @@ import type { Notify } from "./runs.js";
 
 const CLOSED = "This question has closed.";
 
-/** The question as a card: one button per choice, answered through the `wfask` verb. */
+/** The question as a card: one button per choice, answered through the `wfask` verb. Title and question show literally: they can carry an email's subject. */
 export const askCard = (pendingId: string, title: string, question: string, choices: string[]): AdaptiveCard =>
   card(
-    [
-      { type: "TextBlock", text: title, weight: "Bolder", wrap: true },
-      { type: "TextBlock", text: question, wrap: true },
-    ],
+    [literal(title, true), literal(question)],
     choices.map((choice) => ({ type: "Action.Execute", title: choice, verb: "wfask", data: { pendingId, choice } })),
   );
 
@@ -32,7 +29,7 @@ export async function postAsk(db: Db, send: (chatId: string, m: string | Adaptiv
     await send(wf.chatId, askCard(id, run.title, node.question, node.choices));
   } catch (err) {
     console.error(`workflow run ${run.id}: posting the question failed`, err);
-    await send(wf.chatId, `Couldn't post the question for ${run.title}: ${node.question}`).catch(() => {});
+    await send(wf.chatId, `Couldn't post the question for ${plain(run.title)}: ${node.question}`).catch(() => {});
   }
 }
 
@@ -60,6 +57,7 @@ export async function answerAsk(db: Db, pendingId: string, personId: string, per
   // an email-match question is about where an email goes, not the run's current node
   if (row.p.kind === "match") {
     if (!(await win())) return CLOSED;
+    // shortcut: if resolveMatch throws after the win, the row stays answered and the email lives only in its input; add a retry or reset if that shows up in the logs
     await resolveMatch(db, pendingId, choice, notify);
     return `${choice}, by ${personName}`;
   }

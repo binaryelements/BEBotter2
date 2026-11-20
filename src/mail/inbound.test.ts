@@ -130,9 +130,37 @@ describe("mail inbound with an email workflow", () => {
     const [p] = await db.select().from(workflowPending);
     expect(p).toMatchObject({ kind: "match", nodeId: "w", choices: ["Attach", "Start new"], status: "pending", input: { type: "email", from: "sue@example.com", threadId: null } });
     const card = JSON.stringify(sent.find((s) => typeof s[1] !== "string")![1]);
-    expect(card).toContain("This looks like Invoice attached");
-    expect(card).toContain("Attach or start new?");
-    expect(card).not.toContain("[x](http"); // the sender's subject never renders as a link
+    expect(card).toContain("This looks like Invoice attached (bob@example.com). Attach or start new?");
+    // untrusted text is a TextRun, which never renders markdown
+    expect(card).toContain(JSON.stringify({ type: "TextRun", text: "New email from sue@example.com: [x](http://evil.test)", weight: "Bolder" }));
+    expect(card).not.toContain(`"type":"TextBlock"`);
+    expect(await db.select().from(workflowRuns)).toHaveLength(1);
+  });
+
+  it("over the hourly cap a reply still wakes its run, but a new sender is not started and the chat is told", async () => {
+    const { db, sent, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ thread: "th1" }));
+    for (let i = 2; i <= 10; i++) await post(event({ id: `n${i}`, from: `n${i}@d${i}.test` }));
+    expect(await db.select().from(workflowRuns)).toHaveLength(10);
+    await post(event({ id: "reply", thread: "th1", from: "bob@example.com" }));
+    const first = (await db.select().from(workflowRuns)).find((r) => r.keys.threadIds.includes("th1"));
+    expect(first).toMatchObject({ nodeId: "r", status: "done" });
+    sent.length = 0;
+    await post(event({ id: "n12", from: "new@d12.test", subject: "[Approve](http://evil)" }));
+    expect(await db.select().from(workflowRuns)).toHaveLength(10);
+    expect(sent).toContainEqual(["c1", "Too many new emails this hour; new\\@d12.test about \\[Approve\\]\\(http://evil\\) wasn't started. Start it by hand."]);
+  });
+
+  it("a display-name sender is matched and keyed by its address", async () => {
+    const { db, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ from: "Bob Smith <Bob@Acme.com>" }));
+    const [run] = await db.select().from(workflowRuns);
+    expect(run).toMatchObject({ title: "Invoice attached (Bob Smith <Bob@Acme.com>)", keys: { emails: ["bob@acme.com"], domain: "acme.com" } });
+    await post(event({ id: "ev2", from: "bob@acme.com" }));
+    expect(await db.select().from(workflowRuns)).toEqual([expect.objectContaining({ id: run!.id, status: "done" })]);
+    await post(event({ id: "ev3", from: "Ada <ada@MAIL.test>" })); // own domain, behind a display name
     expect(await db.select().from(workflowRuns)).toHaveLength(1);
   });
 

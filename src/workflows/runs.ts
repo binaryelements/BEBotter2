@@ -7,6 +7,7 @@ import { getTenantSettings } from "../org/org.js";
 import { NEEDS_PERSON, NEW_MESSAGE, nextNode } from "./graph.js";
 import type { AskNode, WorkflowNode } from "./graph.js";
 import { waitUntil } from "./hours.js";
+import { plain } from "../teams/cards.js";
 import { publishedGraph } from "./store.js";
 import type { QueuedEvent, RunEvent } from "./types.js";
 
@@ -150,7 +151,7 @@ async function enter(tx: Tx, run: WorkflowRun, nodeId: string, notify: Notify, r
     await tx.update(workflowRuns).set({ status: "needs_person", dueAt: null, reportedResult: null, updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));
     await addEvent(tx, run.id, run.nodeId, "needs_person", { reason: why });
     const label = graph?.nodes.find((n) => n.id === run.nodeId)?.label ?? run.nodeId;
-    after.push(() => notify(wf.chatId, `${run.title} needs a person at ${label}: ${why}`));
+    after.push(() => notify(wf.chatId, `${plain(run.title)} needs a person at ${label}: ${why}`));
     return;
   }
   const tz = (await getTenantSettings(tx as unknown as Db, run.tenantId)).timezone;
@@ -187,14 +188,18 @@ export async function revokeApprovals(tx: Tx, runId: string): Promise<void> {
     await tx.update(auditEvents).set({ status: "denied", error: "Not run: the customer replied before it was approved.", finishedAt: new Date() }).where(and(inArray(auditEvents.id, held), eq(auditEvents.status, "pending")));
 }
 
+/** The bare lowercased address of a sender that may be written "Name <addr>". */
+export const emailAddress = (from: string) => (/<([^>]+)>/.exec(from)?.[1] ?? from).trim().toLowerCase();
+export const emailDomain = (address: string) => address.slice(address.lastIndexOf("@") + 1);
+
 /** The run's keys with an email's thread and lowercased sender added, so later mail on them finds the run. */
 function withEmail(keys: WorkflowRun["keys"], event: RunEvent): WorkflowRun["keys"] {
   if (event.type !== "email") return keys;
-  const from = event.from.toLowerCase();
+  const from = emailAddress(event.from);
   return {
     threadIds: event.threadId ? [...new Set([...keys.threadIds, event.threadId])] : keys.threadIds,
     emails: [...new Set([...keys.emails, from])],
-    domain: keys.domain ?? from.split("@")[1] ?? null,
+    domain: keys.domain ?? emailDomain(from),
   };
 }
 
@@ -221,7 +226,7 @@ export async function deliverEvent(db: Db, runId: string, event: RunEvent, notif
       await step(tx, updated, NEW_MESSAGE, notify, undefined, after);
     } else if (run.status === "needs_person") {
       const label = graph?.nodes.find((n) => n.id === run.nodeId)?.label ?? run.nodeId;
-      after.push(() => notify(wf.chatId, `${run.title} needs a person at ${label}: a new message arrived`));
+      after.push(() => notify(wf.chatId, `${plain(run.title)} needs a person at ${label}: a new message arrived`));
     }
   });
   return delivered;
@@ -240,7 +245,7 @@ export async function reopenRun(db: Db, runId: string, event: RunEvent, notify: 
       .set({ status: "needs_person", outcome: null, endedAt: null, dueAt: null, keys: withEmail(run.keys, event), pendingEvents: [...run.pendingEvents, { ...event, woke: false }], updatedAt: new Date() })
       .where(eq(workflowRuns.id, run.id));
     await addEvent(tx, run.id, run.nodeId, "event", { data: event, reason: "reopened by a new email" });
-    after.push(() => notify(wf.chatId, `${run.title} was reopened by a new email and needs a person.`));
+    after.push(() => notify(wf.chatId, `${plain(run.title)} was reopened by a new email and needs a person.`));
   });
   return reopened;
 }

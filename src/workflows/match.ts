@@ -2,7 +2,7 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { workflowPending, workflowRuns, workflows } from "../db/schema.js";
 import type { Workflow } from "../db/schema.js";
-import { deliverEvent, reopenRun, startRun } from "./runs.js";
+import { deliverEvent, emailAddress, emailDomain, reopenRun, startRun } from "./runs.js";
 import type { Notify, RunEvent } from "./runs.js";
 
 export type Match = { kind: "wake"; runId: string } | { kind: "ask"; runId: string; why: "domain" | "ended" } | { kind: "new" };
@@ -13,8 +13,8 @@ const has = (key: "threadIds" | "emails", value: string) => sql`${workflowRuns.k
 
 /** Which run an email belongs to: a thread or sender on an open run wakes it; a shared company domain or an ended run asks a person. */
 export async function matchEmail(db: Db, workflowId: string, mail: { threadId: string | null; from: string }): Promise<Match> {
-  const from = mail.from.toLowerCase();
-  const domain = from.slice(from.lastIndexOf("@") + 1);
+  const from = emailAddress(mail.from);
+  const domain = emailDomain(from);
   const free = FREE_MAIL.has(domain);
   const runs = await db
     .select({ id: workflowRuns.id, status: workflowRuns.status, keys: workflowRuns.keys })
@@ -35,8 +35,8 @@ export async function matchEmail(db: Db, workflowId: string, mail: { threadId: s
 
 /** A new run for an email, titled `<subject> (<sender>)`. */
 export function startFromEmail(db: Db, wf: Workflow, e: EmailEvent, notify: Notify) {
-  const from = e.from.toLowerCase();
-  const keys = { threadIds: e.threadId ? [e.threadId] : [], emails: [from], domain: from.slice(from.lastIndexOf("@") + 1) };
+  const from = emailAddress(e.from);
+  const keys = { threadIds: e.threadId ? [e.threadId] : [], emails: [from], domain: emailDomain(from) };
   return startRun(db, wf, { title: `${e.subject} (${e.from})`, keys, event: e }, notify);
 }
 

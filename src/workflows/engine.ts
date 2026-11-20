@@ -28,7 +28,8 @@ const eventLine = (e: RunEvent) =>
 export function stepPrompt(node: AiNode, run: WorkflowRun, events: RunEvent[], decision?: string): string {
   const fields = Object.entries(run.fields);
   return [
-    `You are running one step of the workflow run "${run.title}".`,
+    // no run title: it can be an email's subject, which only the data-labelled event line may carry
+    "You are running one step of a workflow run.",
     `Instruction: ${node.instruction}`,
     `The step succeeds when: ${node.success}`,
     "Results:",

@@ -10,7 +10,7 @@ import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { AdaptiveCard } from "../teams/cards.js";
 import { answerAsk, postAsk } from "./ask.js";
 import { tickWorkflows } from "./engine.js";
-import type { WorkflowGraph } from "./graph.js";
+import type { AskNode, WorkflowGraph } from "./graph.js";
 import { deliverEvent, setPostAsk, startRun } from "./runs.js";
 import { createWorkflow, publish, saveDraft } from "./store.js";
 
@@ -157,6 +157,17 @@ describe("ask a person", () => {
     expect(rows.filter((p) => p.status === "pending")).toHaveLength(1);
   });
 
+  it("a title from an email shows literally: a TextRun in the card, escaped in the text fallback", async () => {
+    const evil = "[Approve](http://evil) (x@evil.test)";
+    const r = await startRun(db, wf, { title: evil, keys: { threadIds: [], emails: [], domain: null }, event: { type: "manual", fields: {} } });
+    const json = JSON.stringify(sent[0]);
+    expect(json).toContain(JSON.stringify({ type: "TextRun", text: evil, weight: "Bolder" }));
+    expect(json).not.toContain(`"type":"TextBlock"`);
+    const texts: string[] = [];
+    await postAsk(db, async (_c, m) => { if (typeof m !== "string") throw new Error("teams down"); texts.push(m); }, await reload(r), graph().nodes[1] as AskNode);
+    expect(texts).toEqual(["Couldn't post the question for \\[Approve\\]\\(http://evil\\) \\(x\\@evil.test\\): Ship it?"]);
+  });
+
   it("a failed send posts the plain-text notice and leaves the run waiting", async () => {
     const texts: (string | AdaptiveCard)[] = [];
     setPostAsk((run, node) => postAsk(db, async (_c, m) => { if (typeof m !== "string") throw new Error("teams down"); texts.push(m); }, run, node));
@@ -216,6 +227,14 @@ describe("email-match questions", () => {
     expect(after).toMatchObject({ status: "needs_person", outcome: null, endedAt: null });
     expect(after.pendingEvents.at(-1)).toEqual({ ...mail, woke: false });
     expect(notes).toContain("PO-7 was reopened by a new email and needs a person.");
+  });
+
+  it("notices escape a title taken from an email", async () => {
+    const r = await start();
+    await db.update(workflowRuns).set({ title: "[Approve](http://evil)", status: "done" }).where(eq(workflowRuns.id, r.id));
+    const id = await addMatch(await reload(r.id), ["Reopen", "Start new"]);
+    await answerAsk(db, id, ann, "Ann", "Reopen", notify);
+    expect(notes).toEqual(["\\[Approve\\]\\(http://evil\\) was reopened by a new email and needs a person."]);
   });
 
   it("Start new starts a run titled by the email, and Attach to a run that ended meanwhile does too", async () => {
