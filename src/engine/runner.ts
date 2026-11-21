@@ -20,12 +20,14 @@ import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { runbookIndex } from "../knowledge/store.js";
 import { routineMcpServer } from "../routines/mcp.js";
+import { workflowMcpServer } from "../workflows/mcp.js";
+import { holdForApproval, inputHash } from "../workflows/approvals.js";
 import { attachmentsMcpServer, chatAttachment } from "../teams/attachments.js";
 import { learningsMcpServer } from "../learnings/mcp.js";
 import { learningsNote, listLearnings } from "../learnings/store.js";
 import { memoryNote, searchMemory, touchMemory } from "../memory/store.js";
 import type { Db } from "../db/client.js";
-import { assistantRequests, chats, departmentMembers, mailboxes, people, sessions } from "../db/schema.js";
+import { assistantRequests, chats, departmentMembers, mailboxes, people, sessions, workflowPending } from "../db/schema.js";
 import { getTenantSettings } from "../org/org.js";
 import type { TenantSettings } from "../org/org.js";
 import { decrypt } from "../secrets/cipher.js";
@@ -37,7 +39,7 @@ import type { Confirmations, Outcome } from "./confirm.js";
 import { browserMcpServer } from "./browser.js";
 import type { Engine, EngineEvent, EngineMessage, EngineProcessOptions, EngineResult, EngineRunInput, EngineTool, ToolDecision } from "./engine.js";
 import { FAILED_TEXT } from "./engine.js";
-import { classify } from "./gate.js";
+import { callClass } from "./gate.js";
 import type { McpServerConfig } from "./mcp.js";
 import type { McpPool } from "./mcp-pool.js";
 import { McpRegistry } from "./mcp-registry.js";
@@ -72,7 +74,8 @@ export type RunnerDeps = {
   personToken?: (chatId: string) => Promise<string | undefined>;
 };
 /** name: the bot's display name, when it has one; input: the call's arguments as the model sent them. */
-export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown> };
+/** buttonsOnly: a workflow approval, which a typed yes/no doesn't answer. */
+export type ConfirmationRequest = { actionId: string; label: string; name?: string; toolName: string; input: Record<string, unknown>; buttonsOnly?: boolean };
 /** changed: a write completed under a routine grant, so the run must say what it did. */
 export type RunResult = { text: string; costUsd: number; changed: boolean; timings: TurnTimings; /** the turn's message audit row */ auditId: string; /** Graph refused the person's token: sign them out so the next message brings the sign-in card */ signInLost?: boolean; /** A newer message stopped this turn before it answered; nothing was saved and the caller answers the newer message instead. */ aborted?: boolean };
 /** delta: reply text as the model writes it; message-end: an assistant message finished. */
@@ -89,6 +92,9 @@ const NOT_DONE = {
   failed: "Not done: the confirmation could not be sent.",
 };
 
+/** A turn that runs one step of a workflow run. `approved`: a decision on the step's held write, allowing that exact call once. */
+export type WorkflowTurn = { runId: string; nodeId: string; /** the claim (ISO stepStartedAt) this turn acts for */ stepStartedAt: string; results: string[]; saves: string[]; approved?: { pendingId: string; toolName: string; inputHash: string; personId: string } };
+
 /** What the app's tools act for on one conversation key; a warm process outlives its turns. */
 type TurnContext = {
   personId: string;
@@ -103,7 +109,7 @@ type TurnContext = {
 const turnContexts = new Map<string, TurnContext>();
 
 /** Everything a turn's engine depends on. */
-async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean, key: string) {
+async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, definition: BotDefinition, routine: boolean, key: string, workflow: WorkflowTurn | undefined) {
   const { db } = deps;
   // a computer that can't start (no Docker on this host, image missing) costs the bot its computer, not the whole reply
   const containerId = definition.computer
@@ -194,6 +200,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       knowledge: knowledgeMcpServer(deps, ctx, false),
       connections: connectionsMcpServer(deps, ctx),
       routine: routineMcpServer(deps, ctx),
+      ...(workflow ? { workflow: workflowMcpServer({ db }, workflow) } : {}),
       attachments: attachmentsMcpServer(deps, ctx),
       learnings: learningsMcpServer(deps, ctx, personal),
       // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most
@@ -207,7 +214,7 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
     },
   };
   // anything the options capture at start is in the fingerprint
-  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, rules, learnt.map((l) => [l.id, l.text]), mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify([definition.id, definition.updatedAt, definition.identity, definition.graph, containerId ?? null, conn, routine, !!workflow, rules, learnt.map((l) => [l.id, l.text]), mail ? [mailbox!.status, mail.keyId, mail.address] : null])).digest("hex");
   return { conn, processOptions, fingerprint };
 }
 
@@ -229,6 +236,8 @@ export type RunTurnInput = {
   graphToken?: () => Promise<string | undefined>;
   /** How many bots passed this on: a told bot (1) cannot tell further. */
   relay?: number;
+  /** Runs one step of a workflow run: mounts the `workflow` server and stamps the run on every audit row. */
+  workflow?: WorkflowTurn;
 };
 
 /**
@@ -249,7 +258,8 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   const { db } = deps;
   const { tenantId, chatId, definition, person } = turn;
   const signal = turn.signal ?? new AbortController().signal;
-  const base = { tenantId, chatId, definitionId: definition.id, personId: person.id };
+  // shortcut: a bot told via tell_bot runs without workflow, so its writes aren't stamped and recoverStale can't see them; stamp told turns when workflows use tell_bot
+  const base = { tenantId, chatId, definitionId: definition.id, personId: person.id, ...(turn.workflow ? { workflowRunId: turn.workflow.runId } : {}) };
   const received = turn.receivedAt ?? new Date();
   const timings: TurnTimings = { receivedAt: received.toISOString(), tools: 0 };
   const startedBy = turn.routine?.id.startsWith("mail:") ? "Email" : turn.routine?.background ? "Background job" : turn.routine ? "Routine" : turn.relay ? "Another bot" : person.name;
@@ -298,8 +308,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     .select()
     .from(sessions)
     .where(and(eq(sessions.chatId, chatId), eq(sessions.definitionId, definition.id)));
-  const key = `${chatId}:${definition.id}`;
-  const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine, key);
+  // a background job runs beside the chat's own turn (the scheduler queues it under this same key), so its context is its own
+  const key = turn.routine?.background ? `${chatId}:${definition.id}:${turn.routine.id}` : `${chatId}:${definition.id}`;
+  const setup = await engineSetup(deps, tenantId, chatId, definition, !!turn.routine, key, turn.workflow);
   const { conn } = setup;
   // the long tail of memory: only the few relevant to this message are put in the prompt, never the whole table
   const personal = definition.identity === "person";
@@ -347,6 +358,9 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     lastConfirmer = undefined;
   };
   const STALE = { allow: false as const, message: "Not done: the attempt that asked has ended." };
+  // a workflow step holds one write for approval at a time, and its approval allows one matching call
+  let approvalSpent = false;
+  let heldOne = false;
 
   const authoriseTool = async (callId: string, toolName: string, input: Record<string, unknown>): Promise<ToolDecision> => {
     const run = attemptNo;
@@ -385,9 +399,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       await completeAction(db, auditId, { status: "denied" });
       return { allow: false, message: `Not done: this bot's access to ${perConnection.name} is read-only.` };
     }
-    let kind = classify(toolName, definition, conn.readOnly, rule);
-    if (perConnection?.mode === "confirm" && perConnection.change) kind = "write";
-    if (perConnection?.mode === "free" && perConnection.change) kind = "read";
+    const kind = callClass(toolName, definition, conn.readOnly, rule, perConnection);
     if (kind === "read") {
       inFlight.set(callId, auditId);
       return { allow: true };
@@ -416,6 +428,34 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         await completeAction(db, auditId, { status: "failed", error: "Not run: the turn was stopped first." });
         releaseApprove(callId);
         return STALE;
+      }
+      // a workflow step doesn't wait: its write is stored, the card sent, and the run resumes when someone answers
+      if (turn.workflow && kind === "write") {
+        const { approved, runId, nodeId } = turn.workflow;
+        if (approved && !approvalSpent && approved.toolName === toolName && approved.inputHash === inputHash(toolName, input)) {
+          approvalSpent = true;
+          await recordAuthority(db, auditId, { type: "confirmation", personId: approved.personId });
+          inFlight.set(callId, auditId);
+          return { allow: true };
+        }
+        if (heldOne) {
+          await completeAction(db, auditId, { status: "denied" });
+          return { allow: false, message: "Waiting for approval of an earlier change. End the step now." };
+        }
+        heldOne = true;
+        const pendingId = await holdForApproval(db, { id: runId, nodeId }, toolName, input, auditId);
+        try {
+          await turn.askConfirmation({ actionId: pendingId, label: definition.label, ...(definition.displayName ? { name: definition.displayName } : {}), toolName, input: cardInput(input), buttonsOnly: true });
+        } catch (err) {
+          console.error("confirmation card failed", err);
+          // nobody can answer a card that never arrived, so the run must not wait for it, nor later writes be told to
+          heldOne = false;
+          await db.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.id, pendingId), eq(workflowPending.status, "pending")));
+          await completeAction(db, auditId, { status: "failed" });
+          return { allow: false, message: NOT_DONE.failed };
+        }
+        // the audit row stays pending: it marks the held write, so a crash before the answer counts as a write
+        return { allow: false, message: "Sent for approval. Don't retry it. End the step now without calling report_result." };
       }
       const { actionId, outcome } = deps.confirmations.create({ auditId, mayConfirm: confirmerPolicy(db, tenantId, definition.id, person.id, kind, chatId), chatId, personId: person.id, definitionId: definition.id });
       let o: Outcome | { result: "failed" } | { result: "aborted" };
@@ -527,7 +567,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   try {
     turnContexts.set(key, context);
     // a background job gets its own browser: jobs run side by side in one chat, and a shared tab is navigated out from under them
-    registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key: turn.routine?.background ? `${key}:${turn.routine.id}` : key, pool: deps.mcpPool });
+    registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
     tools = await registry.listTools();
     const result = await runEngine();
     // a superseded turn leaves no trace: no session, no message audit row, no reply

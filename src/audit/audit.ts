@@ -18,6 +18,7 @@ export async function beginAction(
     summary: string;
     model?: string;
     startedAt?: Date;
+    workflowRunId?: string;
   },
 ): Promise<string> {
   const id = crypto.randomUUID();

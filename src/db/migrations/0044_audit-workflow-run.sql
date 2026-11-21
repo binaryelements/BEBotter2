@@ -1,0 +1,1 @@
+CREATE INDEX "audit_events_workflow_run_idx" ON "audit_events" USING btree ("workflow_run_id");
