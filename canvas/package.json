@@ -1,0 +1,18 @@
+{
+  "name": "be-teammate-workflow-canvas",
+  "private": true,
+  "type": "module",
+  "description": "The workflow builder canvas in the admin console. Built into ../src/admin/assets/workflows/canvas.js and canvas.css.",
+  "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@xyflow/react": "12.12.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
