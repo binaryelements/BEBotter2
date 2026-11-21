@@ -1,5 +1,5 @@
 // The panel that edits the selected step.
-import { useContext, useState } from "react";
+import { useContext, useRef, useState } from "react";
 import { Ctx } from "./nodes.jsx";
 import { NAMES } from "./model.js";
 
@@ -28,6 +28,22 @@ function Duration({ label, minutes, set }) {
         <select className="be-select" value={unit} onChange={(e) => setUnit(Number(e.target.value))}><option value={60}>hours</option><option value={1440}>days</option></select>
       </span>
     </Field>
+  );
+}
+
+// Long text grows with what's typed (up to half the screen) and opens in a large editor for anything longer.
+function LongText({ label, hint, rows, value, onChange, readOnly }) {
+  const dlg = useRef(null);
+  return (
+    <div className="wf-field">
+      <span className="wf-field-head">{label}<button className="be-btn sm quiet" type="button" onClick={() => dlg.current?.showModal()}>expand</button></span>
+      <textarea className="be-input wf-long" rows={rows} aria-label={label} value={value} onChange={onChange} />
+      {hint ? <span className="hint">{hint}</span> : null}
+      <dialog className="wf-dialog wf-editor" ref={dlg} onClick={(e) => { if (e.target === dlg.current) dlg.current.close(); }}>
+        <div className="wf-editor-head"><h2>{label}</h2><button className="be-btn sm" type="button" onClick={() => dlg.current.close()}>done</button></div>
+        <textarea className="be-input" aria-label={label} value={value} onChange={onChange} readOnly={readOnly} />
+      </dialog>
+    </div>
   );
 }
 
@@ -69,8 +85,8 @@ export function Inspector({ node, change, remove, readOnly }) {
       ) : null}
       {d.type === "ai" ? (
         <>
-          <Field label="instruction"><textarea className="be-input" rows={5} {...text("instruction")} /></Field>
-          <Field label="success test" hint="how the bot knows the step worked"><textarea className="be-input" rows={2} {...text("success")} /></Field>
+          <LongText label="instruction" rows={5} readOnly={readOnly} {...text("instruction")} />
+          <LongText label="success test" hint="how the bot knows the step worked" rows={2} readOnly={readOnly} {...text("success")} />
           <Results results={d.results} set={(results, renamed) => set({ results }, renamed)} />
           <CommaField label="saved fields" hint="comma separated" value={d.saves} set={(saves) => set({ saves: saves.length ? saves : undefined })} />
         </>
@@ -83,7 +99,7 @@ export function Inspector({ node, change, remove, readOnly }) {
       ) : null}
       {d.type === "ask" ? (
         <>
-          <Field label="question"><textarea className="be-input" rows={3} {...text("question")} /></Field>
+          <LongText label="question" rows={3} readOnly={readOnly} {...text("question")} />
           <CommaField label="choices" hint="comma separated" value={d.choices} set={(choices) => set({ choices }, renames(d.choices, choices))} />
           <Field label="person">
             <select className="be-select" value={d.personId ?? ""} onChange={(e) => set({ personId: e.target.value || undefined })}>
