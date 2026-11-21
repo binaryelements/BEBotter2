@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
-import { botDefinitions, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
+import { botDefinitions, people, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
 import { DirectoryError } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "./graph.js";
@@ -205,6 +205,16 @@ describe("workflow store", () => {
     g.edges.push({ from: "a", exit: "needs_person", to: "k" }, { from: "k", exit: "yes", to: "e" });
     await saveDraft(db, "t1", wfId, g);
     await expect(publish(db, "t1", wfId, personId, {})).rejects.toThrow(`"Ask Zed" asks someone who isn't in this company`);
+  });
+
+  it("publish refuses an Ask step naming an unlicensed person", async () => {
+    const gone = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a-unlic", name: "Una" })).id;
+    await db.update(people).set({ licensed: false }).where(eq(people.id, gone));
+    const g = graph(null);
+    g.nodes.push({ ...b, id: "k", label: "Ask Una", type: "ask", question: "ok?", choices: ["yes"], personId: gone, timeoutMinutes: 5 });
+    g.edges.push({ from: "a", exit: "needs_person", to: "k" }, { from: "k", exit: "yes", to: "e" });
+    await saveDraft(db, "t1", wfId, g);
+    await expect(publish(db, "t1", wfId, personId, {})).rejects.toThrow(`"Ask Una" asks someone who isn't in this company`);
   });
 
   it("publishing an email workflow turns act mode off", async () => {

@@ -334,6 +334,30 @@ describe("workflows screens", () => {
       expect((await initOf(other)).trace).toBeUndefined();
       expect((await (await get(`/admin/bots/${bot}/workflows/${other}?trace=${rid}`)).text())).not.toContain('"trace"');
     });
+
+    it("a trace view is read-only and draws the published graph, not the draft", async () => {
+      const wid = await live("trace ro");
+      const draft = graph(true);
+      draft.nodes.push({ ...b, id: "only-draft", label: "Draft only", type: "end", outcome: "x" });
+      await saveDraft(db, T, wid, draft, (await initOf(wid)).base);
+      const rid = await run(wid, "w1", "waiting", "Ro");
+      const page = await (await get(`/admin/bots/${bot}/workflows/${wid}?trace=${rid}`)).text();
+      expect(page).toContain('"readOnly":true');
+      const init = JSON.parse(/<script type="application\/json" id="wf-init">([\s\S]*?)<\/script>/.exec(page)![1]);
+      const ids = init.draft.nodes.map((n: { id: string }) => n.id);
+      expect(ids).toContain("w1");
+      expect(ids).not.toContain("only-draft");
+    });
+
+    it("with nothing published the trace view falls back to the draft, still read-only", async () => {
+      const wid = await newWorkflow("trace unpublished");
+      const rid = await run(wid, "t", "waiting", "Un");
+      const page = await (await get(`/admin/bots/${bot}/workflows/${wid}?trace=${rid}`)).text();
+      const init = JSON.parse(/<script type="application\/json" id="wf-init">([\s\S]*?)<\/script>/.exec(page)![1]);
+      expect(init.readOnly).toBe(true);
+      expect(init.trace.runId).toBe(rid);
+      expect(init.draft).toEqual((await db.select().from(workflows).where(eq(workflows.id, wid)))[0].draft);
+    });
   });
 
   it("publishing an email workflow turns act mode off", async () => {
