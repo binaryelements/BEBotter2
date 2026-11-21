@@ -54,7 +54,7 @@ describe("canvas model", () => {
 
   it("newNode has defaults", () => {
     const n = newNode("ai", { x: 1, y: 2 });
-    expect(n).toMatchObject({ type: "ai", x: 1, y: 2, label: "AI step", instruction: "", success: "", results: [{ name: "done", meaning: "" }] });
+    expect(n).toMatchObject({ type: "ai", x: 1, y: 2, label: "ai step", instruction: "", success: "", results: [{ name: "done", meaning: "" }] });
     expect(n.id).toMatch(/^ai_/);
     expect(newNode("ask", { x: 0, y: 0 })).toMatchObject({ choices: ["yes", "no"], timeoutMinutes: 480 });
     expect(newNode("wait", { x: 0, y: 0 })).toMatchObject({ minutes: 480, businessHours: true });

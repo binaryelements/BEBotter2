@@ -36,7 +36,7 @@ export function whyNot(c, nodes, edges) {
 let seq = 0;
 export const uid = (prefix) => `${prefix}_${Date.now().toString(36)}${(++seq).toString(36)}`;
 
-const NAMES = { trigger: "Trigger", ai: "AI step", wait: "Wait", ask: "Ask a person", end: "End" };
+export const NAMES = { trigger: "trigger", ai: "ai step", wait: "wait", ask: "ask a person", end: "end" };
 const DEFAULTS = {
   trigger: () => ({ trigger: "email" }),
   ai: () => ({ instruction: "", success: "", results: [{ name: "done", meaning: "" }] }),

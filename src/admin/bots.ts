@@ -40,6 +40,7 @@ import { page } from "./oidc.js";
 import { armedPage, isArmed } from "./arm.js";
 import { visibleBots } from "./overview.js";
 import { chatNames } from "./chat-names.js";
+import { workflowsSection } from "./workflows.js";
 import { capabilityWords, chatTypeWords, cronWords, whenFor, whenIn } from "./words.js";
 import { toolWords } from "../teams/cards.js";
 
@@ -100,10 +101,10 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
     const { actor, csrf } = adminOf(res);
     res.type("html").send(layout({ title, body, actor, csrf }));
   };
-  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "learnings", "memory", "reflections", "chats", "m365"] as const;
+  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "workflows", "learnings", "memory", "reflections", "chats", "m365"] as const;
   type Tab = (typeof TABS)[number];
-  // Personal acts as the person: it has no mailbox or connections, and only it has Microsoft 365 capabilities
-  const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" : t !== "m365"));
+  // Personal acts as the person: it has no mailbox, connections or workflows, and only it has Microsoft 365 capabilities
+  const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" && t !== "workflows" : t !== "m365"));
   const csrfField = (res: Response, tab?: Tab) => html`<input type="hidden" name="csrf" value="${adminOf(res).csrf}">${tab ? html`<input type="hidden" name="tab" value="${tab}">` : ""}`;
   // the configured models, plus the current one if it is no longer offered, so a save never silently changes it
   const modelOptions = (current: string) => {
@@ -770,6 +771,8 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
 <div class="fields"><label>chat<span class="hint">where it runs and posts</span><select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>schedule<span class="hint">cron: minute hour day month weekday, e.g. 0 9 * * 1-5 is weekdays 9:00 am</span><input name="schedule" placeholder="0 9 * * 1-5" required></label></div>
 <p><label class="be-toggle"><input type="checkbox" name="quiet"> quiet: post only when it changed something</label> <label class="be-toggle"><input type="checkbox" name="grant"> grant my access: changes run without a card</label></p>
 <p><label class="be-label">prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn primary">add routine</button></form>`;
+        } else if (tab === "workflows") {
+          section = await workflowsSection(db, def, assigned.map((c) => ({ id: c.id, label: chatLabel.get(c.id) ?? c.label ?? c.id.slice(-12) })), csrf);
         } else if (tab === "learnings") {
           const rows = await listLearnings(db, actor.tenantId, def.id);
           const proposals = await listProposals(db, actor.tenantId, def.id, "pending");

@@ -31,6 +31,7 @@ import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 import { tryRoutes } from "./try.js";
+import { workflowRoutes } from "./workflows.js";
 import type { TryDeps } from "./try.js";
 
 export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; models?: string[]; engine?: Engine; balance?: BalanceReader; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner } & TryDeps;
@@ -103,6 +104,8 @@ export function adminRouter(deps: AdminDeps): Router {
     );
   });
   router.use(express.urlencoded({ extended: false }));
+  // the workflow canvas posts JSON; its csrf rides in the body like a form's
+  router.use(express.json({ limit: "1mb" }));
   router.use(withShell);
   // before the admin guard: any signed-in person of the tenant may open their own secret link
   router.use(secretRoutes(db, deps.config.secretsKey));
@@ -156,6 +159,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(runbookRoutes({ db, key: deps.config.secretsKey, defaultModel: deps.defaultModel, models: deps.models, engine: deps.engine }));
   router.use(routineRoutes(db));
+  router.use(workflowRoutes(db));
   router.use(settingsRoutes(db, deps.models, deps.balance, deps.mail?.admin));
 
   router.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
