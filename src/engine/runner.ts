@@ -15,7 +15,7 @@ import type { DockerClient } from "../computer/docker.js";
 import { computerMcpServer } from "../computer/mcp.js";
 import { connectionsMcpServer } from "../connections/mcp.js";
 import type { SshRunner } from "../connections/ssh.js";
-import { connectionMcpConfigs } from "../connections/store.js";
+import { connectionMcpConfigs, withHandover } from "../connections/store.js";
 import { m365McpServer } from "../graph/mcp.js";
 import { knowledgeMcpServer } from "../knowledge/mcp.js";
 import { runbookIndex } from "../knowledge/store.js";
@@ -548,7 +548,10 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
       tools,
       callTool: async (name, args, callSignal) => {
         if (!registry) return { text: "No tool runtime.", isError: true };
-        const result = await registry.call(name, args, callSignal ?? signal);
+        const sent = withHandover(name, args, setup.conn.handovers);
+        const result = await registry.call(name, sent, callSignal ?? signal);
+        // the bot chose its own transfer target (or none) and would otherwise report on that one
+        if (sent !== args && !result.isError) result.text += "\nIf the person on the call asks for a real person, the call is transferred to the business's ring group, set by an admin; any `human` target you gave was replaced. Do not choose an extension or number for transfers yourself.";
         // the bot's own mailbox hands back files as base64: read them the way chat and Outlook files are read
         return name === "mcp__mail__get_attachment" ? readMailAttachment(result, deps.readDocument) : result;
       },

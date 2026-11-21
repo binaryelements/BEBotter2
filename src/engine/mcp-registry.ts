@@ -6,6 +6,22 @@ import type { EngineImage, EngineTool, ToolResult } from "./engine.js";
 import type { McpServerConfig } from "./mcp.js";
 import type { McpPool } from "./mcp-pool.js";
 
+const MAX_IMAGE_SIDE = 8000;
+
+/** Width and height from a PNG or JPEG header; undefined for other formats or a damaged file. */
+export function imageSize(base64: string): [number, number] | undefined {
+  const b = Buffer.from(base64.slice(0, 200_000), "base64"); // a JPEG's size marker can sit after large metadata
+  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47) return [b.readUInt32BE(16), b.readUInt32BE(20)];
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return undefined;
+  for (let i = 2; i + 9 < b.length; ) {
+    if (b[i] !== 0xff) return undefined;
+    const marker = b[i + 1]!;
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  return undefined;
+}
+
 /** A tool as the model sees it: the server's name is folded into the tool name, as the SDK does. */
 export type McpTool = EngineTool;
 
@@ -74,7 +90,12 @@ export class McpRegistry {
       const images: EngineImage[] = [];
       for (const c of content) {
         if (c.type === "text" && c.text !== undefined) texts.push(c.text);
-        else if (c.type === "image" && c.data && c.mimeType) images.push({ data: c.data, mimeType: c.mimeType });
+        else if (c.type === "image" && c.data && c.mimeType) {
+          // the model rejects the whole request over one image past 8000 px a side (a full-page screenshot), so drop it and say why
+          const size = imageSize(c.data);
+          if (size && Math.max(...size) > MAX_IMAGE_SIDE) texts.push(`An image of ${size.join("x")} px was left out: too large for the model. Take a normal screenshot, not a full-page one.`);
+          else images.push({ data: c.data, mimeType: c.mimeType });
+        }
         else if (c.type === "resource" && c.resource?.text !== undefined) texts.push(c.resource.text);
         else if (c.type === "resource_link" && c.uri) texts.push(c.uri);
       }

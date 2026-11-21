@@ -1,6 +1,6 @@
 {
-  "id": "b49bfd18-7845-4046-9efc-e89d6b9733b0",
-  "prevId": "a43087a4-55dc-46cb-8018-89d22eeb66f5",
+  "id": "a43087a4-55dc-46cb-8018-89d22eeb66f5",
+  "prevId": "b6dede06-84ef-4e5a-9db2-df3066338d61",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3686,12 +3686,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "audit_id": {
-          "name": "audit_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "choices": {
           "name": "choices",
           "type": "jsonb",
@@ -4284,6 +4278,85 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.call_handovers": {
+      "name": "call_handovers",
+      "schema": "",
+      "columns": {
+        "definition_id": {
+          "name": "definition_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target": {
+          "name": "target",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "then_target": {
+          "name": "then_target",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "call_handovers_definition_id_bot_definitions_id_fk": {
+          "name": "call_handovers_definition_id_bot_definitions_id_fk",
+          "tableFrom": "call_handovers",
+          "tableTo": "bot_definitions",
+          "columnsFrom": [
+            "definition_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "call_handovers_connection_id_connections_id_fk": {
+          "name": "call_handovers_connection_id_connections_id_fk",
+          "tableFrom": "call_handovers",
+          "tableTo": "connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "call_handovers_definition_id_connection_id_pk": {
+          "name": "call_handovers_definition_id_connection_id_pk",
+          "columns": [
+            "definition_id",
+            "connection_id"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

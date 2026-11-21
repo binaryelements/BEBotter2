@@ -2,7 +2,9 @@ import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { McpServerConfig } from "../engine/mcp.js";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, connections, connectionGrants, definitionConnections, definitionTools, secretLinks, toolRules } from "../db/schema.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { botDefinitions, callHandovers, connections, connectionGrants, definitionConnections, definitionTools, secretLinks, toolRules } from "../db/schema.js";
 import type { Connection, ConnectionConfig } from "../db/schema.js";
 import { decrypt, encrypt } from "../secrets/cipher.js";
 import { listMcpTools, sendHttp } from "./http.js";
@@ -427,9 +429,11 @@ export async function connectionMcpConfigs(
   tenantId: string,
   definitionId: string,
   fetchFn: typeof fetch = fetch,
-): Promise<{ servers: Record<string, McpServerConfig>; readOnly: { name: string; readOnlyTools: string[] }[] }> {
+): Promise<{ servers: Record<string, McpServerConfig>; readOnly: { name: string; readOnlyTools: string[] }[]; handovers: Record<string, CallHandover> }> {
   const active = activeMcp(await listConnectionsFor(db, tenantId, definitionId));
   const servers: Record<string, McpServerConfig> = {};
+  const byId = await callHandoversFor(db, definitionId);
+  const handovers = Object.fromEntries(active.filter((c) => byId.has(c.id)).map((c) => [`conn-${c.name}`, byId.get(c.id)!]));
   for (const c of active) {
     // a sign-in the server no longer honours leaves that server out of the turn; the connection is back to pending for an admin to see
     const conn = await mcpConn({ db, secretsKey, fetchFn }, c).catch((e: unknown) => void console.error(`mcp ${c.name}:`, e instanceof Error ? e.message : "error"));
@@ -437,7 +441,7 @@ export async function connectionMcpConfigs(
     const { headerName, secret } = conn;
     servers[`conn-${c.name}`] = { type: "http", url: c.target, ...(headerName && secret ? { headers: { [headerName]: secret } } : {}) };
   }
-  return { servers, readOnly: mcpReadOnly(active) };
+  return { servers, readOnly: mcpReadOnly(active), handovers };
 }
 
 /** An admin changes the connection's own ceiling: read-only or change. A read-only change makes every per-bot write grant read. */
@@ -495,7 +499,51 @@ export async function setConnectionGrant(db: Db, tenantId: string, definitionId:
   await db.insert(connectionGrants).values({ definitionId, connectionId, mode }).onConflictDoUpdate({ target: [connectionGrants.definitionId, connectionGrants.connectionId], set: { mode, updatedAt: new Date() } });
 }
 
-export type ToolConnectionGrant = { connectionId: string; name: string; kind: ConnectionKind; mode: ConnectionGrantMode; change: boolean };
+export type CallHandover = { target: string; then?: string };
+const RING_GROUP = /^ring_group:[\w-]{1,80}$/;
+const PHONE_TARGET = /^(ext:\d{1,8}|\+\d{6,15})$/;
+
+/** This bot's handover per connection id: where a caller who asks for a person goes. */
+export async function callHandoversFor(db: Db, definitionId: string): Promise<Map<string, CallHandover>> {
+  const rows = await db.select().from(callHandovers).where(eq(callHandovers.definitionId, definitionId));
+  return new Map(rows.map((r) => [r.connectionId, { target: r.target, ...(r.thenTarget ? { then: r.thenTarget } : {}) }]));
+}
+
+/** An admin picks the ring group (and an optional backup extension or number) for this bot's calls; an empty target clears it. */
+export async function setCallHandover(db: Db, tenantId: string, definitionId: string, connectionId: string, target: string, then: string): Promise<void> {
+  const c = (await listConnectionsFor(db, tenantId, definitionId)).find((x) => x.id === connectionId);
+  if (!c) fail("Give the bot the connection first");
+  const where = and(eq(callHandovers.definitionId, definitionId), eq(callHandovers.connectionId, connectionId));
+  if (!target) return void (await db.delete(callHandovers).where(where));
+  if (!RING_GROUP.test(target)) fail("Pick one of the ring groups");
+  if (then && !PHONE_TARGET.test(then)) fail("The backup must be an extension like ext:101 or a number like +61370000000");
+  const values = { target, thenTarget: then || null, updatedAt: new Date() };
+  await db.insert(callHandovers).values({ definitionId, connectionId, ...values }).onConflictDoUpdate({ target: [callHandovers.definitionId, callHandovers.connectionId], set: values });
+}
+
+/** place_call through a connection with a handover always carries it: the admin's choice, not the model's. */
+export function withHandover(toolName: string, args: Record<string, unknown>, handovers: Record<string, CallHandover>): Record<string, unknown> {
+  const m = /^mcp__(conn-.+?)__place_call$/.exec(toolName);
+  const h = m ? handovers[m[1]!] : undefined;
+  return h ? { ...args, human: h } : args;
+}
+
+/** The business's ring groups, from BE Voice's list_ring_groups on this connection. */
+export async function listRingGroups(deps: Pick<ConnectionDeps, "db" | "secretsKey" | "fetchFn">, c: Connection): Promise<{ name: string; members: number; target: string }[]> {
+  const conn = await mcpConn(deps, c);
+  const client = new Client({ name: "be-botter", version: "2" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(conn.target), { ...(conn.headerName && conn.secret ? { requestInit: { headers: { [conn.headerName]: conn.secret } } } : {}), fetch: deps.fetchFn }));
+  try {
+    const r = await client.callTool({ name: "list_ring_groups", arguments: {} }, undefined, { timeout: 15_000 });
+    if (r.isError) fail("BE Voice would not list the ring groups");
+    const groups = (r.structuredContent as { ring_groups?: unknown } | undefined)?.ring_groups;
+    return Array.isArray(groups) ? groups.filter((g): g is { name: string; members: number; target: string } => typeof g?.target === "string" && RING_GROUP.test(g.target)).map((g) => ({ name: String(g.name), members: Number(g.members) || 0, target: g.target })) : [];
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+export type ToolConnectionGrant ={ connectionId: string; name: string; kind: ConnectionKind; mode: ConnectionGrantMode; change: boolean };
 
 /** The connection and per-bot grant behind a tool call, when the tool names one. */
 export async function connectionGrantForTool(db: Db, tenantId: string, definitionId: string, toolName: string, input: Record<string, unknown>): Promise<ToolConnectionGrant | undefined> {
