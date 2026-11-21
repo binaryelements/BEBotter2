@@ -1,0 +1,186 @@
+{
+  "holidays": ["2026-12-25", "2026-12-28", "2027-01-01", "2027-01-26", "2027-03-08", "2027-03-26", "2027-03-29"],
+  "nodes": [
+    { "id": "enquiry", "type": "trigger", "label": "enquiry arrives", "x": 0, "y": 432, "trigger": "email" },
+    { "id": "wait-5", "type": "wait", "label": "wait 5 minutes", "x": 299, "y": 432, "minutes": 5, "businessHours": true },
+    {
+      "id": "first-reply", "type": "ai", "label": "first reply", "x": 598, "y": 432,
+      "instruction": "Find the lead in BE Direct, or create it. Read the whole thread first and answer everything they've sent in one reply.\nIf the enquiry already says what they need (how many people need a phone, their current numbers, whether to keep them, when they want it working), don't ask: report has_details.\nOtherwise write a short, friendly email: thank them by first name, say what we'll quote, and ask 3 or 4 short questions that can each be answered in one line (how many people need a phone, how many numbers they have now, do they want to keep those numbers, when they want it working). Say they can just reply, or give a time that suits and we'll call.\nSign off as \"Jimmy, BE Direct\". Never claim to be a person. Send it for approval.",
+      "success": "The lead exists in BE Direct and the customer has our reply, or the enquiry already has everything we need.",
+      "results": [
+        { "name": "replied", "meaning": "our reply with the questions was sent" },
+        { "name": "has_details", "meaning": "the enquiry already says what they need" },
+        { "name": "declined", "meaning": "they're not interested, said not now, or asked not to be contacted" }
+      ],
+      "saves": ["lead_number", "customer_name", "phone"]
+    },
+    { "id": "wait-morning", "type": "wait", "label": "next business morning", "x": 897, "y": 216, "minutes": 480, "businessHours": true },
+    {
+      "id": "read-answers", "type": "ai", "label": "read their answers", "x": 1196, "y": 0,
+      "instruction": "They wrote back. Read everything new in the thread and save their answers to the lead.\nIf we now know what they need, report has_details.\nIf some questions are still open, reply once with just those (for approval) and report more_needed.\nIf they're not interested, said not now, or asked not to be contacted, report declined.",
+      "success": "Their answers are on the lead, and anything still open has been asked once.",
+      "results": [
+        { "name": "has_details", "meaning": "we know what to quote" },
+        { "name": "more_needed", "meaning": "we asked for what's still missing" },
+        { "name": "declined", "meaning": "not interested, not now, or don't contact" }
+      ]
+    },
+    {
+      "id": "call", "type": "ai", "label": "check, then call", "x": 1196, "y": 432,
+      "instruction": "Check the mailbox first. If they replied, report replied.\nOnly one call per enquiry: if called is yes, or they gave no phone number, send one short follow-up email with the questions still open (for approval) and report emailed.\nOtherwise ask for approval to call with BE Voice (place_call):\n- goal: get the details for their quote, or agreement to send one\n- greeting: \"Hi {first name}, it's Jimmy from BE Direct, calling about the quote you asked for. Have you got two minutes?\"\n- questions: the questions still open, plus email address if we don't have it\n- human: {salesperson mobile}, for anyone who wants a person\n- max_call_sec: 300\n- context: what they asked for in their enquiry\n- prompt: \"You are a friendly caller for BE Direct. The customer asked us for a quote. Ask the questions briefly. If they're busy, offer to call back at a time that suits. If they'd rather do it by email, agree and end the call. If they say no or not interested, thank them and end politely. Never make up prices, discounts or deadlines. At the end of the call, note one of: details given, wants a callback (and when), just email me, declined, or no answer. Summarise what they said about staff numbers, phone numbers and timing.\"\nWait with wait_for_call; if the summary is blank, check get_call a minute later. Save the outcome, answers and summary to the lead, and save called = yes.\nIf they want it by email, send one short email with the questions still open (for approval) and report emailed. If they booked a callback, tell {salesperson} the time and report callback_booked.",
+      "success": "Either they had replied, or we called once and the outcome is saved on the lead, or one follow-up email went out.",
+      "results": [
+        { "name": "replied", "meaning": "they had already written back" },
+        { "name": "details_given", "meaning": "the call got the details, or they agreed to a quote" },
+        { "name": "emailed", "meaning": "no phone, already called, or they want email: one follow-up email was sent" },
+        { "name": "callback_booked", "meaning": "they want a call back at a set time" },
+        { "name": "declined", "meaning": "they said no or not interested" },
+        { "name": "no_answer", "meaning": "nobody answered" }
+      ],
+      "saves": ["called"]
+    },
+    {
+      "id": "callback", "type": "ask", "label": "callback by the salesperson", "x": 1495, "y": 756,
+      "question": "The customer asked for a call back; the time is in the run's history. Call them, then say how it went.",
+      "choices": ["got the details", "not interested", "no luck"], "timeoutMinutes": 960
+    },
+    { "id": "wait-reply", "type": "wait", "label": "wait for their reply", "x": 1495, "y": 432, "minutes": 4800, "businessHours": true },
+    {
+      "id": "quote", "type": "ai", "label": "make and send the quote", "x": 1794, "y": 0,
+      "instruction": "Make the quote in BE Direct as a draft today, following your proposal instructions, and send it for approval. Once a person approves, send it to the customer. Save the proposal number.",
+      "success": "The customer has the approved quote.",
+      "results": [{ "name": "sent", "meaning": "the approved quote was sent" }],
+      "saves": ["proposal_number"]
+    },
+    { "id": "wait-fu1", "type": "wait", "label": "2 business days", "x": 2093, "y": 0, "minutes": 960, "businessHours": true },
+    {
+      "id": "fu1", "type": "ai", "label": "follow-up 1", "x": 2392, "y": 0,
+      "instruction": "Check the mailbox and BE Direct first. If the proposal is accepted, report accepted.\nOtherwise send one short follow-up for approval: \"Did the quote arrive OK? Happy to walk you through it.\" Note follow-up 1 of 4 on the lead. Never invent urgency, discounts or deadlines; only mention the quote's real valid-until date.",
+      "success": "They've accepted, or follow-up 1 was sent and noted on the lead.",
+      "results": [{ "name": "sent", "meaning": "follow-up 1 was sent" }, { "name": "accepted", "meaning": "the proposal is accepted" }]
+    },
+    { "id": "wait-fu2", "type": "wait", "label": "3 more business days", "x": 2691, "y": 0, "minutes": 1440, "businessHours": true },
+    {
+      "id": "fu2", "type": "ai", "label": "follow-up 2", "x": 2990, "y": 0,
+      "instruction": "Check the mailbox and BE Direct first. If the proposal is accepted, report accepted.\nOtherwise send one short follow-up for approval that answers the likely question: what's included, how porting works, no lock-in on the monthly term. Note follow-up 2 of 4 on the lead. Never invent urgency, discounts or deadlines.",
+      "success": "They've accepted, or follow-up 2 was sent and noted on the lead.",
+      "results": [{ "name": "sent", "meaning": "follow-up 2 was sent" }, { "name": "accepted", "meaning": "the proposal is accepted" }]
+    },
+    { "id": "wait-fu3", "type": "wait", "label": "5 more business days", "x": 3289, "y": 0, "minutes": 2400, "businessHours": true },
+    {
+      "id": "fu3", "type": "ai", "label": "follow-up 3", "x": 3588, "y": 0,
+      "instruction": "Check the mailbox and BE Direct first. If the proposal is accepted, report accepted.\nOtherwise send one short follow-up for approval offering a 10-minute call with {salesperson}. Note follow-up 3 of 4 on the lead. Never invent urgency, discounts or deadlines.",
+      "success": "They've accepted, or follow-up 3 was sent and noted on the lead.",
+      "results": [{ "name": "sent", "meaning": "follow-up 3 was sent" }, { "name": "accepted", "meaning": "the proposal is accepted" }]
+    },
+    { "id": "wait-fu4", "type": "wait", "label": "10 more business days", "x": 3887, "y": 0, "minutes": 4800, "businessHours": true },
+    {
+      "id": "fu4", "type": "ai", "label": "last follow-up", "x": 4186, "y": 0,
+      "instruction": "Check the mailbox and BE Direct first. If the proposal is accepted, report accepted.\nOtherwise send one last short email for approval: \"I'll close this off for now. Just reply any time to pick it back up.\" Note follow-up 4 of 4 on the lead and tell {salesperson} it went quiet.",
+      "success": "They've accepted, or the last follow-up was sent and {salesperson} knows.",
+      "results": [{ "name": "sent", "meaning": "the last follow-up was sent" }, { "name": "accepted", "meaning": "the proposal is accepted" }]
+    },
+    {
+      "id": "quote-reply", "type": "ai", "label": "answer their reply", "x": 2392, "y": 468,
+      "instruction": "They wrote back about the quote. Check the mailbox and BE Direct.\nIf they accepted, report accepted.\nIf they asked questions, answer every one first, then ask if they're happy to go ahead (for approval), and report answered.\nIf an answer changes the price, report price_changed (don't send the old quote again).\nIf they're not interested, said not now, or asked not to be contacted, report declined.",
+      "success": "Every question they asked is answered, or the next step is clear.",
+      "results": [
+        { "name": "accepted", "meaning": "they accepted the proposal" },
+        { "name": "answered", "meaning": "we answered their questions" },
+        { "name": "price_changed", "meaning": "their answer changes the price" },
+        { "name": "declined", "meaning": "not interested, not now, or don't contact" }
+      ]
+    },
+    {
+      "id": "revise", "type": "ai", "label": "revise the quote", "x": 2691, "y": 468,
+      "instruction": "Update the proposal's text and price in BE Direct and send it for approval. Once approved, send the new version. A changed proposal can't be accepted until it's sent again.",
+      "success": "The customer has the latest approved revision.",
+      "results": [{ "name": "sent", "meaning": "the revised quote was sent" }]
+    },
+    {
+      "id": "won", "type": "ai", "label": "won", "x": 2990, "y": 936,
+      "instruction": "The proposal is accepted. Thank them, and tell {salesperson} straight away with the proposal number and the monthly and one-off totals.\nAsk by email (for approval) for: business name and ABN, billing contact and email, current phone provider and account number (for the number port), who needs a phone (names and emails), preferred go-live date.\nMark the lead Won in BE Direct and note the go-live date. Hand the rest to {salesperson}: setup, port forms and the welcome call.",
+      "success": "The lead is Won, {salesperson} knows, and the customer was asked for the setup details.",
+      "results": [{ "name": "done", "meaning": "handed to the salesperson" }]
+    },
+    {
+      "id": "lost", "type": "ai", "label": "declined", "x": 1794, "y": 936,
+      "instruction": "Stop all follow-ups.\nIf they asked not to be contacted, note it on the lead, mark it Lost and report lost.\nOtherwise ask once, politely, for the reason (price, timing, chose someone else) for approval, note it on the lead, and mark the lead Lost.\nIf they said not now, note the month they gave and tell {salesperson}, then report not_now.",
+      "success": "The lead is marked Lost with the reason, or not now is noted with the month.",
+      "results": [{ "name": "lost", "meaning": "marked Lost" }, { "name": "not_now", "meaning": "they'll come back later" }]
+    },
+    {
+      "id": "close", "type": "ai", "label": "close off", "x": 1794, "y": 468,
+      "instruction": "We couldn't reach them. If we tried to call, send one short email (for approval) saying we tried to call and they can reply any time. Message {salesperson} with the call summary or what happened. Note it on the lead.",
+      "success": "{salesperson} knows, and the lead says why it stopped.",
+      "results": [{ "name": "done", "meaning": "closed off" }]
+    },
+    { "id": "end-won", "type": "end", "label": "won", "x": 3289, "y": 936, "outcome": "won" },
+    { "id": "end-lost", "type": "end", "label": "lost", "x": 2093, "y": 1116, "outcome": "lost" },
+    { "id": "end-not-now", "type": "end", "label": "not now", "x": 2093, "y": 936, "outcome": "not now" },
+    { "id": "end-quiet", "type": "end", "label": "went quiet", "x": 4485, "y": 0, "outcome": "no reply" },
+    { "id": "end-closed", "type": "end", "label": "closed off", "x": 2093, "y": 468, "outcome": "couldn't reach them" }
+  ],
+  "edges": [
+    { "from": "enquiry", "exit": "next", "to": "wait-5" },
+    { "from": "wait-5", "exit": "time_up", "to": "first-reply" },
+    { "from": "wait-5", "exit": "new_message", "to": "first-reply" },
+    { "from": "first-reply", "exit": "replied", "to": "wait-morning" },
+    { "from": "first-reply", "exit": "has_details", "to": "quote" },
+    { "from": "first-reply", "exit": "declined", "to": "lost" },
+    { "from": "first-reply", "exit": "new_message", "to": "first-reply" },
+    { "from": "wait-morning", "exit": "time_up", "to": "call" },
+    { "from": "wait-morning", "exit": "new_message", "to": "read-answers" },
+    { "from": "read-answers", "exit": "has_details", "to": "quote" },
+    { "from": "read-answers", "exit": "more_needed", "to": "wait-morning" },
+    { "from": "read-answers", "exit": "declined", "to": "lost" },
+    { "from": "read-answers", "exit": "new_message", "to": "read-answers" },
+    { "from": "call", "exit": "replied", "to": "read-answers" },
+    { "from": "call", "exit": "details_given", "to": "quote" },
+    { "from": "call", "exit": "emailed", "to": "wait-reply" },
+    { "from": "call", "exit": "callback_booked", "to": "callback" },
+    { "from": "call", "exit": "declined", "to": "lost" },
+    { "from": "call", "exit": "no_answer", "to": "close" },
+    { "from": "call", "exit": "new_message", "to": "read-answers" },
+    { "from": "callback", "exit": "got the details", "to": "quote" },
+    { "from": "callback", "exit": "not interested", "to": "lost" },
+    { "from": "callback", "exit": "no luck", "to": "close" },
+    { "from": "callback", "exit": "new_message", "to": "read-answers" },
+    { "from": "wait-reply", "exit": "time_up", "to": "close" },
+    { "from": "wait-reply", "exit": "new_message", "to": "read-answers" },
+    { "from": "close", "exit": "done", "to": "end-closed" },
+    { "from": "close", "exit": "new_message", "to": "read-answers" },
+    { "from": "quote", "exit": "sent", "to": "wait-fu1" },
+    { "from": "quote", "exit": "new_message", "to": "quote" },
+    { "from": "wait-fu1", "exit": "time_up", "to": "fu1" },
+    { "from": "wait-fu1", "exit": "new_message", "to": "quote-reply" },
+    { "from": "fu1", "exit": "sent", "to": "wait-fu2" },
+    { "from": "fu1", "exit": "accepted", "to": "won" },
+    { "from": "fu1", "exit": "new_message", "to": "quote-reply" },
+    { "from": "wait-fu2", "exit": "time_up", "to": "fu2" },
+    { "from": "wait-fu2", "exit": "new_message", "to": "quote-reply" },
+    { "from": "fu2", "exit": "sent", "to": "wait-fu3" },
+    { "from": "fu2", "exit": "accepted", "to": "won" },
+    { "from": "fu2", "exit": "new_message", "to": "quote-reply" },
+    { "from": "wait-fu3", "exit": "time_up", "to": "fu3" },
+    { "from": "wait-fu3", "exit": "new_message", "to": "quote-reply" },
+    { "from": "fu3", "exit": "sent", "to": "wait-fu4" },
+    { "from": "fu3", "exit": "accepted", "to": "won" },
+    { "from": "fu3", "exit": "new_message", "to": "quote-reply" },
+    { "from": "wait-fu4", "exit": "time_up", "to": "fu4" },
+    { "from": "wait-fu4", "exit": "new_message", "to": "quote-reply" },
+    { "from": "fu4", "exit": "sent", "to": "end-quiet" },
+    { "from": "fu4", "exit": "accepted", "to": "won" },
+    { "from": "fu4", "exit": "new_message", "to": "quote-reply" },
+    { "from": "quote-reply", "exit": "accepted", "to": "won" },
+    { "from": "quote-reply", "exit": "answered", "to": "wait-fu1" },
+    { "from": "quote-reply", "exit": "price_changed", "to": "revise" },
+    { "from": "quote-reply", "exit": "declined", "to": "lost" },
+    { "from": "quote-reply", "exit": "new_message", "to": "quote-reply" },
+    { "from": "revise", "exit": "sent", "to": "wait-fu1" },
+    { "from": "revise", "exit": "new_message", "to": "quote-reply" },
+    { "from": "won", "exit": "done", "to": "end-won" },
+    { "from": "lost", "exit": "lost", "to": "end-lost" },
+    { "from": "lost", "exit": "not_now", "to": "end-not-now" }
+  ]
+}
