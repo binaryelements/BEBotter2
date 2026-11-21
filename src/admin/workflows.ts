@@ -8,7 +8,7 @@ import { botDefinitions, people, workflowRunEvents, workflowRuns, workflows } fr
 import { DirectoryError } from "../org/directory.js";
 import { endRun, moveRun, pauseRun } from "../workflows/runs.js";
 import type { Notify } from "../workflows/runs.js";
-import { tracePath } from "../workflows/trace.js";
+import { inOrder, tracePath } from "../workflows/trace.js";
 import { createWorkflow, discardDraft, draftHash, listVersions, publish, publishedGraph, restoreVersion, runsOnRemovedNodes, saveDraft, StaleDraft } from "../workflows/store.js";
 import type { Actor } from "./access.js";
 import { isAdmin, mayEditPersona } from "./access.js";
@@ -105,8 +105,8 @@ export function workflowRoutes(db: Db, notify: Notify = async () => {}): Router 
       const runs = rows.slice(0, PAGE);
       const reasons = new Map<string, string>();
       if (runs.length) {
-        const evs = await db.select({ runId: workflowRunEvents.runId, reason: workflowRunEvents.reason }).from(workflowRunEvents).where(inArray(workflowRunEvents.runId, runs.map((r) => r.id))).orderBy(asc(workflowRunEvents.at));
-        for (const e of evs) if (e.reason) reasons.set(e.runId, e.reason);
+        const evs = await db.select({ runId: workflowRunEvents.runId, reason: workflowRunEvents.reason, kind: workflowRunEvents.kind, at: workflowRunEvents.at }).from(workflowRunEvents).where(and(inArray(workflowRunEvents.runId, runs.map((r) => r.id)), eq(workflowRunEvents.kind, "result")));
+        for (const e of inOrder(evs)) if (e.reason) reasons.set(e.runId, e.reason);
       }
       const { label } = await labelsOf(w);
       const when = await whenFor(db, actor.tenantId);

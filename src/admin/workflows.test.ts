@@ -223,7 +223,14 @@ describe("workflows screens", () => {
       await run(wid, "w1", "waiting", "Waiting one");
       await run(wid, "a", "needs_person", "Stuck one");
       await run(wid, "e", "done", "Finished one");
+      const stuckId = (await db.select().from(workflowRuns).where(eq(workflowRuns.title, "Stuck one")))[0].id;
+      await db.insert(workflowRunEvents).values([
+        { id: crypto.randomUUID(), runId: stuckId, nodeId: "a", kind: "result", result: "done", reason: "the real reason", at: new Date(Date.UTC(2026, 0, 1)) },
+        { id: crypto.randomUUID(), runId: stuckId, nodeId: "a", kind: "move", reason: "paused", at: new Date(Date.UTC(2026, 0, 2)) },
+      ]);
       const open = await (await get(`/admin/bots/${bot}/workflows/${wid}/runs`)).text();
+      expect(open).toContain("the real reason");
+      expect(open).not.toContain("paused");
       expect(open).toContain("Waiting one");
       expect(open).toContain("Stuck one");
       expect(open).not.toContain("Finished one");
