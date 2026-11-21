@@ -22,15 +22,18 @@ function summary(d, people) {
 }
 
 function StepNode({ id, data }) {
-  const { people, wired, wiring } = useContext(Ctx);
+  const { people, wired, wiring, trace } = useContext(Ctx);
   const exits = EXITS(data);
   const update = useUpdateNodeInternals();
   // handles move when results or choices change; tell React Flow
   useEffect(() => { update(id); }, [id, exits.join(), update]);
   const mine = wired.get(id) || new Set();
   const state = !wiring || wiring.source === id ? "" : wiring.targets.has(id) ? " can" : " cannot";
+  const hits = trace ? trace.get(id) : null; // the 1-based places of this step on the traced path
+  const dim = trace && !hits ? " dim" : "";
   return (
-    <div className={"wf-node k-" + data.type + state}>
+    <div className={"wf-node k-" + data.type + state + dim}>
+      {hits ? <span className="wf-step-no">{hits.map((h) => h.no).join(", ")}</span> : null}
       {data.type === "trigger" ? null : <Handle type="target" position={Position.Left} id="in" />}
       <div className="wf-top"><span className="wf-kind">{NAMES[data.type]}</span><span className="wf-title">{data.label}</span></div>
       <div className="wf-sub">{summary(data, people)}</div>

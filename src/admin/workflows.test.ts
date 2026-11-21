@@ -4,12 +4,12 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { assignToChat, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, workflowRuns, workflows } from "../db/schema.js";
+import { botDefinitions, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "../workflows/graph.js";
-import { createWorkflow, draftHash } from "../workflows/store.js";
+import { createWorkflow, draftHash, publish, saveDraft } from "../workflows/store.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -197,6 +197,103 @@ describe("workflows screens", () => {
     expect((await get(`/admin/bots/${bot}/workflows/${wid}`, "Eve")).status).toBe(404);
     expect((await get(`/admin/workflows/${wid}/versions`, "Eve")).status).toBe(404);
     expect((await json(`/admin/workflows/${wid}/draft`, { graph: graph(false), base: "x" }, "Eve")).status).toBe(404);
+  });
+
+  describe("runs", () => {
+    const keys = { threadIds: [], emails: [], domain: null };
+    // a published workflow t -> a -> w1 -> e whose step "a" is labelled with markup
+    const live = async (name: string) => {
+      const wid = await newWorkflow(name);
+      const g = graph(true);
+      g.nodes = g.nodes.map((n) => (n.id === "a" ? { ...n, label: "<i>Read</i>" } : n.id === "t" ? { ...n, trigger: "manual" as const } : n));
+      const { base } = await initOf(wid);
+      await saveDraft(db, T, wid, g, base);
+      await publish(db, T, wid, id.Ann, {});
+      return wid;
+    };
+    const run = async (wid: string, nodeId: string, status: string, title: string) => {
+      const rid = crypto.randomUUID();
+      await db.insert(workflowRuns).values({ id: rid, tenantId: T, workflowId: wid, nodeId, status, keys, fields: {}, title });
+      return rid;
+    };
+    const flash = (res: Response) => decodeURIComponent(/bb_flash=([^;]*)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "");
+
+    it("status page shows open runs and filters needs_person", async () => {
+      const wid = await live("status");
+      await run(wid, "w1", "waiting", "Waiting one");
+      await run(wid, "a", "needs_person", "Stuck one");
+      await run(wid, "e", "done", "Finished one");
+      const open = await (await get(`/admin/bots/${bot}/workflows/${wid}/runs`)).text();
+      expect(open).toContain("Waiting one");
+      expect(open).toContain("Stuck one");
+      expect(open).not.toContain("Finished one");
+      expect(open).toContain("&lt;i&gt;Read&lt;/i&gt;");
+      const stuck = await (await get(`/admin/bots/${bot}/workflows/${wid}/runs?show=needs_person`)).text();
+      expect(stuck).toContain("Stuck one");
+      expect(stuck).not.toContain("Waiting one");
+      expect(await (await get(`/admin/bots/${bot}/workflows/${wid}/runs?show=all`)).text()).toContain("Finished one");
+      expect((await get(`/admin/bots/${bot}/workflows/${wid}/runs`, "Eve")).status).toBe(404);
+    });
+
+    it("run page escapes labels", async () => {
+      const wid = await live("escape");
+      const rid = await run(wid, "a", "waiting", "<script>x</script>");
+      await db.insert(workflowRunEvents).values({ id: crypto.randomUUID(), runId: rid, nodeId: "a", kind: "step", reason: "<b>why</b>" });
+      const page = await (await get(`/admin/workflow-runs/${rid}`)).text();
+      expect(page).not.toContain("<script>x</script>");
+      expect(page).not.toContain("<i>Read</i>");
+      expect(page).not.toContain("<b>why</b>");
+      expect(page).toContain("&lt;i&gt;Read&lt;/i&gt;");
+      expect(page).toContain(`/admin/bots/${bot}/workflows/${wid}?trace=${rid}`);
+      expect((await get(`/admin/workflow-runs/${rid}`, "Eve")).status).toBe(404);
+      expect((await get(`/admin/workflow-runs/nope`)).status).toBe(404);
+    });
+
+    it("pause then move a run from the run page", async () => {
+      const wid = await live("move");
+      const rid = await run(wid, "w1", "waiting", "Mover");
+      const paused = await form(`/admin/workflow-runs/${rid}/pause`, []);
+      expect(paused.status).toBe(303);
+      expect(paused.headers.get("location")).toBe(`/admin/workflow-runs/${rid}`);
+      expect((await db.select().from(workflowRuns).where(eq(workflowRuns.id, rid)))[0].status).toBe("needs_person");
+      const page = await (await get(`/admin/workflow-runs/${rid}`)).text();
+      expect(page).toContain("move");
+      expect(page).not.toContain(">pause<");
+      expect((await form(`/admin/workflow-runs/${rid}/move`, [["nodeId", "e"]], "Hal")).status).toBe(403);
+      expect((await form(`/admin/workflow-runs/${rid}/move`, [["nodeId", "e"]])).status).toBe(303);
+      expect((await db.select().from(workflowRuns).where(eq(workflowRuns.id, rid)))[0]).toMatchObject({ nodeId: "e", status: "done" });
+    });
+
+    it("end refuses a running run with a message", async () => {
+      const wid = await live("end");
+      const rid = await run(wid, "a", "running", "Busy");
+      const res = await fetch(url + `/admin/workflow-runs/${rid}/end`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, id.Ann), referer: `${url}/admin/workflow-runs/${rid}` },
+        body: "csrf=csrf-1",
+      });
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe(`/admin/workflow-runs/${rid}`);
+      expect(flash(res)).toContain("Wait for the step to finish");
+      expect((await db.select().from(workflowRuns).where(eq(workflowRuns.id, rid)))[0].status).toBe("running");
+      const ok = await run(wid, "w1", "waiting", "Ends");
+      expect((await form(`/admin/workflow-runs/${ok}/end`, [])).status).toBe(303);
+      expect((await db.select().from(workflowRuns).where(eq(workflowRuns.id, ok)))[0].status).toBe("done");
+    });
+
+    it("canvas init carries the trace of a run", async () => {
+      const wid = await live("traced");
+      const rid = await run(wid, "w1", "waiting", "Tr");
+      await db.insert(workflowRunEvents).values({ id: crypto.randomUUID(), runId: rid, nodeId: "a", kind: "step" });
+      const page = await (await get(`/admin/bots/${bot}/workflows/${wid}?trace=${rid}`)).text();
+      const init = JSON.parse(/<script type="application\/json" id="wf-init">([\s\S]*?)<\/script>/.exec(page)![1]);
+      expect(init.trace).toMatchObject({ runId: rid, title: "Tr" });
+      expect(init.trace.steps.map((x: { nodeId: string }) => x.nodeId)).toEqual(["a"]);
+      const other = await live("other");
+      expect((await initOf(other)).trace).toBeUndefined();
+      expect((await (await get(`/admin/bots/${bot}/workflows/${other}?trace=${rid}`)).text())).not.toContain('"trace"');
+    });
   });
 
   it("publishing an email workflow turns act mode off", async () => {

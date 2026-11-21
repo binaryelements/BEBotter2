@@ -32,9 +32,10 @@ import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 import { tryRoutes } from "./try.js";
 import { workflowRoutes } from "./workflows.js";
+import type { Notify } from "../workflows/runs.js";
 import type { TryDeps } from "./try.js";
 
-export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; models?: string[]; engine?: Engine; balance?: BalanceReader; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner } & TryDeps;
+export type AdminDeps = OidcDeps & { notify?: Notify; botName: string; defaultModel: string; models?: string[]; engine?: Engine; balance?: BalanceReader; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner } & TryDeps;
 
 export function adminRouter(deps: AdminDeps): Router {
   const { db } = deps;
@@ -159,7 +160,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(runbookRoutes({ db, key: deps.config.secretsKey, defaultModel: deps.defaultModel, models: deps.models, engine: deps.engine }));
   router.use(routineRoutes(db));
-  router.use(workflowRoutes(db));
+  router.use(workflowRoutes(db, deps.notify));
   router.use(settingsRoutes(db, deps.models, deps.balance, deps.mail?.admin));
 
   router.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {

@@ -113,7 +113,14 @@ export function Editor({ init }) {
     for (const e of edges) m.set(e.source, (m.get(e.source) || new Set()).add(e.sourceHandle));
     return m;
   }, [edges]);
-  const ctx = useMemo(() => ({ people: init.people, wired, wiring }), [init, wired, wiring]);
+  // node id -> its places on the traced path, numbered in order
+  const trace = useMemo(() => {
+    if (!init.trace) return null;
+    const m = new Map();
+    init.trace.steps.forEach((s, i) => m.set(s.nodeId, [...(m.get(s.nodeId) || []), { no: i + 1, ...s }]));
+    return m;
+  }, [init]);
+  const ctx = useMemo(() => ({ people: init.people, wired, wiring, trace }), [init, wired, wiring, trace]);
   const node = nodes.find((n) => n.id === selected) || null;
   const theme = document.documentElement.dataset.theme || "system";
 
@@ -124,6 +131,8 @@ export function Editor({ init }) {
           <span className={"wf-pill" + (dirty ? " dirty" : "")}>{dirty ? "not saved" : "saved"}</span>
           {open ? <span className="hint">{open} open {open === 1 ? "exit goes" : "exits go"} to a person</span> : null}
           {note ? <span className={"wf-note " + note[0]} role="status">{note[1]}</span> : null}
+          {init.trace ? <span className="wf-pill">tracing {init.trace.title}</span> : null}
+          {init.trace ? <button className="be-btn sm" type="button" onClick={() => { leaving.current = true; location.href = location.pathname; }}>stop</button> : null}
           <span className="wf-spacer" />
           <button className={"be-btn sm" + (versions ? " on" : "")} type="button" onClick={() => setVersions(!versions)}>versions</button>
           {readOnly ? null : (
@@ -175,6 +184,11 @@ export function Editor({ init }) {
           ) : null}
         </div>
         <aside className="wf-inspector">
+          {trace && node && trace.get(node.id) ? (
+            <div className="wf-trace">
+              {trace.get(node.id).map((h) => <p key={h.no}><b>{h.no}</b> {h.result ?? "still here"}{h.reason ? <span className="hint"> {h.reason}</span> : null}</p>)}
+            </div>
+          ) : null}
           {versions
             ? <Versions api={api} readOnly={readOnly} restored={reload} close={() => setVersions(false)} />
             : <Inspector node={node} change={change} remove={remove} readOnly={readOnly} />}
