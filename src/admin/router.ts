@@ -174,6 +174,10 @@ export function adminRouter(deps: AdminDeps): Router {
     if (!(err instanceof DirectoryError || err instanceof KnowledgeError || err instanceof ConnectionError) && !(typeof status === "number" && status < 500)) {
       console.error("admin request failed", err);
     }
+    const domain = err instanceof DirectoryError || err instanceof KnowledgeError || err instanceof ConnectionError;
+    const code = typeof status === "number" && status < 500 ? 400 : domain ? 400 : 500;
+    // the canvas posts JSON and reads JSON back; a redirect would look like success to fetch
+    if (req.is("json")) return res.status(code).json({ error: message });
     // a failed POST goes back to the page it came from with the reason as a toast
     const back = req.get("referer");
     if (req.method === "POST" && back) {
@@ -188,8 +192,6 @@ export function adminRouter(deps: AdminDeps): Router {
         // a malformed referer falls through to the page below
       }
     }
-    const domain = err instanceof DirectoryError || err instanceof KnowledgeError || err instanceof ConnectionError;
-    const code = typeof status === "number" && status < 500 ? 400 : domain ? 400 : 500;
     page(res, code, message);
   });
 

@@ -2,14 +2,14 @@ import express from "express";
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { assignToChat, upsertDefinition } from "../bots/definitions.js";
+import { assignToChat, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { botDefinitions, workflowRuns, workflows } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "../workflows/graph.js";
-import { createWorkflow } from "../workflows/store.js";
+import { createWorkflow, draftHash } from "../workflows/store.js";
 import { adminRouter } from "./router.js";
 import { serve, sessionCookie } from "./test-server.js";
 
@@ -41,14 +41,16 @@ describe("workflows screens", () => {
   const id: Record<string, string> = {};
   let bot: string;
   let personal: string;
+  let sales: string;
 
   beforeAll(async () => {
     db = await testDb();
     await upsertTenant(db, { id: T });
-    for (const name of ["Ann", "Hal"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
+    for (const name of ["Ann", "Hal", "Eve"]) id[name] = (await upsertPerson(db, { tenantId: T, aadObjectId: `aad-${name}`, name })).id;
     await setRole(db, T, id.Ann, "admin");
-    const sales = (await createDepartment(db, T, "Sales")).id;
+    sales = (await createDepartment(db, T, "Sales")).id;
     await setMembership(db, T, sales, id.Hal, "head");
+    await setMembership(db, T, (await createDepartment(db, T, "Engineering")).id, id.Eve, "head");
     bot = (await upsertDefinition(db, randomBytes(32), T, { name: "ops", label: "Ops", persona: "p" })).id;
     personal = (await upsertDefinition(db, randomBytes(32), T, { name: "mine", label: "Mine", persona: "p" })).id;
     await db.update(botDefinitions).set({ identity: "person" }).where(eq(botDefinitions.id, personal));
@@ -132,6 +134,22 @@ describe("workflows screens", () => {
     const bad = await json(`/admin/workflows/${wid}/draft`, { graph: { nodes: "no" }, base: next });
     expect(bad.status).toBe(400);
     expect((await bad.json()).error).toMatch(/Invalid workflow/);
+    // a save without a base would skip the stale check
+    const bare = await json(`/admin/workflows/${wid}/draft`, { graph: graph(false) });
+    expect(bare.status).toBe(400);
+    expect(await bare.json()).toEqual({ error: "missing base; reload" });
+  });
+
+  it("a failed JSON post answers JSON, never a redirect that reads as success", async () => {
+    const wid = await newWorkflow("too big");
+    const res = await fetch(url + `/admin/workflows/${wid}/draft`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", cookie: sessionCookie(secretsKey, T, id.Ann), referer: `${url}/admin/bots/${bot}/workflows/${wid}` },
+      body: JSON.stringify({ csrf: "csrf-1", graph: { nodes: [], edges: [], holidays: ["x".repeat(1_100_000)] } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Bad request." });
   });
 
   it("publish asks where stranded runs go", async () => {
@@ -156,7 +174,7 @@ describe("workflows screens", () => {
     expect((await json(`/admin/workflows/${wid}/discard`, {})).status).toBe(200);
     expect((await initOf(wid)).draft.nodes.map((n: { id: string }) => n.id)).not.toContain("w1");
     // a refusal is worded by the server
-    await json(`/admin/workflows/${wid}/draft`, { graph: { nodes: [], edges: [], holidays: [] } });
+    await json(`/admin/workflows/${wid}/draft`, { graph: { nodes: [], edges: [], holidays: [] }, base: (await initOf(wid)).base });
     const refused = await json(`/admin/workflows/${wid}/publish`, { moves: {} });
     expect(refused.status).toBe(400);
     expect((await refused.json()).error).toContain("Needs exactly one trigger");
@@ -164,11 +182,21 @@ describe("workflows screens", () => {
 
   it("heads can view but not save", async () => {
     const wid = await newWorkflow("view only");
+    // like the bot page: a head sees the bots of their own departments only
+    expect((await get(`/admin/bots/${bot}/workflows/${wid}`, "Hal")).status).toBe(404);
+    await setAllowedDepartments(db, T, bot, [sales]);
     expect((await get(`/admin/bots/${bot}/workflows/${wid}`, "Hal")).status).toBe(200);
     expect((await initOf(wid, "Hal")).readOnly).toBe(true);
     expect((await get(`/admin/workflows/${wid}/versions`, "Hal")).status).toBe(200);
     for (const path of ["draft", "publish", "discard", "restore"]) expect((await json(`/admin/workflows/${wid}/${path}`, { graph: graph(false), moves: {}, version: 1 }, "Hal")).status).toBe(403);
     expect((await form(`/admin/bots/${bot}/workflows`, [["name", "x"], ["chatId", "chat-1"]], "Hal")).status).toBe(403);
+  });
+
+  it("a head of an unlinked department sees nothing", async () => {
+    const wid = await newWorkflow("not yours");
+    expect((await get(`/admin/bots/${bot}/workflows/${wid}`, "Eve")).status).toBe(404);
+    expect((await get(`/admin/workflows/${wid}/versions`, "Eve")).status).toBe(404);
+    expect((await json(`/admin/workflows/${wid}/draft`, { graph: graph(false), base: "x" }, "Eve")).status).toBe(404);
   });
 
   it("publishing an email workflow turns act mode off", async () => {
@@ -177,7 +205,8 @@ describe("workflows screens", () => {
     await assignToChat(db, "chat-1", other);
     await db.update(botDefinitions).set({ mailMode: "act" }).where(eq(botDefinitions.id, other));
     const wid = (await createWorkflow(db, T, { definitionId: other, name: "mail", chatId: "chat-1", runAsPersonId: id.Ann })).id;
-    await json(`/admin/workflows/${wid}/draft`, { graph: graph(false) });
+    const [{ draft }] = await db.select({ draft: workflows.draft }).from(workflows).where(eq(workflows.id, wid));
+    expect((await json(`/admin/workflows/${wid}/draft`, { graph: graph(false), base: draftHash(draft) })).status).toBe(200);
     expect((await json(`/admin/workflows/${wid}/publish`, { moves: {} })).status).toBe(200);
     const [d] = await db.select({ mailMode: botDefinitions.mailMode }).from(botDefinitions).where(eq(botDefinitions.id, other));
     expect(d.mailMode).toBe("notify");

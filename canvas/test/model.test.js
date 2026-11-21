@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { exitsOf } from "../../src/workflows/graph.ts";
-import { EXITS, newNode, openExits, toFlow, toGraph, whyNot } from "../src/model.js";
+import { EXITS, newNode, openExits, relink, toFlow, toGraph, whyNot } from "../src/model.js";
 
 const node = (type, id, extra) => ({ id, label: id, x: 10, y: 20, type, ...extra });
 const nodes = [
@@ -60,5 +60,14 @@ describe("canvas model", () => {
     expect(newNode("wait", { x: 0, y: 0 })).toMatchObject({ minutes: 480, businessHours: true });
     expect(newNode("end", { x: 0, y: 0 }).outcome).toBe("");
     expect(newNode("trigger", { x: 0, y: 0 }).trigger).toBe("email");
+  });
+
+  it("relink follows a renamed exit and drops a removed one", () => {
+    const { edges } = toFlow(graph);
+    const renamed = relink(edges, "a", ["fine", "bad", "needs_person", "new_message"], { ok: "fine" });
+    expect(renamed).toContainEqual({ id: "a:fine", source: "a", sourceHandle: "fine", target: "w" });
+    expect(renamed).toHaveLength(4);
+    expect(relink(edges, "a", ["bad", "needs_person", "new_message"])).toHaveLength(3);
+    expect(relink(edges, "a", ["bad", "needs_person", "new_message"]).some((e) => e.source === "a")).toBe(false);
   });
 });

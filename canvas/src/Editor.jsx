@@ -2,7 +2,7 @@
 // save the draft, publish it. Shell copied from BE Voice's routing canvas.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, useReactFlow } from "@xyflow/react";
-import { EXITS, NAMES, newNode, openExits, toFlow, toGraph, whyNot } from "./model.js";
+import { EXITS, NAMES, newNode, openExits, relink, toFlow, toGraph, whyNot } from "./model.js";
 import { Ctx, nodeTypes } from "./nodes.jsx";
 import { Inspector } from "./Inspector.jsx";
 import { Versions } from "./Versions.jsx";
@@ -42,9 +42,12 @@ export function Editor({ init }) {
     const r = await fetch(`/admin/workflows/${init.workflowId}/${path}`, {
       method, credentials: "same-origin",
       ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ csrf: init.csrf, ...body }) } : {}),
-    });
-    const data = await r.json().catch(() => ({ error: "something went wrong; reload" }));
-    return { status: r.status, data };
+    }).catch(() => null);
+    if (!r) return { status: 0, data: { error: "no connection; try again" } };
+    // a redirect or an HTML page (a lost session, a refused token) is a failure, whatever its status
+    const json = !r.redirected && (r.headers.get("content-type") || "").includes("application/json");
+    const data = json ? await r.json().catch(() => null) : null;
+    return { status: data ? r.status : 0, data: data && (r.ok || data.error || data.stranded) ? data : { error: "something went wrong; reload" } };
   }, [init]);
 
   // a handle leads to one place: a new link replaces the old one
@@ -73,11 +76,10 @@ export function Editor({ init }) {
     add(type, { x: p.x - 100 + Math.random() * 40, y: p.y - 26 + Math.random() * 40 });
   };
 
-  // change edits one step and drops links from exits that went away
-  const change = useCallback((id, data) => {
+  // change edits one step; links follow renamed exits and go with removed ones
+  const change = useCallback((id, data, renamed) => {
     setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data } : n)));
-    const exits = new Set(EXITS(data));
-    setEdges((es) => es.filter((e) => e.source !== id || exits.has(e.sourceHandle)));
+    setEdges((es) => relink(es, id, EXITS(data), renamed));
   }, [setNodes, setEdges]);
   const remove = useCallback((id) => flow.deleteElements({ nodes: [{ id }] }), [flow]);
 

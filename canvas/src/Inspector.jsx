@@ -6,11 +6,17 @@ import { NAMES } from "./model.js";
 const Field = ({ label, hint, children }) => <label className="wf-field">{label}{children}{hint ? <span className="hint">{hint}</span> : null}</label>;
 const list = (text) => text.split(",").map((s) => s.trim()).filter(Boolean);
 
-// A comma list keeps what is typed (a trailing comma included) and saves the parsed list.
+// Text that names an exit is committed on leaving the box or Enter, so its link isn't dropped on every keystroke.
+const commitOn = (commit) => ({ onBlur: commit, onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } } });
+
+// A comma list, committed as a parsed list.
 function CommaField({ label, hint, value, set }) {
   const [text, setText] = useState((value || []).join(", "));
-  return <Field label={label} hint={hint}><input className="be-input" value={text} onChange={(e) => { setText(e.target.value); set(list(e.target.value)); }} /></Field>;
+  return <Field label={label} hint={hint}><input className="be-input" value={text} onChange={(e) => setText(e.target.value)} {...commitOn(() => set(list(text)))} /></Field>;
 }
+
+// Same length means each choice was edited in place: its link follows the new name.
+const renames = (old, next) => (old.length === next.length ? Object.fromEntries(old.flatMap((o, i) => (o !== next[i] ? [[o, next[i]]] : []))) : {});
 
 // A length in hours or days, stored as minutes.
 function Duration({ label, minutes, set }) {
@@ -25,13 +31,18 @@ function Duration({ label, minutes, set }) {
   );
 }
 
+function ResultName({ name, rename }) {
+  const [text, setText] = useState(name);
+  return <input className="be-input" placeholder="name" value={text} onChange={(e) => setText(e.target.value)} {...commitOn(() => { const next = text.trim(); setText(next); if (next !== name) rename(next); })} />;
+}
+
 function Results({ results, set }) {
-  const at = (i, patch) => set(results.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const at = (i, patch, renamed) => set(results.map((r, j) => (j === i ? { ...r, ...patch } : r)), renamed);
   return (
     <div className="wf-field">results
       {results.map((r, i) => (
-        <div className="wf-result" key={i}>
-          <input className="be-input" placeholder="name" value={r.name} onChange={(e) => at(i, { name: e.target.value.trim() })} />
+        <div className="wf-result" key={`${i}:${results.length}`}>
+          <ResultName name={r.name} rename={(name) => at(i, { name }, { [r.name]: name })} />
           <input className="be-input" placeholder="meaning" value={r.meaning} onChange={(e) => at(i, { meaning: e.target.value })} />
           <button className="be-btn sm" type="button" aria-label="remove result" onClick={() => set(results.filter((_, j) => j !== i))}>×</button>
         </div>
@@ -45,7 +56,7 @@ export function Inspector({ node, change, remove, readOnly }) {
   const { people } = useContext(Ctx);
   if (!node) return <div className="wf-empty"><p className="hint">{readOnly ? "Select a step to see it." : "Drag a step in, link exits to steps, select a step to edit it. An exit left open goes to a person."}</p></div>;
   const d = node.data;
-  const set = (patch) => change(node.id, { ...d, ...patch });
+  const set = (patch, renamed) => change(node.id, { ...d, ...patch }, renamed);
   const text = (key) => ({ value: d[key] ?? "", onChange: (e) => set({ [key]: e.target.value }) });
   return (
     <fieldset className="wf-form" disabled={readOnly} key={node.id}>
@@ -60,7 +71,7 @@ export function Inspector({ node, change, remove, readOnly }) {
         <>
           <Field label="instruction"><textarea className="be-input" rows={5} {...text("instruction")} /></Field>
           <Field label="success test" hint="how the bot knows the step worked"><textarea className="be-input" rows={2} {...text("success")} /></Field>
-          <Results results={d.results} set={(results) => set({ results })} />
+          <Results results={d.results} set={(results, renamed) => set({ results }, renamed)} />
           <CommaField label="saved fields" hint="comma separated" value={d.saves} set={(saves) => set({ saves: saves.length ? saves : undefined })} />
         </>
       ) : null}
@@ -73,7 +84,7 @@ export function Inspector({ node, change, remove, readOnly }) {
       {d.type === "ask" ? (
         <>
           <Field label="question"><textarea className="be-input" rows={3} {...text("question")} /></Field>
-          <CommaField label="choices" hint="comma separated" value={d.choices} set={(choices) => set({ choices })} />
+          <CommaField label="choices" hint="comma separated" value={d.choices} set={(choices) => set({ choices }, renames(d.choices, choices))} />
           <Field label="person">
             <select className="be-select" value={d.personId ?? ""} onChange={(e) => set({ personId: e.target.value || undefined })}>
               <option value="">the bot's chat</option>

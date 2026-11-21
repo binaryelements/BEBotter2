@@ -8,7 +8,7 @@ import { botDefinitions, people, workflowRuns, workflows } from "../db/schema.js
 import { DirectoryError } from "../org/directory.js";
 import { createWorkflow, discardDraft, draftHash, listVersions, publish, publishedGraph, restoreVersion, runsOnRemovedNodes, saveDraft, StaleDraft } from "../workflows/store.js";
 import type { Actor } from "./access.js";
-import { isAdmin } from "./access.js";
+import { isAdmin, mayEditPersona } from "./access.js";
 import { href, html, layout, raw, scroll } from "./html.js";
 import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
@@ -32,11 +32,12 @@ ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Workflow</th>
 export function workflowRoutes(db: Db): Router {
   const router = express.Router();
   const notFound = (res: Response) => page(res, 404, "Not found.");
-  // a workflow of the actor's tenant whose bot is not a person bot; anything else does not exist here
-  const ownWorkflow = async (tenantId: string, wid: string) => {
+  // a workflow of the actor's tenant whose bot is not a person bot and that the actor may see (a head: only their departments' bots, as on the bot page);
+  // anything else does not exist here
+  const ownWorkflow = async (actor: Actor, wid: string) => {
     const [r] = await db.select({ w: workflows, identity: botDefinitions.identity }).from(workflows).innerJoin(botDefinitions, eq(botDefinitions.id, workflows.definitionId))
-      .where(and(eq(workflows.id, wid), eq(workflows.tenantId, tenantId)));
-    return r && r.identity !== "person" ? r.w : undefined;
+      .where(and(eq(workflows.id, wid), eq(workflows.tenantId, actor.tenantId)));
+    return r && r.identity !== "person" && (await mayEditPersona(db, actor, r.w.definitionId)) ? r.w : undefined;
   };
 
   router.post(
@@ -57,7 +58,7 @@ export function workflowRoutes(db: Db): Router {
     "/bots/:id/workflows/:wid",
     wrap(async (req, res) => {
       const { actor, csrf } = adminOf(res);
-      const w = await ownWorkflow(actor.tenantId, req.params.wid);
+      const w = await ownWorkflow(actor, req.params.wid);
       if (!w || w.definitionId !== req.params.id) return notFound(res);
       const def = (await getDefinition(db, actor.tenantId, w.definitionId))!;
       const ppl = await db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, actor.tenantId)).orderBy(asc(people.name));
@@ -78,7 +79,7 @@ export function workflowRoutes(db: Db): Router {
   const api = (mutates: boolean, fn: (w: Workflow, body: Record<string, unknown>, actor: Actor) => Promise<unknown>) =>
     wrap(async (req: Request, res: Response) => {
       const { actor } = adminOf(res);
-      const w = await ownWorkflow(actor.tenantId, req.params.wid);
+      const w = await ownWorkflow(actor, req.params.wid);
       if (!w) return res.status(404).json({ error: "not found" });
       if (mutates && !isAdmin(actor)) return res.status(403).json({ error: "not allowed" });
       try {
@@ -92,7 +93,14 @@ export function workflowRoutes(db: Db): Router {
       }
     });
 
-  router.post("/workflows/:wid/draft", api(true, async (w, body, actor) => ({ base: await saveDraft(db, actor.tenantId, w.id, body.graph, typeof body.base === "string" ? body.base : undefined) })));
+  // base is required: a save without it would skip the check that nobody else changed the draft
+  router.post(
+    "/workflows/:wid/draft",
+    api(true, async (w, body, actor) => {
+      if (typeof body.base !== "string") throw new DirectoryError("missing base; reload");
+      return { base: await saveDraft(db, actor.tenantId, w.id, body.graph, body.base) };
+    }),
+  );
 
   router.post(
     "/workflows/:wid/publish",

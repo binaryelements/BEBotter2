@@ -45,3 +45,10 @@ const DEFAULTS = {
   end: () => ({ outcome: "" }),
 };
 export const newNode = (type, { x, y }) => ({ id: uid(type), type, label: NAMES[type], x, y, ...DEFAULTS[type]() });
+
+// After a step's exits change: links on a renamed exit follow it (renamed maps old exit -> new), links on removed exits go.
+export function relink(edges, id, exits, renamed = {}) {
+  return edges
+    .map((e) => (e.source === id && renamed[e.sourceHandle] !== undefined ? { ...e, id: `${id}:${renamed[e.sourceHandle]}`, sourceHandle: renamed[e.sourceHandle] } : e))
+    .filter((e) => e.source !== id || exits.includes(e.sourceHandle));
+}
