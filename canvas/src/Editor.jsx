@@ -1,7 +1,7 @@
 // The workflow canvas: drop steps from the palette, link exits to steps, edit a step in the inspector,
 // save the draft, publish it. Shell copied from BE Voice's routing canvas.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, useReactFlow } from "@xyflow/react";
+import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, useReactFlow, useNodesInitialized } from "@xyflow/react";
 import { EXITS, NAMES, newNode, openExits, relink, toFlow, toGraph, whyNot } from "./model.js";
 import { Ctx, nodeTypes } from "./nodes.jsx";
 import { Inspector } from "./Inspector.jsx";
@@ -25,6 +25,14 @@ export function Editor({ init }) {
   const [stranded, setStranded] = useState(null); // publish asked where runs on removed steps go
   const [wiring, setWiring] = useState(null);
   const flow = useReactFlow();
+  // show the whole graph once every node has been measured
+  const measured = useNodesInitialized();
+  const [fitted, setFitted] = useState(false);
+  useEffect(() => {
+    if (!measured || fitted) return;
+    setFitted(true);
+    flow.fitView({ padding: 0.08, maxZoom: 1 });
+  }, [measured, fitted, flow]);
 
   const graph = useMemo(() => toGraph(nodes, edges, init.draft.holidays), [nodes, edges, init]);
   const dirty = JSON.stringify(graph) !== saved;
@@ -159,10 +167,10 @@ export function Editor({ init }) {
             onConnect={onConnect} isValidConnection={valid} onConnectStart={onConnectStart} onConnectEnd={() => setWiring(null)} onSelectionChange={onSelectionChange}
             onDrop={onDrop} onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
             nodesDraggable={!readOnly} nodesConnectable={!readOnly} elementsSelectable deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
-            fitView fitViewOptions={{ padding: 0.1, maxZoom: 1 }} minZoom={0.2} maxZoom={1.6} colorMode={theme} connectionRadius={28}>
+            minZoom={0.2} maxZoom={1.6} colorMode={theme} connectionRadius={28}>
             <Background gap={22} size={1} />
             <Controls showInteractive={false} />
-            <MiniMap pannable zoomable className="wf-minimap" />
+            <MiniMap pannable zoomable className="wf-minimap" style={{ width: 130, height: 84 }} />
           </ReactFlow>
           {stranded ? (
             <div className="wf-dialog" role="dialog" aria-modal="true" aria-labelledby="wf-stranded">
