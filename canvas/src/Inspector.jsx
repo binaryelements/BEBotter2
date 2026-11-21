@@ -68,7 +68,7 @@ function Results({ results, set }) {
   );
 }
 
-export function Inspector({ node, change, remove, readOnly }) {
+export function Inspector({ node, change, remove, readOnly, problems = [] }) {
   const { people } = useContext(Ctx);
   if (!node) return <div className="wf-empty"><p className="hint">{readOnly ? "Select a step to see it." : "Drag a step in, link exits to steps, select a step to edit it. An exit left open goes to a person."}</p></div>;
   const d = node.data;
@@ -77,6 +77,7 @@ export function Inspector({ node, change, remove, readOnly }) {
   return (
     <fieldset className="wf-form" disabled={readOnly} key={node.id}>
       <div className="wf-form-head"><h2>{NAMES[d.type]}</h2></div>
+      {problems.length ? <ul className="wf-step-problems" role="alert">{problems.map((p, i) => <li key={i}>{p.message}</li>)}</ul> : null}
       <Field label="label"><input className="be-input" {...text("label")} /></Field>
       {d.type === "trigger" ? (
         <Field label="starts on">

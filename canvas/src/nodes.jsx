@@ -22,7 +22,7 @@ function summary(d, people) {
 }
 
 function StepNode({ id, data }) {
-  const { people, wired, wiring, trace } = useContext(Ctx);
+  const { people, wired, wiring, trace, badSteps } = useContext(Ctx);
   const exits = EXITS(data);
   const update = useUpdateNodeInternals();
   // handles move when results or choices change; tell React Flow
@@ -32,7 +32,7 @@ function StepNode({ id, data }) {
   const hits = trace ? trace.get(id) : null; // the 1-based places of this step on the traced path
   const dim = trace && !hits ? " dim" : "";
   return (
-    <div className={"wf-node k-" + data.type + state + dim}>
+    <div className={"wf-node k-" + data.type + state + dim + (badSteps?.has(id) ? " bad" : "")}>
       {hits ? <span className="wf-step-no">{hits.map((h) => h.no).join(", ")}</span> : null}
       {data.type === "trigger" ? null : <Handle type="target" position={Position.Left} id="in" />}
       <div className="wf-top"><span className="wf-kind">{NAMES[data.type]}</span><span className="wf-title">{data.label}</span></div>

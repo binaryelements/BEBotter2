@@ -2,7 +2,7 @@
 // save the draft, publish it. Shell copied from BE Voice's routing canvas.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, useReactFlow, useNodesInitialized } from "@xyflow/react";
-import { EXITS, NAMES, newNode, openExits, relink, toFlow, toGraph, whyNot } from "./model.js";
+import { EXITS, NAMES, graphProblems, newNode, openExits, relink, toFlow, toGraph, whyNot } from "./model.js";
 import { Ctx, nodeTypes } from "./nodes.jsx";
 import { Inspector } from "./Inspector.jsx";
 import { Versions } from "./Versions.jsx";
@@ -37,6 +37,11 @@ export function Editor({ init }) {
   const graph = useMemo(() => toGraph(nodes, edges, init.draft.holidays), [nodes, edges, init]);
   const dirty = JSON.stringify(graph) !== saved;
   const open = useMemo(() => openExits(graph).length, [graph]);
+  // the same checks the server runs at publish, shown here before anything is sent
+  const problems = useMemo(() => (readOnly ? [] : graphProblems(graph)), [graph, readOnly]);
+  const [showProblems, setShowProblems] = useState(false);
+  const badSteps = useMemo(() => new Map(problems.filter((p) => p.nodeId).map((p) => [p.nodeId, true])), [problems]);
+  const pick = (id) => setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === id })));
   // leaving with an unsaved draft asks first, unless the page reloads on purpose
   const leaving = useRef(false);
   const reload = () => { leaving.current = true; location.reload(); };
@@ -102,6 +107,7 @@ export function Editor({ init }) {
     return data.base;
   };
   const publish = async (moves = {}) => {
+    if (problems.length) { setShowProblems(true); setNote(["bad", "fix these before publishing"]); return; }
     let current = base; // setBase is not applied yet after a save, so take the saved hash directly
     if (dirty) { current = await save(); if (!current) return; }
     setBusy(true);
@@ -129,7 +135,7 @@ export function Editor({ init }) {
     init.trace.steps.forEach((s, i) => m.set(s.nodeId, [...(m.get(s.nodeId) || []), { no: i + 1, ...s }]));
     return m;
   }, [init]);
-  const ctx = useMemo(() => ({ people: init.people, wired, wiring, trace }), [init, wired, wiring, trace]);
+  const ctx = useMemo(() => ({ people: init.people, wired, wiring, trace, badSteps }), [init, wired, wiring, trace, badSteps]);
   const node = nodes.find((n) => n.id === selected) || null;
   const theme = document.documentElement.dataset.theme || "system";
 
@@ -139,6 +145,7 @@ export function Editor({ init }) {
         <div className="wf-bar">
           <span className={"wf-pill" + (dirty ? " dirty" : "")}>{dirty ? "not saved" : "saved"}</span>
           {open ? <span className="hint">{open} open {open === 1 ? "exit goes" : "exits go"} to a person</span> : null}
+          {problems.length ? <button className={"be-btn sm wf-fix" + (showProblems ? " on" : "")} type="button" onClick={() => setShowProblems(!showProblems)}>{problems.length} to fix</button> : null}
           {note ? <span className={"wf-note " + note[0]} role="status">{note[1]}</span> : null}
           {init.trace ? <span className="wf-pill">tracing {init.trace.title}</span> : null}
           {init.trace ? <button className="be-btn sm" type="button" onClick={() => { leaving.current = true; location.href = location.pathname; }}>stop</button> : null}
@@ -163,6 +170,11 @@ export function Editor({ init }) {
             ))}
           </aside>
         )}
+        {showProblems && problems.length ? (
+          <ul className="wf-problems" aria-label="to fix">
+            {problems.map((p, i) => <li key={i}>{p.nodeId ? <button type="button" className="wf-link" onClick={() => pick(p.nodeId)}>{p.message}</button> : p.message}</li>)}
+          </ul>
+        ) : null}
         <div className="wf-flow">
           <ReactFlow proOptions={{ hideAttribution: true }} nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onConnect={onConnect} isValidConnection={valid} onConnectStart={onConnectStart} onConnectEnd={() => setWiring(null)} onSelectionChange={onSelectionChange}
@@ -200,7 +212,7 @@ export function Editor({ init }) {
           ) : null}
           {versions
             ? <Versions api={api} base={base} readOnly={readOnly} restored={reload} close={() => setVersions(false)} />
-            : <Inspector node={node} change={change} remove={remove} readOnly={readOnly} />}
+            : <Inspector problems={node ? problems.filter((p) => p.nodeId === node.id) : []} node={node} change={change} remove={remove} readOnly={readOnly} />}
         </aside>
       </div>
     </Ctx.Provider>

@@ -1,13 +1,8 @@
-// Pure canvas model (no React). EXITS must stay in step with exitsOf in src/workflows/graph.ts.
-export const EXITS = (n) => {
-  switch (n.type) {
-    case "trigger": return ["next"];
-    case "ai": return [...n.results.map((r) => r.name), "needs_person", "new_message"];
-    case "wait": return ["time_up", "new_message"];
-    case "ask": return [...n.choices, "no_answer", "new_message"];
-    default: return [];
-  }
-};
+// Pure canvas model (no React). Exits and publish checks come from the server's own rules, bundled in.
+import { exitsOf, graphProblems } from "../../src/workflows/check.ts";
+
+export const EXITS = exitsOf;
+export { graphProblems };
 
 export const toFlow = (g) => ({
   nodes: g.nodes.map((n) => ({ id: n.id, type: n.type, position: { x: n.x, y: n.y }, data: n })),

@@ -112,4 +112,21 @@ describe("parseGraph", () => {
     g.nodes = g.nodes.map((n) => (n.type === "ai" ? { ...n, tools: ["mcp__x__y"] } : n));
     expect(parseGraph(g).nodes.find((n) => n.type === "ai")).not.toHaveProperty("tools");
   });
+  it("empty instruction, success test, question and label are problems, tied to their step", async () => {
+    const { graphProblems } = await import("./check.js");
+    const g = { holidays: [], nodes: [
+      { id: "t", type: "trigger", label: "start", x: 0, y: 0, trigger: "email" },
+      { id: "a", type: "ai", label: "reply", x: 0, y: 0, instruction: " ", success: "", results: [{ name: "done", meaning: "" }] },
+      { id: "q", type: "ask", label: "", x: 0, y: 0, question: "", choices: ["yes"], timeoutMinutes: 60 },
+      { id: "e", type: "end", label: "end", x: 0, y: 0, outcome: "" },
+    ], edges: [{ from: "t", exit: "next", to: "a" }, { from: "a", exit: "done", to: "q" }, { from: "q", exit: "yes", to: "e" }] } as unknown as WorkflowGraph;
+    const p = graphProblems(g);
+    expect(p).toEqual(expect.arrayContaining([
+      { nodeId: "a", message: '"reply" has no instruction' },
+      { nodeId: "a", message: '"reply" has no success test' },
+      { nodeId: "q", message: "A step has no label" },
+      { nodeId: "q", message: '"" has no question' },
+    ]));
+    expect(checkGraph(g)).toEqual(p.map((x) => x.message));
+  });
 });
