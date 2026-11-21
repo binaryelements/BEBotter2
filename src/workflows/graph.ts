@@ -35,12 +35,15 @@ export function checkGraph(g: WorkflowGraph): string[] {
   for (const n of g.nodes) {
     if (n.type === "ai") {
       if (n.results.length === 0) problems.push(`"${n.label}" has no results`);
+      for (const r of n.results) if (!r.name.trim()) problems.push(`"${n.label}" has a result with no name`);
       for (const r of n.results) if (r.name === NEEDS_PERSON || r.name === NEW_MESSAGE) problems.push(`"${n.label}" has a result named "${r.name}", which is reserved`);
       dupes(n.results.map((r) => r.name)).forEach((d) => problems.push(`"${n.label}" has two results named "${d}"`));
     }
+    if (n.type !== "end" && !g.edges.some((e) => e.from === n.id)) problems.push(`"${n.label}" leads nowhere`);
     if (n.type === "wait" && n.minutes < 1) problems.push(`"${n.label}" must wait at least 1 minute`);
     if (n.type === "ask") {
       if (n.choices.length === 0) problems.push(`"${n.label}" has no choices`);
+      for (const c of n.choices) if (!c.trim()) problems.push(`"${n.label}" has a choice with no name`);
       for (const c of n.choices) if (c === "no_answer" || c === NEW_MESSAGE) problems.push(`"${n.label}" has a choice named "${c}", which is reserved`);
       dupes(n.choices).forEach((d) => problems.push(`"${n.label}" has two choices named "${d}"`));
       if (n.timeoutMinutes < 1) problems.push(`"${n.label}" must wait at least 1 minute for an answer`);

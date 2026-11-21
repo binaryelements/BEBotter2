@@ -15,6 +15,8 @@ import { addLearning, listLearnings } from "../learnings/store.js";
 import { createProposal, listProposals, saveReflection } from "../reflections/store.js";
 import { listAllMemory } from "../memory/store.js";
 import { eq } from "drizzle-orm";
+import { createWorkflow, draftHash, publish, saveDraft } from "../workflows/store.js";
+import type { WorkflowGraph } from "../workflows/graph.js";
 import type { MailDeps } from "../mail/mailboxes.js";
 import { MailError } from "../mail/agentmail.js";
 import { adminRouter } from "./router.js";
@@ -760,6 +762,30 @@ describe("bot names and email addresses", () => {
     for (const secret of ["bam_", "amwh_"]) expect(page).not.toContain(secret);
   });
 
+  const publishedMailBot = async (name: string) => {
+    const { def } = await create(name, [["localPart", name]]);
+    await db.insert(chats).values({ id: `chat-${name}`, tenantId: T, conversationType: "groupChat", label: "Q" } as typeof chats.$inferInsert);
+    await db.insert(chatAssignments).values({ chatId: `chat-${name}`, definitionId: def.id } as typeof chatAssignments.$inferInsert);
+    const w = await createWorkflow(db, T, { definitionId: def.id, name: "Quote <replies>", chatId: `chat-${name}`, runAsPersonId: id.Ann });
+    const o = { x: 0, y: 0 };
+    const g: WorkflowGraph = { nodes: [{ ...o, id: "t", label: "Start", type: "trigger", trigger: "email" }, { ...o, id: "e", label: "Fin", type: "end", outcome: "fin" }], edges: [{ from: "t", exit: "next", to: "e" }], holidays: [] };
+    await saveDraft(db, T, w.id, g, draftHash(w.draft));
+    await publish(db, T, w.id, id.Ann, {});
+    return { def, w };
+  };
+  it("email tab shows the workflow instead of act mode", async () => {
+    const { def, w } = await publishedMailBot("wfmail");
+    const page = await (await get(`/admin/bots/${def.id}?tab=email`, "Ann")).text();
+    expect(page).toContain(`emails go to the workflow <a href="/admin/bots/${def.id}/workflows/${w.id}">Quote &lt;replies&gt;</a>`);
+    expect(page).not.toContain('name="mailMode"');
+  });
+  it("act mode is refused while an email workflow is published", async () => {
+    const { def } = await publishedMailBot("wfmail2");
+    const r = await post(`/admin/bots/${def.id}/mail-mode`, "Ann", [["mailMode", "act"], ["mailChatId", "chat-wfmail2"], ["mailInstruction", "x"]]);
+    expect(r.status).toBe(400);
+    expect(await r.text()).toContain("This bot&#39;s emails go to a workflow");
+    expect((await getDefinition(db, T, def.id))!.mailMode).toBe("notify");
+  });
   it("a taken address says so, the bot stays saved and no mailbox exists", async () => {
     const { res, def } = await create("clash", [["localPart", "busy"]]);
     expect(await res.text()).toContain("That address is taken");

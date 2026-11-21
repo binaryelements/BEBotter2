@@ -4,11 +4,11 @@ import { eq } from "drizzle-orm";
 import { assignToChat, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { testDb } from "../db/test-db.js";
-import { botDefinitions, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
+import { botDefinitions, people, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
 import { DirectoryError } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "./graph.js";
-import { createWorkflow, emailWorkflowFor, publish, publishedGraph, runsOnRemovedNodes, saveDraft } from "./store.js";
+import { createWorkflow, discardDraft, draftHash, emailWorkflowFor, listVersions, publish, publishedGraph, restoreVersion, runsOnRemovedNodes, saveDraft, StaleDraft } from "./store.js";
 
 const b = { x: 0, y: 0 };
 const aiNode = (id: string, label: string) => ({ ...b, id, label, type: "ai" as const, instruction: "do", success: "ok", results: [{ name: "done", meaning: "done" }] });
@@ -161,5 +161,66 @@ describe("workflow store", () => {
     const other = await createWorkflow(db, "t1", { definitionId: defId, name: "wf2", chatId: "c1", runAsPersonId: personId });
     await saveDraft(db, "t1", other.id, graph(null));
     await expect(publish(db, "t1", other.id, personId, {})).rejects.toThrow("already has a workflow");
+  });
+
+  const draftOf = async () => (await db.select().from(workflows).where(eq(workflows.id, wfId)))[0].draft;
+
+  it("save refuses a stale base", async () => {
+    const base = await saveDraft(db, "t1", wfId, graph(null));
+    expect(base).toBe(draftHash(await draftOf()));
+    await saveDraft(db, "t1", wfId, graph({ minutes: 5 }), base);
+    await expect(saveDraft(db, "t1", wfId, graph(null, true), base)).rejects.toThrow(StaleDraft);
+    expect(await draftOf()).toEqual(graph({ minutes: 5 }));
+  });
+
+  it("discard restores the published graph, or the empty one", async () => {
+    await saveDraft(db, "t1", wfId, graph(null));
+    await discardDraft(db, "t1", wfId);
+    expect(await draftOf()).toEqual({ nodes: [], edges: [], holidays: [] });
+    await saveDraft(db, "t1", wfId, graph(null));
+    await publish(db, "t1", wfId, personId, {});
+    await saveDraft(db, "t1", wfId, graph(null, true));
+    await discardDraft(db, "t1", wfId);
+    expect(await draftOf()).toEqual(graph(null));
+  });
+
+  it("listVersions lists newest first with live flag, and restoreVersion copies one into the draft", async () => {
+    await saveDraft(db, "t1", wfId, graph(null));
+    await publish(db, "t1", wfId, personId, {});
+    await saveDraft(db, "t1", wfId, graph(null, true));
+    await publish(db, "t1", wfId, personId, {});
+    const vs = await listVersions(db, "t1", wfId);
+    expect(vs.map((v) => [v.version, v.live, v.publishedBy])).toEqual([[2, true, "Ann"], [1, false, "Ann"]]);
+    expect(vs[0].publishedAt).toBeInstanceOf(Date);
+    await restoreVersion(db, "t1", wfId, 1);
+    expect(await draftOf()).toEqual(graph(null));
+    await expect(restoreVersion(db, "t1", wfId, 9)).rejects.toThrow("No such version");
+  });
+
+  it("checkPeople rejects a person outside the tenant", async () => {
+    await upsertTenant(db, { id: "t2" });
+    const other = (await upsertPerson(db, { tenantId: "t2", aadObjectId: "a2", name: "Zed" })).id;
+    const g = graph(null);
+    g.nodes.push({ ...b, id: "k", label: "Ask Zed", type: "ask", question: "ok?", choices: ["yes"], personId: other, timeoutMinutes: 5 });
+    g.edges.push({ from: "a", exit: "needs_person", to: "k" }, { from: "k", exit: "yes", to: "e" });
+    await saveDraft(db, "t1", wfId, g);
+    await expect(publish(db, "t1", wfId, personId, {})).rejects.toThrow(`"Ask Zed" asks someone who isn't in this company`);
+  });
+
+  it("publish refuses an Ask step naming an unlicensed person", async () => {
+    const gone = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "a-unlic", name: "Una" })).id;
+    await db.update(people).set({ licensed: false }).where(eq(people.id, gone));
+    const g = graph(null);
+    g.nodes.push({ ...b, id: "k", label: "Ask Una", type: "ask", question: "ok?", choices: ["yes"], personId: gone, timeoutMinutes: 5 });
+    g.edges.push({ from: "a", exit: "needs_person", to: "k" }, { from: "k", exit: "yes", to: "e" });
+    await saveDraft(db, "t1", wfId, g);
+    await expect(publish(db, "t1", wfId, personId, {})).rejects.toThrow(`"Ask Una" asks someone who isn't in this company`);
+  });
+
+  it("publishing an email workflow turns act mode off", async () => {
+    await db.update(botDefinitions).set({ mailMode: "act" }).where(eq(botDefinitions.id, defId));
+    await saveDraft(db, "t1", wfId, graph(null));
+    await publish(db, "t1", wfId, personId, {});
+    expect((await db.select().from(botDefinitions).where(eq(botDefinitions.id, defId)))[0].mailMode).toBe("notify");
   });
 });
