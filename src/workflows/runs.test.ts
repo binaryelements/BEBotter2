@@ -253,6 +253,16 @@ describe("workflow runs", () => {
     await expect(endRun(db, "t1", r.id, personId)).rejects.toThrow("This run has ended");
   });
 
+  it("pauseRun revokes the approval held by an AI step", async () => {
+    const r = await start();
+    await db.update(workflowRuns).set({ status: "waiting" }).where(eq(workflowRuns.id, r.id)); // an AI step parked on a held write
+    const pid = crypto.randomUUID();
+    await db.insert(workflowPending).values({ id: pid, runId: r.id, nodeId: "a", kind: "approval", status: "pending" });
+    await pauseRun(db, "t1", r.id, personId);
+    expect(await reload(r)).toMatchObject({ status: "needs_person" });
+    expect((await db.select().from(workflowPending).where(eq(workflowPending.id, pid)))[0].status).toBe("cancelled");
+  });
+
   it("endRun refuses a running step", async () => {
     const r = await start();
     await db.update(workflowRuns).set({ status: "running" }).where(eq(workflowRuns.id, r.id));

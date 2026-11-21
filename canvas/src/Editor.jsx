@@ -27,7 +27,7 @@ export function Editor({ init }) {
   const flow = useReactFlow();
   // show the whole graph once every node has been measured
   const measured = useNodesInitialized();
-  const [fitted, setFitted] = useState(false);
+  const [fitted, setFitted] = useState(start.nodes.length === 0); // a new, empty workflow has nothing to fit
   useEffect(() => {
     if (!measured || fitted) return;
     setFitted(true);
@@ -99,12 +99,13 @@ export function Editor({ init }) {
     setBase(data.base);
     setSaved(JSON.stringify(graph));
     setNote(["good", "saved"]);
-    return true;
+    return data.base;
   };
   const publish = async (moves = {}) => {
-    if (dirty && !(await save())) return;
+    let current = base; // setBase is not applied yet after a save, so take the saved hash directly
+    if (dirty) { current = await save(); if (!current) return; }
     setBusy(true);
-    const { status, data } = await api("POST", "publish", { moves });
+    const { status, data } = await api("POST", "publish", { moves, base: current });
     setBusy(false);
     if (status === 409 && data.stranded) { setStranded({ list: data.stranded, moves: Object.fromEntries(data.stranded.map((s) => [s.nodeId, "needs_person"])) }); return; }
     setStranded(null);
@@ -112,7 +113,7 @@ export function Editor({ init }) {
   };
   const discard = async () => {
     if (!confirm("Discard the draft? The canvas goes back to what is live.")) return;
-    const { status, data } = await api("POST", "discard", {});
+    const { status, data } = await api("POST", "discard", { base });
     if (status === 200) reload(); else setNote(["bad", data.error]);
   };
 
@@ -198,7 +199,7 @@ export function Editor({ init }) {
             </div>
           ) : null}
           {versions
-            ? <Versions api={api} readOnly={readOnly} restored={reload} close={() => setVersions(false)} />
+            ? <Versions api={api} base={base} readOnly={readOnly} restored={reload} close={() => setVersions(false)} />
             : <Inspector node={node} change={change} remove={remove} readOnly={readOnly} />}
         </aside>
       </div>

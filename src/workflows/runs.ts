@@ -283,6 +283,7 @@ export const pauseRun = (db: Db, tenantId: string, runId: string, personId: stri
   stoppable(db, tenantId, runId, async (tx, run) => {
     if (run.status === "needs_person") return;
     await tx.update(workflowRuns).set({ status: "needs_person", dueAt: null, updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));
+    await revokeApprovals(tx, run.id); // a held write must not be replayed when the run comes back to this step
     await addEvent(tx, run.id, run.nodeId, "move", { reason: "paused", data: { from: run.nodeId, to: NEEDS_PERSON, personId } });
   });
 

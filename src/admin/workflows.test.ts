@@ -192,6 +192,39 @@ describe("workflows screens", () => {
     expect((await form(`/admin/bots/${bot}/workflows`, [["name", "x"], ["chatId", "chat-1"]], "Hal")).status).toBe(403);
   });
 
+  it("a stale base on discard, restore and publish gives 409 and leaves the draft", async () => {
+    const wid = await newWorkflow("stale all");
+    let { base } = await initOf(wid);
+    const manual = graph(true); // a manual trigger, so no other workflow's email trigger gets in the way
+    manual.nodes = manual.nodes.map((n) => (n.id === "t" ? { ...n, trigger: "manual" as const } : n));
+    ({ base } = await (await json(`/admin/workflows/${wid}/draft`, { graph: manual, base })).json());
+    expect(await (await json(`/admin/workflows/${wid}/publish`, { moves: {}, base })).json()).toEqual({ version: 1 });
+    const edited = (await (await json(`/admin/workflows/${wid}/draft`, { graph: graph(false), base })).json()).base; // someone else saved
+    for (const [path, body] of [["discard", {}], ["restore", { version: 1 }], ["publish", { moves: {} }]] as const) {
+      const res = await json(`/admin/workflows/${wid}/${path}`, { ...body, base });
+      expect(res.status).toBe(409);
+      expect((await initOf(wid)).base).toBe(edited);
+    }
+    // with the current base they go through and discard returns the new base
+    const ok = await json(`/admin/workflows/${wid}/discard`, { base: edited });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).base).toBe((await initOf(wid)).base);
+  });
+
+  it("another company's admin gets 404 on canvas, JSON routes and run pages", async () => {
+    const wid = await newWorkflow("tenant a");
+    const rid = crypto.randomUUID();
+    await db.insert(workflowRuns).values({ id: rid, tenantId: T, workflowId: wid, nodeId: "a", status: "waiting", keys: { threadIds: [], emails: [], domain: null }, fields: {}, title: "x" });
+    await upsertTenant(db, { id: "tenant-b" });
+    const bob = (await upsertPerson(db, { tenantId: "tenant-b", aadObjectId: "aad-bob", name: "Bob" })).id;
+    await setRole(db, "tenant-b", bob, "admin");
+    const asB = (path: string, init: RequestInit = {}) => fetch(url + path, { redirect: "manual", ...init, headers: { "content-type": "application/json", cookie: sessionCookie(secretsKey, "tenant-b", bob) } });
+    expect((await asB(`/admin/bots/${bot}/workflows/${wid}`)).status).toBe(404);
+    expect((await asB(`/admin/workflows/${wid}/versions`)).status).toBe(404);
+    expect((await asB(`/admin/workflows/${wid}/discard`, { method: "POST", body: JSON.stringify({ csrf: "csrf-1" }) })).status).toBe(404);
+    expect((await asB(`/admin/workflow-runs/${rid}`)).status).toBe(404);
+  });
+
   it("a head of an unlinked department sees nothing", async () => {
     const wid = await newWorkflow("not yours");
     expect((await get(`/admin/bots/${bot}/workflows/${wid}`, "Eve")).status).toBe(404);

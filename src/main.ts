@@ -115,7 +115,7 @@ startServer(app, {
       });
       next();
     });
-    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations, notify: (chatId, text) => schedulerDeps.send(chatId, text), ...(balance ? { balance } : {}),
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations, notify: (chatId, text) => schedulerDeps.send(chatId, text).catch((e) => console.error("workflow notice failed", e)), ...(balance ? { balance } : {}),
       // never fails or delays the save; a missed attempt is retried on the next save or start
       onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
     }));

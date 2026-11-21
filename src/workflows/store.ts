@@ -55,16 +55,20 @@ export async function saveDraft(db: Db, tenantId: string, workflowId: string, gr
   });
 }
 
-const setDraft = async (db: Db, tenantId: string, workflowId: string, draft: (published: WorkflowGraph | undefined) => WorkflowGraph | undefined) => {
-  const [w] = await db.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId)));
-  if (!w) throw new DirectoryError("No such workflow");
-  const graph = draft(await graphOf(db, workflowId, w.publishedVersion));
-  if (!graph) throw new DirectoryError("No such version");
-  await db.update(workflows).set({ draft: graph }).where(eq(workflows.id, workflowId));
-};
+/** Replaces the draft under a row lock; with `base`, refused if the draft changed since. Returns the new base. */
+const setDraft = (db: Db, tenantId: string, workflowId: string, base: string | undefined, draft: (published: WorkflowGraph | undefined, tx: Pick<Db, "select">) => Promise<WorkflowGraph | undefined> | WorkflowGraph | undefined) =>
+  db.transaction(async (tx) => {
+    const [w] = await tx.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId))).for("update");
+    if (!w) throw new DirectoryError("No such workflow");
+    if (base !== undefined && base !== draftHash(w.draft)) throw new StaleDraft();
+    const graph = await draft(await graphOf(tx, workflowId, w.publishedVersion), tx);
+    if (!graph) throw new DirectoryError("No such version");
+    const [saved] = await tx.update(workflows).set({ draft: graph }).where(eq(workflows.id, workflowId)).returning({ draft: workflows.draft });
+    return draftHash(saved.draft);
+  });
 
 /** Throws away the draft's changes: it becomes the published graph, or empty if never published. */
-export const discardDraft = (db: Db, tenantId: string, workflowId: string) => setDraft(db, tenantId, workflowId, (published) => published ?? emptyGraph());
+export const discardDraft = (db: Db, tenantId: string, workflowId: string, base?: string) => setDraft(db, tenantId, workflowId, base, (published) => published ?? emptyGraph());
 
 export async function listVersions(db: Db, tenantId: string, workflowId: string): Promise<{ version: number; publishedAt: Date; publishedBy: string; live: boolean }[]> {
   const [w] = await db.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId)));
@@ -79,9 +83,11 @@ export async function listVersions(db: Db, tenantId: string, workflowId: string)
 }
 
 /** Copies a published version into the draft; it goes live only when published again. */
-export async function restoreVersion(db: Db, tenantId: string, workflowId: string, version: number): Promise<void> {
-  const [v] = await db.select({ graph: workflowVersions.graph }).from(workflowVersions).where(and(eq(workflowVersions.workflowId, workflowId), eq(workflowVersions.version, version)));
-  await setDraft(db, tenantId, workflowId, () => v?.graph);
+export async function restoreVersion(db: Db, tenantId: string, workflowId: string, version: number, base?: string): Promise<string> {
+  return setDraft(db, tenantId, workflowId, base, async (_published, tx) => {
+    const [v] = await tx.select({ graph: workflowVersions.graph }).from(workflowVersions).where(and(eq(workflowVersions.workflowId, workflowId), eq(workflowVersions.version, version)));
+    return v?.graph;
+  });
 }
 
 async function graphOf(db: Pick<Db, "select">, workflowId: string, version: number | null): Promise<WorkflowGraph | undefined> {
@@ -115,16 +121,17 @@ export async function runsOnRemovedNodes(db: Db, tenantId: string, workflowId: s
 
 const hasEmailTrigger = (g: WorkflowGraph | undefined) => !!g?.nodes.some((n) => n.type === "trigger" && n.trigger === "email");
 
-export async function publish(db: Db, tenantId: string, workflowId: string, personId: string, moves: Moves): Promise<number> {
+export async function publish(db: Db, tenantId: string, workflowId: string, personId: string, moves: Moves, base?: string): Promise<number> {
   return db.transaction(async (tx) => {
-    const [w] = await tx.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId)));
+    const [w] = await tx.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId))).for("update");
     if (!w) throw new DirectoryError("No such workflow");
+    if (base !== undefined && base !== draftHash(w.draft)) throw new StaleDraft();
     const draft = w.draft;
     const problems = checkGraph(draft);
     if (problems.length > 0) throw new DirectoryError(problems.join("; "));
     const askPeople = draft.nodes.flatMap((n) => (n.type === "ask" && n.personId ? [n] : []));
     if (askPeople.length) {
-      const known = await tx.select({ id: people.id }).from(people).where(and(eq(people.tenantId, tenantId), inArray(people.id, askPeople.map((n) => n.personId!))));
+      const known = await tx.select({ id: people.id }).from(people).where(and(eq(people.tenantId, tenantId), eq(people.licensed, true), inArray(people.id, askPeople.map((n) => n.personId!))));
       const ids = new Set(known.map((p) => p.id));
       for (const n of askPeople) if (!ids.has(n.personId!)) throw new DirectoryError(`"${n.label}" asks someone who isn't in this company`);
     }

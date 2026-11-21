@@ -1,7 +1,7 @@
 // Published versions of the workflow: restore one into the draft, then publish it again.
 import { useEffect, useState } from "react";
 
-export function Versions({ api, readOnly, restored, close }) {
+export function Versions({ api, base, readOnly, restored, close }) {
   const [list, setList] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -9,7 +9,7 @@ export function Versions({ api, readOnly, restored, close }) {
   }, [api]);
   const restore = async (v) => {
     if (!confirm(`Put v${v.version} in the draft? Unsaved changes are lost.`)) return;
-    const { status, data } = await api("POST", "restore", { version: v.version });
+    const { status, data } = await api("POST", "restore", { version: v.version, base });
     if (status === 200) restored();
     else setError(data.error);
   };

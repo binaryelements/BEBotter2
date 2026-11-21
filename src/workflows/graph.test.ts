@@ -42,6 +42,14 @@ describe("checkGraph", () => {
     expect(checkGraph(valid())).toEqual([]); // the End node has no exits and is fine
   });
   it("accepts a valid graph", () => expect(checkGraph(valid())).toEqual([]));
+  it("flags a result or a choice with no name", () => {
+    const g = valid();
+    g.nodes = g.nodes.map((n) => (n.type === "ai" ? { ...n, results: [...n.results, { name: "  ", meaning: "m" }] } : n));
+    expect(checkGraph(g).join()).toContain("has a result with no name");
+    const h = valid();
+    h.nodes.push({ ...ask, choices: ["yes", ""] });
+    expect(checkGraph(h).join()).toContain('"' + ask.label + '" has a choice with no name');
+  });
   it("flags two triggers", () => {
     const g = valid();
     g.nodes.push({ ...trigger, id: "t2" });

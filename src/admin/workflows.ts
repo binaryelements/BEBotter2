@@ -67,11 +67,13 @@ export function workflowRoutes(db: Db, notify: Notify = async () => {}): Router 
       const w = await ownWorkflow(actor, req.params.wid);
       if (!w || w.definitionId !== req.params.id) return notFound(res);
       const def = (await getDefinition(db, actor.tenantId, w.definitionId))!;
-      const ppl = await db.select({ id: people.id, name: people.name }).from(people).where(eq(people.tenantId, actor.tenantId)).orderBy(asc(people.name));
+      const ppl = await db.select({ id: people.id, name: people.name }).from(people).where(and(eq(people.tenantId, actor.tenantId), eq(people.licensed, true))).orderBy(asc(people.name));
       // a run of this workflow only; any other id shows no trace
       const [mine] = typeof req.query.trace === "string" ? await db.select({ id: workflowRuns.id }).from(workflowRuns).where(and(eq(workflowRuns.id, req.query.trace), eq(workflowRuns.workflowId, w.id))) : [];
       const trace = mine ? await tracePath(db, actor.tenantId, mine.id) : undefined;
-      const init = { workflowId: w.id, name: w.name, draft: w.draft, base: draftHash(w.draft), published: w.publishedVersion !== null, people: ppl, csrf, readOnly: !isAdmin(actor), ...(trace ? { trace } : {}) };
+      // a trace shows the graph the run executed, so it draws the published one (read-only), else the draft
+      const shown = (trace && (await publishedGraph(db, w.id))) || w.draft;
+      const init = { workflowId: w.id, name: w.name, draft: shown, base: draftHash(w.draft), published: w.publishedVersion !== null, people: ppl, csrf, readOnly: !isAdmin(actor), ...(trace ? { trace } : {}) };
       // inside a script element only "</script" can end it early, so every "<" is escaped
       const json = JSON.stringify(init).replace(/</g, "\\u003c");
       const body = html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <a href="/admin/bots/${def.id}?tab=workflows">${def.displayName ?? def.name}</a> / <span aria-current="page">${w.name}</span></nav><h1>${w.name}</h1></div></header>
@@ -201,18 +203,18 @@ ${events.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><t
         const live = await publishedGraph(db, w.id);
         return new Conflict({ stranded: stranded.map((s) => ({ nodeId: s.nodeId, label: live?.nodes.find((n) => n.id === s.nodeId)?.label ?? s.nodeId, runs: s.runIds.length })) });
       }
-      return { version: await publish(db, actor.tenantId, w.id, actor.personId, moves) };
+      return { version: await publish(db, actor.tenantId, w.id, actor.personId, moves, typeof body.base === "string" ? body.base : undefined) };
     }),
   );
 
-  router.post("/workflows/:wid/discard", api(true, (w, _body, actor) => discardDraft(db, actor.tenantId, w.id)));
+  router.post("/workflows/:wid/discard", api(true, async (w, body, actor) => ({ base: await discardDraft(db, actor.tenantId, w.id, typeof body.base === "string" ? body.base : undefined) })));
   router.get("/workflows/:wid/versions", api(false, (w, _body, actor) => listVersions(db, actor.tenantId, w.id)));
   router.post(
     "/workflows/:wid/restore",
     api(true, async (w, body, actor) => {
       const version = Number(body.version);
       if (!Number.isInteger(version)) throw new DirectoryError("No such version");
-      await restoreVersion(db, actor.tenantId, w.id, version);
+      return { base: await restoreVersion(db, actor.tenantId, w.id, version, typeof body.base === "string" ? body.base : undefined) };
     }),
   );
 
