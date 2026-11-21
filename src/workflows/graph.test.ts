@@ -35,7 +35,21 @@ describe("nextNode", () => {
 });
 
 describe("checkGraph", () => {
+  it("a step with no linked exit leads nowhere", () => {
+    const g = valid();
+    g.edges = g.edges.filter((e) => e.from !== "a");
+    expect(checkGraph(g)).toContain('"x" leads nowhere');
+    expect(checkGraph(valid())).toEqual([]); // the End node has no exits and is fine
+  });
   it("accepts a valid graph", () => expect(checkGraph(valid())).toEqual([]));
+  it("flags a result or a choice with no name", () => {
+    const g = valid();
+    g.nodes = g.nodes.map((n) => (n.type === "ai" ? { ...n, results: [...n.results, { name: "  ", meaning: "m" }] } : n));
+    expect(checkGraph(g).join()).toContain("has a result with no name");
+    const h = valid();
+    h.nodes.push({ ...ask, choices: ["yes", ""] });
+    expect(checkGraph(h).join()).toContain('"' + ask.label + '" has a choice with no name');
+  });
   it("flags two triggers", () => {
     const g = valid();
     g.nodes.push({ ...trigger, id: "t2" });
@@ -97,5 +111,22 @@ describe("parseGraph", () => {
     const g = valid();
     g.nodes = g.nodes.map((n) => (n.type === "ai" ? { ...n, tools: ["mcp__x__y"] } : n));
     expect(parseGraph(g).nodes.find((n) => n.type === "ai")).not.toHaveProperty("tools");
+  });
+  it("empty instruction, success test, question and label are problems, tied to their step", async () => {
+    const { graphProblems } = await import("./check.js");
+    const g = { holidays: [], nodes: [
+      { id: "t", type: "trigger", label: "start", x: 0, y: 0, trigger: "email" },
+      { id: "a", type: "ai", label: "reply", x: 0, y: 0, instruction: " ", success: "", results: [{ name: "done", meaning: "" }] },
+      { id: "q", type: "ask", label: "", x: 0, y: 0, question: "", choices: ["yes"], timeoutMinutes: 60 },
+      { id: "e", type: "end", label: "end", x: 0, y: 0, outcome: "" },
+    ], edges: [{ from: "t", exit: "next", to: "a" }, { from: "a", exit: "done", to: "q" }, { from: "q", exit: "yes", to: "e" }] } as unknown as WorkflowGraph;
+    const p = graphProblems(g);
+    expect(p).toEqual(expect.arrayContaining([
+      { nodeId: "a", message: '"reply" has no instruction' },
+      { nodeId: "a", message: '"reply" has no success test' },
+      { nodeId: "q", message: "A step has no label" },
+      { nodeId: "q", message: '"" has no question' },
+    ]));
+    expect(checkGraph(g)).toEqual(p.map((x) => x.message));
   });
 });

@@ -8,7 +8,7 @@ import { workflowPending, workflowRunEvents, workflowRuns } from "../db/schema.j
 import type { Workflow, WorkflowRun } from "../db/schema.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "./graph.js";
-import { deliverEvent, enterNode, moveRun, settleStep, startRun, takeExit, takeQueuedEvents } from "./runs.js";
+import { deliverEvent, endRun, enterNode, moveRun, pauseRun, settleStep, startRun, takeExit, takeQueuedEvents } from "./runs.js";
 import type { RunEvent } from "./runs.js";
 import { createWorkflow, publish, saveDraft } from "./store.js";
 
@@ -215,5 +215,64 @@ describe("workflow runs", () => {
     const r = await start();
     await enterNode(db, r, "needs_person", notify, "see [here](http://evil.test)");
     expect(sent).toEqual([["c1", "Acme order needs a person at Read: see \\[here\\]\\(http://evil.test\\)"]]);
+  });
+
+  const lastEvent = async (r: WorkflowRun) => (await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, r.id)).orderBy(workflowRunEvents.at)).at(-1)!;
+  const waitingRun = async () => {
+    const r = await start();
+    await takeExit(db, r, "done", notify);
+    return r;
+  };
+
+  it("pauseRun parks a waiting run", async () => {
+    const r = await waitingRun();
+    await pauseRun(db, "t1", r.id, personId);
+    expect(await reload(r)).toMatchObject({ nodeId: "w", status: "needs_person", dueAt: null });
+    expect(await lastEvent(r)).toMatchObject({ kind: "move", reason: "paused", data: { from: "w", to: "needs_person", personId } });
+    await pauseRun(db, "t1", r.id, personId); // already parked: no-op
+    expect((await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, r.id))).filter((e) => e.reason === "paused")).toHaveLength(1);
+  });
+
+  it("pauseRun refuses a running step and an ended run", async () => {
+    const r = await start();
+    await db.update(workflowRuns).set({ status: "running" }).where(eq(workflowRuns.id, r.id));
+    await expect(pauseRun(db, "t1", r.id, personId)).rejects.toThrow(/Wait for the step to finish/);
+    await db.update(workflowRuns).set({ status: "done" }).where(eq(workflowRuns.id, r.id));
+    await expect(pauseRun(db, "t1", r.id, personId)).rejects.toThrow("This run has ended");
+  });
+
+  it("endRun ends a waiting run and revokes approvals", async () => {
+    const r = await waitingRun();
+    const pid = crypto.randomUUID();
+    await db.insert(workflowPending).values({ id: pid, runId: r.id, nodeId: "w", kind: "approval", status: "pending" });
+    await endRun(db, "t1", r.id, personId);
+    expect(await reload(r)).toMatchObject({ status: "done", outcome: "ended by a person" });
+    expect((await reload(r)).endedAt).toBeInstanceOf(Date);
+    expect((await db.select().from(workflowPending).where(eq(workflowPending.id, pid)))[0].status).toBe("cancelled");
+    expect(await lastEvent(r)).toMatchObject({ kind: "move", reason: "ended" });
+    await expect(endRun(db, "t1", r.id, personId)).rejects.toThrow("This run has ended");
+  });
+
+  it("pauseRun revokes the approval held by an AI step", async () => {
+    const r = await start();
+    await db.update(workflowRuns).set({ status: "waiting" }).where(eq(workflowRuns.id, r.id)); // an AI step parked on a held write
+    const pid = crypto.randomUUID();
+    await db.insert(workflowPending).values({ id: pid, runId: r.id, nodeId: "a", kind: "approval", status: "pending" });
+    await pauseRun(db, "t1", r.id, personId);
+    expect(await reload(r)).toMatchObject({ status: "needs_person" });
+    expect((await db.select().from(workflowPending).where(eq(workflowPending.id, pid)))[0].status).toBe("cancelled");
+  });
+
+  it("endRun refuses a running step", async () => {
+    const r = await start();
+    await db.update(workflowRuns).set({ status: "running" }).where(eq(workflowRuns.id, r.id));
+    await expect(endRun(db, "t1", r.id, personId)).rejects.toThrow(/Wait for the step to finish/);
+  });
+
+  it("moveRun takes a paused run to a chosen step", async () => {
+    const r = await waitingRun();
+    await pauseRun(db, "t1", r.id, personId);
+    await moveRun(db, "t1", r.id, "a", personId, notify);
+    expect(await reload(r)).toMatchObject({ nodeId: "a", status: "ready" });
   });
 });

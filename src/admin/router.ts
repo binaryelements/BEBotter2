@@ -31,9 +31,11 @@ import { secretRoutes } from "./secret.js";
 import { settingsRoutes } from "./settings.js";
 import { csrfOk, readSession, sessionKey } from "./session.js";
 import { tryRoutes } from "./try.js";
+import { workflowRoutes } from "./workflows.js";
+import type { Notify } from "../workflows/runs.js";
 import type { TryDeps } from "./try.js";
 
-export type AdminDeps = OidcDeps & { botName: string; defaultModel: string; models?: string[]; engine?: Engine; balance?: BalanceReader; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner } & TryDeps;
+export type AdminDeps = OidcDeps & { notify?: Notify; botName: string; defaultModel: string; models?: string[]; engine?: Engine; balance?: BalanceReader; fetchUsers: FetchUsers; onBotSaved?: (definitionId: string) => void; mail?: MailDeps; fetchFn?: typeof fetch; ssh?: SshRunner; sql?: SqlRunner } & TryDeps;
 
 export function adminRouter(deps: AdminDeps): Router {
   const { db } = deps;
@@ -103,6 +105,9 @@ export function adminRouter(deps: AdminDeps): Router {
     );
   });
   router.use(express.urlencoded({ extended: false }));
+  // the workflow canvas posts JSON; its csrf rides in the body like a form's
+  // note: the app-level express.json() in agents-hosting-express's startServer parses first (100kb default), so this parser rarely runs
+  router.use(express.json({ limit: "1mb" }));
   router.use(withShell);
   // before the admin guard: any signed-in person of the tenant may open their own secret link
   router.use(secretRoutes(db, deps.config.secretsKey));
@@ -156,6 +161,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(runbookRoutes({ db, key: deps.config.secretsKey, defaultModel: deps.defaultModel, models: deps.models, engine: deps.engine }));
   router.use(routineRoutes(db));
+  router.use(workflowRoutes(db, deps.notify));
   router.use(settingsRoutes(db, deps.models, deps.balance, deps.mail?.admin));
 
   router.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
@@ -170,6 +176,10 @@ export function adminRouter(deps: AdminDeps): Router {
     if (!(err instanceof DirectoryError || err instanceof KnowledgeError || err instanceof ConnectionError) && !(typeof status === "number" && status < 500)) {
       console.error("admin request failed", err);
     }
+    const domain = err instanceof DirectoryError || err instanceof KnowledgeError || err instanceof ConnectionError;
+    const code = typeof status === "number" && status < 500 ? 400 : domain ? 400 : 500;
+    // the canvas posts JSON and reads JSON back; a redirect would look like success to fetch
+    if (req.is("json")) return res.status(code).json({ error: message });
     // a failed POST goes back to the page it came from with the reason as a toast
     const back = req.get("referer");
     if (req.method === "POST" && back) {
@@ -184,8 +194,6 @@ export function adminRouter(deps: AdminDeps): Router {
         // a malformed referer falls through to the page below
       }
     }
-    const domain = err instanceof DirectoryError || err instanceof KnowledgeError || err instanceof ConnectionError;
-    const code = typeof status === "number" && status < 500 ? 400 : domain ? 400 : 500;
     page(res, code, message);
   });
 

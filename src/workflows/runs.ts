@@ -266,3 +266,33 @@ export async function moveRun(db: Db, tenantId: string, runId: string, nodeId: s
     await enter(tx, run, nodeId, notify, undefined, after);
   });
 }
+
+/** Runs `fn` on a run a person may stop: not running a step, not ended. */
+async function stoppable(db: Db, tenantId: string, runId: string, fn: (tx: Tx, run: WorkflowRun) => Promise<void>): Promise<void> {
+  const [found] = await db.select({ id: workflowRuns.id }).from(workflowRuns).where(and(eq(workflowRuns.id, runId), eq(workflowRuns.tenantId, tenantId)));
+  if (!found) throw new DirectoryError("No such run");
+  await atomically(db, runId, async (tx, run) => {
+    if (run.status === "running") throw new DirectoryError("Wait for the step to finish");
+    if (run.status === "done" || run.status === "failed") throw new DirectoryError("This run has ended");
+    await fn(tx, run);
+  });
+}
+
+/** Parks a ready or waiting run as needs_person; a person then moves it on with moveRun. */
+export const pauseRun = (db: Db, tenantId: string, runId: string, personId: string) =>
+  stoppable(db, tenantId, runId, async (tx, run) => {
+    if (run.status === "needs_person") return;
+    await tx.update(workflowRuns).set({ status: "needs_person", dueAt: null, updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));
+    await revokeApprovals(tx, run.id); // a held write must not be replayed when the run comes back to this step
+    await addEvent(tx, run.id, run.nodeId, "move", { reason: "paused", data: { from: run.nodeId, to: NEEDS_PERSON, personId } });
+  });
+
+/** Ends an open run by hand, closing its cards and revoking its held approvals. */
+export const endRun = (db: Db, tenantId: string, runId: string, personId: string) =>
+  stoppable(db, tenantId, runId, async (tx, run) => {
+    const now = new Date();
+    await tx.update(workflowRuns).set({ status: "done", dueAt: null, outcome: "ended by a person", endedAt: now, updatedAt: now }).where(eq(workflowRuns.id, run.id));
+    await tx.update(workflowPending).set({ status: "cancelled" }).where(and(eq(workflowPending.runId, run.id), eq(workflowPending.kind, "ask"), eq(workflowPending.status, "pending")));
+    await revokeApprovals(tx, run.id);
+    await addEvent(tx, run.id, run.nodeId, "move", { reason: "ended", data: { from: run.nodeId, to: "end", personId } });
+  });
