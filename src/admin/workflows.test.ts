@@ -10,7 +10,9 @@ import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "../workflows/graph.js";
 import { createWorkflow, draftHash, publish, saveDraft } from "../workflows/store.js";
+import { html } from "./html.js";
 import { adminRouter } from "./router.js";
+import { workflowsSection } from "./workflows.js";
 import { serve, sessionCookie } from "./test-server.js";
 
 const secretsKey = Buffer.alloc(32, 7);
@@ -95,6 +97,17 @@ describe("workflows screens", () => {
     expect(after).toContain("Follow up");
     expect(after).toContain("draft only");
     expect(after).toContain(`href="/admin/bots/${bot}/workflows/${w.id}"`);
+  });
+
+  it("a bot in no chats gets a notice instead of a form that can only fail", async () => {
+    const [def] = await db.select().from(botDefinitions).where(eq(botDefinitions.id, bot));
+    const none = (await workflowsSection(db, def, [], html``)).toString();
+    expect(none).toContain("Add this bot to a chat first");
+    expect(none).not.toContain("<form");
+    const some = (await workflowsSection(db, def, [{ id: "chat-1", label: "Sales", lastSeenAt: new Date("2026-11-03T05:00:00Z") }], html``)).toString();
+    expect(some).toContain("Sales · last active 3 Nov");
+    expect(some).toMatch(/<select[^>]*name="chatId" required/);
+    expect(some).toContain('autocomplete="off"');
   });
 
   it("person bots have no workflows", async () => {

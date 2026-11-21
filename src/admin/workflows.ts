@@ -19,7 +19,7 @@ import { page } from "./oidc.js";
 import { whenFor } from "./words.js";
 
 /** The bot's Workflows tab: its workflows with their runs, and the form that starts a new one. */
-export async function workflowsSection(db: Db, def: BotDefinition, chats: { id: string; label: string }[], csrf: SafeHtml): Promise<SafeHtml> {
+export async function workflowsSection(db: Db, def: BotDefinition, chats: { id: string; label: string; lastSeenAt?: Date | null }[], csrf: SafeHtml): Promise<SafeHtml> {
   const rows = await db.select().from(workflows).where(and(eq(workflows.definitionId, def.id), eq(workflows.tenantId, def.tenantId))).orderBy(asc(workflows.createdAt));
   const counts = rows.length
     ? await db.select({ wid: workflowRuns.workflowId, status: workflowRuns.status, n: count() }).from(workflowRuns).where(inArray(workflowRuns.workflowId, rows.map((w) => w.id))).groupBy(workflowRuns.workflowId, workflowRuns.status)
@@ -30,7 +30,9 @@ export async function workflowsSection(db: Db, def: BotDefinition, chats: { id: 
   return html`<h2>Workflows</h2>
 ${rows.length ? scroll(html`<table class="be-table"><thead><tr><th>Workflow</th><th>Version</th><th>Open runs</th><th>Needs a person</th></tr></thead><tbody>${rows.map(row)}</tbody></table>`) : html`<div class="be-empty">No workflows yet.</div>`}
 <h3>New workflow</h3>
-<form class="be-form" method="post" action="${base}">${csrf}<div class="fields"><label>name<input name="name" required maxlength="120"></label><label>chat<span class="hint">where it works and asks</span><select class="be-select" name="chatId">${chats.map((c) => html`<option value="${c.id}">${c.label}</option>`)}</select></label></div><button class="be-btn primary">new workflow</button></form>`;
+${chats.length
+    ? html`<form class="be-form" method="post" action="${base}">${csrf}<div class="fields"><label>name<input name="name" required maxlength="120" pattern=".*\\S.*" autocomplete="off" title="Name the workflow"></label><label>chat<span class="hint">where it works and asks. A chat named after people? Name it on <a href="/admin/assignments">assignments</a>.</span><select class="be-select" name="chatId" required>${chats.map((c) => html`<option value="${c.id}">${c.label}${c.lastSeenAt ? ` · last active ${c.lastSeenAt.toLocaleDateString("en-AU", { day: "numeric", month: "short" })}` : ""}</option>`)}</select></label></div><button class="be-btn primary">new workflow</button></form>`
+    : html`<p class="muted">Add this bot to a chat first: a workflow works and asks in one. <a href="/admin/bots/${def.id}?tab=chats">chats</a></p>`}`;
 }
 
 const PAGE = 50;

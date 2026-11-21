@@ -775,7 +775,7 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
 <p><label class="be-toggle"><input type="checkbox" name="quiet"> quiet: post only when it changed something</label> <label class="be-toggle"><input type="checkbox" name="grant"> grant my access: changes run without a card</label></p>
 <p><label class="be-label">prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn primary">add routine</button></form>`;
         } else if (tab === "workflows") {
-          section = await workflowsSection(db, def, assigned.map((c) => ({ id: c.id, label: chatLabel.get(c.id) ?? c.label ?? c.id.slice(-12) })), csrf);
+          section = await workflowsSection(db, def, assigned.map((c) => ({ id: c.id, label: chatLabel.get(c.id) ?? c.label ?? c.id.slice(-12), lastSeenAt: c.lastSeenAt })), csrf);
         } else if (tab === "learnings") {
           const rows = await listLearnings(db, actor.tenantId, def.id);
           const proposals = await listProposals(db, actor.tenantId, def.id, "pending");
