@@ -41,6 +41,7 @@ import { armedPage, isArmed } from "./arm.js";
 import { visibleBots } from "./overview.js";
 import { chatNames } from "./chat-names.js";
 import { workflowsSection } from "./workflows.js";
+import { emailWorkflowFor } from "../workflows/store.js";
 import { capabilityWords, chatTypeWords, cronWords, whenFor, whenIn } from "./words.js";
 import { toolWords } from "../teams/cards.js";
 
@@ -667,7 +668,9 @@ ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` 
           section = settings("persona");
         } else if (tab === "email") {
           // only a live mailbox can receive, so the choice of what an email starts shows only then
-          const incoming = mb?.status !== "active" ? "" : html`<h2>Incoming email</h2>
+          const wf = mb?.status === "active" ? await emailWorkflowFor(db, def.id) : undefined;
+          const incoming = mb?.status !== "active" ? "" : wf ? html`<h2>Incoming email</h2>
+<p>emails go to the workflow <a href="/admin/bots/${def.id}/workflows/${wf.id}">${wf.name}</a></p>` : html`<h2>Incoming email</h2>
 <p class="hint">Notify: the bot says an email arrived in each of its chats. Act: it also reads the email and follows the instruction below in one chat. Anything that changes something, a reply to the sender included, still asks with a card there. Anyone who knows the address can start this, so keep the instruction narrow.</p>
 <form class="be-form" method="post" action="/admin/bots/${def.id}/mail-mode">${csrf}
 <div class="fields">
@@ -1256,6 +1259,7 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       if (!isAdmin(actor)) return deny(res);
       const mode = field(req, "mailMode") || "notify";
       if (!(mailModes as readonly string[]).includes(mode)) throw new DirectoryError("Unknown email mode");
+      if (mode === "act" && (await emailWorkflowFor(db, req.params.id))) throw new DirectoryError("This bot's emails go to a workflow");
       const chatId = field(req, "mailChatId") || null;
       const instruction = field(req, "mailInstruction").trim().slice(0, 2000);
       if (chatId) {
