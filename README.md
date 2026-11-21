@@ -1,6 +1,6 @@
 # BE Teammate
 
-A Microsoft Teams bot service on an OpenAI-compatible engine (DeepSeek, Qwen, and others): bot definitions per tenant, assigned to chats, with a confirmation card before any write. Where it runs, how it is set up and what is open: [docs/handover.md](docs/handover.md).
+A Microsoft Teams bot service on an OpenAI-compatible engine (DeepSeek, Qwen, and others): bot definitions per tenant, assigned to chats, with a confirmation card before any write. Where it runs, how it is set up and what is open: [docs/handover.md](docs/handover.md). Installing it for another Microsoft 365 tenant: [docs/new-tenant.md](docs/new-tenant.md).
 
 1. `cp .env.example .env` and fill it in.
 2. `docker build -f computer.Dockerfile -t bebotter2-computer .` (the sandbox image for bots with `computer: true`).
