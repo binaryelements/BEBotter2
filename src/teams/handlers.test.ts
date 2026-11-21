@@ -8,6 +8,7 @@ vi.mock("../audit/audit.js", async (orig) => {
   return { ...actual, recordSent: vi.fn(actual.recordSent) };
 });
 import { testDb } from "../db/test-db.js";
+import type { Db } from "../db/client.js";
 import { Confirmations } from "../engine/confirm.js";
 import type { RunTurnInput } from "../engine/runner.js";
 import { setAllowedDepartments } from "../bots/definitions.js";
@@ -593,17 +594,20 @@ describe("handleMessage ordering", () => {
 });
 
 describe("handleConfirmClick", () => {
+  let db: Db;
   const click = (answer: "yes" | "no", id: string | undefined, c: Confirmations, actionId: string) =>
-    handleConfirmClick(c, { actionId, answer }, id, "Bo");
+    handleConfirmClick(c, { actionId, answer }, id, "Bo", db);
 
   it("maps the four outcomes", async () => {
+    db = await testDb();
     const c = new Confirmations();
     const mayConfirm = async (p: string) => p === "p1";
     const a = c.create({ auditId: "x", mayConfirm });
     await expect(click("yes", "p2", c, a.actionId)).resolves.toBe("You can't confirm this.");
     await expect(click("yes", undefined, c, a.actionId)).resolves.toBe("You can't confirm this.");
     await expect(click("yes", "p1", c, a.actionId)).resolves.toBe("Confirmed by Bo");
-    await expect(click("yes", "p1", c, a.actionId)).resolves.toBe("This request has expired.");
+    await expect(click("yes", "p1", c, a.actionId)).resolves.toBe("Confirmed by Bo"); // Teams sometimes delivers a click twice
+    await expect(click("yes", "p1", c, "gone")).resolves.toBe("This request has expired."); // neither a live wait nor a stored approval
     const b = c.create({ auditId: "y", mayConfirm });
     await expect(click("no", "p1", c, b.actionId)).resolves.toBe("Declined by Bo");
   });
@@ -1067,11 +1071,11 @@ describe("choosing the bot in a one-to-one chat", () => {
       const c = new Confirmations();
       for (const kind of ["write", "approve"] as const) {
         const a = c.create({ auditId: "x", mayConfirm: confirmerPolicy(s.db, "t1", s.personal.id, s.ann.id, kind, "c1") });
-        await expect(handleConfirmClick(c, { actionId: a.actionId, answer: "yes" }, s.bob.id, "Bob")).resolves.toBe("You can't confirm this.");
-        await expect(handleConfirmClick(c, { actionId: a.actionId, answer: "yes" }, s.ann.id, "Ann")).resolves.toBe("Confirmed by Ann");
+        await expect(handleConfirmClick(c, { actionId: a.actionId, answer: "yes" }, s.bob.id, "Bob", s.db)).resolves.toBe("You can't confirm this.");
+        await expect(handleConfirmClick(c, { actionId: a.actionId, answer: "yes" }, s.ann.id, "Ann", s.db)).resolves.toBe("Confirmed by Ann");
       }
       const elsewhere = c.create({ auditId: "y", mayConfirm: confirmerPolicy(s.db, "t1", s.personal.id, s.ann.id, "write") });
-      await expect(handleConfirmClick(c, { actionId: elsewhere.actionId, answer: "yes" }, s.ann.id, "Ann")).resolves.toBe("You can't confirm this.");
+      await expect(handleConfirmClick(c, { actionId: elsewhere.actionId, answer: "yes" }, s.ann.id, "Ann", s.db)).resolves.toBe("You can't confirm this.");
     });
   });
 

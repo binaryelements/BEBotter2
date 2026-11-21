@@ -2,13 +2,19 @@ import type { ConfirmationRequest } from "../engine/runner.js";
 
 export type AdaptiveCard = Record<string, unknown>;
 
-const card = (body: unknown[], actions?: unknown[]): AdaptiveCard => ({
+export const card = (body: unknown[], actions?: unknown[]): AdaptiveCard => ({
   type: "AdaptiveCard",
   $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
   version: "1.5",
   body,
   ...(actions ? { actions } : {}),
 });
+
+/** Untrusted text for a Teams text message: markdown, links and mentions are escaped. */
+export const plain = (s: string) => s.replace(/[\\`*_~[\]()<>#|@&]/g, "\\$&");
+
+/** Untrusted text for a card: a TextRun never renders markdown, so it shows exactly as written. */
+export const literal = (text: string, bold = false) => ({ type: "RichTextBlock", inlines: [{ type: "TextRun", text, ...(bold ? { weight: "Bolder" } : {}) }] });
 
 /** A tool's name as words: an MCP tool loses its mcp__<server>__ prefix and underscores; other tools stay as named. */
 export const toolWords = (toolName: string): string => {
@@ -86,7 +92,7 @@ const exact = (text: string, bold = false) =>
     inlines: [{ type: "TextRun", text: line || "\u00a0", ...(bold ? { weight: "Bolder" } : {}) }],
   }));
 
-export function confirmationCard({ actionId, label, name, toolName, input }: ConfirmationRequest): AdaptiveCard {
+export function confirmationCard({ actionId, label, name, toolName, input, buttonsOnly }: ConfirmationRequest): AdaptiveCard {
   const why = approval(toolName, input);
   return card(
     [
@@ -97,7 +103,7 @@ export function confirmationCard({ actionId, label, name, toolName, input }: Con
         { ...exact(keyWords(key), true)[0], spacing: "Medium" },
         ...exact(typeof value === "string" ? value : JSON.stringify(value) ?? "null"),
       ]),
-      { type: "TextBlock", text: "Or reply yes or no in the chat.", isSubtle: true, spacing: "Medium", wrap: true },
+      ...(buttonsOnly ? [] : [{ type: "TextBlock", text: "Or reply yes or no in the chat.", isSubtle: true, spacing: "Medium", wrap: true }]),
     ],
     [
       { type: "Action.Execute", title: "Yes, do it", verb: "confirm", data: { actionId, answer: "yes" } },

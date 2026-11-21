@@ -13,6 +13,7 @@ import { recordOverheard, takeOverheard, withOverheard } from "./overheard.js";
 import { recentAttachments, storeAttachments, withAttachments } from "./attachments.js";
 import type { IncomingAttachment } from "./attachments.js";
 import type { AdaptiveCard } from "./cards.js";
+import { clickApproval } from "../workflows/approvals.js";
 
 export type IncomingMessage = {
   tenantId: string;
@@ -335,6 +336,7 @@ export async function handleMessage(
     }
   }
   // A confirmation is a question: a typed yes/no answers it, and other messages do not queue behind the waiting turn.
+  // shortcut: typed answers don't resolve workflow approval cards (they are stored, not in `confirmations`, and their cards say nothing about typing); only the buttons do. Add a lookup here if people type answers to them.
   const pending = deps.confirmations?.pendingFor(msg.chatId, person.id, definition?.id);
   if (pending) {
     const answer = confirmationWord(msg.text);
@@ -620,8 +622,11 @@ export async function handleConfirmClick(
   data: { actionId: string; answer: "yes" | "no" },
   clickerPersonId: string | undefined,
   clickerName: string,
+  db: Db,
 ): Promise<string> {
-  const outcome = clickerPersonId ? await confirmations.resolve(data.actionId, clickerPersonId, data.answer) : "not_allowed";
+  let outcome = clickerPersonId ? await confirmations.resolve(data.actionId, clickerPersonId, data.answer) : "not_allowed";
+  // not a live wait: maybe a workflow step's stored approval
+  if (outcome === "unknown" && clickerPersonId) outcome = await clickApproval(db, data.actionId, clickerPersonId, data.answer);
   switch (outcome) {
     case "confirmed":
       return `Confirmed by ${clickerName}`;

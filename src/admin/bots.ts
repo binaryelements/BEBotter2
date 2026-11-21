@@ -40,6 +40,8 @@ import { page } from "./oidc.js";
 import { armedPage, isArmed } from "./arm.js";
 import { visibleBots } from "./overview.js";
 import { chatNames } from "./chat-names.js";
+import { workflowsSection } from "./workflows.js";
+import { emailWorkflowFor } from "../workflows/store.js";
 import { capabilityWords, chatTypeWords, cronWords, whenFor, whenIn } from "./words.js";
 import { toolWords } from "../teams/cards.js";
 
@@ -100,10 +102,10 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
     const { actor, csrf } = adminOf(res);
     res.type("html").send(layout({ title, body, actor, csrf }));
   };
-  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "learnings", "memory", "reflections", "chats", "m365"] as const;
+  const TABS = ["overview", "persona", "email", "actions", "connections", "routines", "workflows", "learnings", "memory", "reflections", "chats", "m365"] as const;
   type Tab = (typeof TABS)[number];
-  // Personal acts as the person: it has no mailbox or connections, and only it has Microsoft 365 capabilities
-  const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" : t !== "m365"));
+  // Personal acts as the person: it has no mailbox, connections or workflows, and only it has Microsoft 365 capabilities
+  const tabsOf = (d: BotDefinition) => TABS.filter((t) => (d.identity === "person" ? t !== "email" && t !== "workflows" : t !== "m365"));
   const csrfField = (res: Response, tab?: Tab) => html`<input type="hidden" name="csrf" value="${adminOf(res).csrf}">${tab ? html`<input type="hidden" name="tab" value="${tab}">` : ""}`;
   // the configured models, plus the current one if it is no longer offered, so a save never silently changes it
   const modelOptions = (current: string) => {
@@ -666,7 +668,9 @@ ${hookSecret ? html`<pre>${deps.publicUrl}/hooks/${def.id}/${hookSecret}</pre>` 
           section = settings("persona");
         } else if (tab === "email") {
           // only a live mailbox can receive, so the choice of what an email starts shows only then
-          const incoming = mb?.status !== "active" ? "" : html`<h2>Incoming email</h2>
+          const wf = mb?.status === "active" ? await emailWorkflowFor(db, def.id) : undefined;
+          const incoming = mb?.status !== "active" ? "" : wf ? html`<h2>Incoming email</h2>
+<p>emails go to the workflow <a href="/admin/bots/${def.id}/workflows/${wf.id}">${wf.name}</a></p>` : html`<h2>Incoming email</h2>
 <p class="hint">Notify: the bot says an email arrived in each of its chats. Act: it also reads the email and follows the instruction below in one chat. Anything that changes something, a reply to the sender included, still asks with a card there. Anyone who knows the address can start this, so keep the instruction narrow.</p>
 <form class="be-form" method="post" action="/admin/bots/${def.id}/mail-mode">${csrf}
 <div class="fields">
@@ -770,6 +774,8 @@ ${ran.length ? html`<details><summary>already ran (${ran.length})</summary>${tab
 <div class="fields"><label>chat<span class="hint">where it runs and posts</span><select name="chatId">${assigned.map((c) => html`<option value="${c.id}">${chatLabel.get(c.id)}</option>`)}</select></label> <label>schedule<span class="hint">cron: minute hour day month weekday, e.g. 0 9 * * 1-5 is weekdays 9:00 am</span><input name="schedule" placeholder="0 9 * * 1-5" required></label></div>
 <p><label class="be-toggle"><input type="checkbox" name="quiet"> quiet: post only when it changed something</label> <label class="be-toggle"><input type="checkbox" name="grant"> grant my access: changes run without a card</label></p>
 <p><label class="be-label">prompt<textarea name="prompt" required></textarea></label></p><button class="be-btn primary">add routine</button></form>`;
+        } else if (tab === "workflows") {
+          section = await workflowsSection(db, def, assigned.map((c) => ({ id: c.id, label: chatLabel.get(c.id) ?? c.label ?? c.id.slice(-12), lastSeenAt: c.lastSeenAt })), csrf);
         } else if (tab === "learnings") {
           const rows = await listLearnings(db, actor.tenantId, def.id);
           const proposals = await listProposals(db, actor.tenantId, def.id, "pending");
@@ -1253,6 +1259,7 @@ ${rows.length ? rows.map(block) : html`<div class="be-empty">No reflections yet.
       if (!isAdmin(actor)) return deny(res);
       const mode = field(req, "mailMode") || "notify";
       if (!(mailModes as readonly string[]).includes(mode)) throw new DirectoryError("Unknown email mode");
+      if (mode === "act" && (await emailWorkflowFor(db, req.params.id))) throw new DirectoryError("This bot's emails go to a workflow");
       const chatId = field(req, "mailChatId") || null;
       const instruction = field(req, "mailInstruction").trim().slice(0, 2000);
       if (chatId) {

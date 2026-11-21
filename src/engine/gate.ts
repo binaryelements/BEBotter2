@@ -25,6 +25,7 @@ const BUILT_IN: Record<string, ToolClass> = {
   ...Object.fromEntries(["remember", "recall"].map((t) => [`mcp__learnings__${t}`, "read" as const])),
   ...Object.fromEntries(["activity", "conversation", "learnings", "memory", "remember", "update_memory", "forget_memory", "learn", "update_learning", "forget"].map((t) => [`mcp__reflection__${t}`, "read" as const])),
   mcp__routine__post: "read",
+  mcp__workflow__report_result: "read", // only records the step's result on its own run
   mcp__bots__tell_bot: "read", // the told bot's own tools ask their own confirmations
   mcp__attachments__read_attachment: "read",
   ...Object.fromEntries(BROWSER_READS.map((t) => [t, "read"])),
@@ -57,4 +58,11 @@ export function classify(toolName: string, def: BotDefinition, connectionServers
   const base = defaultClass(toolName, def, connectionServers);
   if (base === "approve" || !rule) return base;
   return rule === "free" ? "read" : "write";
+}
+
+/** A call's class as the runner decides it: classify, then a per-connection grant on a change (deny and read-only grants refuse the call first). */
+export function callClass(toolName: string, def: BotDefinition, connectionServers: ConnectionServers, rule: ToolRule | undefined, grant?: { mode: string; change: boolean }): ToolClass {
+  if (grant?.change && grant.mode === "confirm") return "write";
+  if (grant?.change && grant.mode === "free") return "read";
+  return classify(toolName, def, connectionServers, rule);
 }

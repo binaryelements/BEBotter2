@@ -32,6 +32,9 @@ import { runTurn } from "./engine/runner.js";
 import type { RunnerDeps } from "./engine/runner.js";
 import { startReflectionScheduler } from "./reflections/scheduler.js";
 import { runRoutine, startScheduler } from "./routines/scheduler.js";
+import { postAsk } from "./workflows/ask.js";
+import { recoverStale, startWorkflows } from "./workflows/engine.js";
+import { setPostAsk } from "./workflows/runs.js";
 import { startMetrics } from "./system/metrics.js";
 import { createTeamsApp, graphToken } from "./teams/app.js";
 import { personToken, sendToChat } from "./teams/proactive.js";
@@ -112,7 +115,7 @@ startServer(app, {
       });
       next();
     });
-    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations, ...(balance ? { balance } : {}),
+    express.use("/admin", adminRouter({ ...realOidcDeps(config, db), botName: config.botName, defaultModel: config.defaultModel, models, engine, fetchUsers, mail, runTurn: turn, confirmations, notify: (chatId, text) => schedulerDeps.send(chatId, text).catch((e) => console.error("workflow notice failed", e)), ...(balance ? { balance } : {}),
       // never fails or delays the save; a missed attempt is retried on the next save or start
       onBotSaved: mail && ((id) => void ensureMailbox(mail, id).catch((e) => console.error("mailbox:", e instanceof Error ? e.name : "error"))),
     }));
@@ -127,6 +130,10 @@ startMetrics(db);
 startMetrics(db);
 startPeopleSync(db, config.teams.tenantId, fetchUsers, 24 * 60 * 60 * 1000);
 startScheduler(schedulerDeps);
+// a step cut off by the restart is settled before the ticker can claim anything
+await recoverStale(db, (chatId, text) => schedulerDeps.send(chatId, text)).catch((e) => console.error("workflow recovery failed", e));
+setPostAsk((run, node) => postAsk(db, schedulerDeps.send, run, node));
+startWorkflows(schedulerDeps);
 startReflectionScheduler({ db, engine, send: (chatId, text) => sendToChat(proactive, chatId, text) });
 if (mail) startAlertScheduler({ db, admin: mail.admin, publicUrl: config.publicUrl, ...(balance ? { balance } : {}) });
 

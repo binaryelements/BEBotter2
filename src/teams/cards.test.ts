@@ -46,6 +46,12 @@ describe("cards", () => {
     ]);
   });
 
+  it("confirmationCard leaves out the typed-answer line for a buttons-only card", () => {
+    const card = confirmationCard({ actionId: "a1", label: "Helper", toolName: "WebFetch", input: {}, buttonsOnly: true }) as any;
+    expect(JSON.stringify(card.body)).not.toContain("Or reply yes or no");
+    expect(card.actions).toHaveLength(2);
+  });
+
   it("explains an SSH read in plain words before the command", () => {
     const card = confirmationCard({
       actionId: "a1",

@@ -1,6 +1,7 @@
 import { boolean, customType, doublePrecision, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { EngineMessage } from "../engine/engine.js";
+import type { QueuedEvent, ReportedResult, RunKeys, WorkflowGraph } from "../workflows/types.js";
 
 export type McpServerRecord = {
   name: string;
@@ -341,9 +342,10 @@ export const auditEvents = pgTable("audit_events", {
   costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
   timings: jsonb("timings").$type<TurnTimings>(), // message rows only
   error: text("error"), // why a failed action failed, first 500 characters
+  workflowRunId: text("workflow_run_id"), // set when a workflow run caused the action
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
-});
+}, (t) => [index("audit_events_workflow_run_idx").on(t.workflowRunId)]);
 
 export const connections = pgTable(
   "connections",
@@ -575,3 +577,99 @@ export type Computer = typeof computers.$inferSelect;
 export type Connection = typeof connections.$inferSelect;
 export type KnowledgeVersion = typeof knowledgeVersions.$inferSelect;
 export type Routine = typeof routines.$inferSelect;
+
+const ts = (name: string) => timestamp(name, { withTimezone: true });
+
+/** A graphical workflow: the draft is edited freely, publishing copies it into `workflowVersions`. */
+export const workflows = pgTable("workflows", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+  name: text("name").notNull(),
+  chatId: text("chat_id").notNull().references(() => chats.id),
+  runAsPersonId: text("run_as_person_id").notNull().references(() => people.id),
+  draft: jsonb("draft").$type<WorkflowGraph>().notNull(),
+  publishedVersion: integer("published_version"),
+  createdAt: createdAt(),
+});
+
+export const workflowVersions = pgTable(
+  "workflow_versions",
+  {
+    workflowId: text("workflow_id").notNull().references(() => workflows.id),
+    version: integer("version").notNull(),
+    graph: jsonb("graph").$type<WorkflowGraph>().notNull(),
+    publishedByPersonId: text("published_by_person_id").notNull().references(() => people.id),
+    publishedAt: ts("published_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.workflowId, t.version] })],
+);
+
+export const workflowRuns = pgTable(
+  "workflow_runs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    workflowId: text("workflow_id").notNull().references(() => workflows.id),
+    nodeId: text("node_id").notNull(),
+    status: text("status").notNull().default("ready"), // ready | running | waiting | needs_person | done | failed
+    dueAt: ts("due_at"),
+    waitStartedAt: ts("wait_started_at"),
+    stepStartedAt: ts("step_started_at"),
+    heartbeatAt: ts("heartbeat_at"), // refreshed while a step's turn runs; a stale one means its server is gone
+    attempts: integer("attempts").notNull().default(0),
+    keys: jsonb("keys").$type<RunKeys>().notNull(),
+    fields: jsonb("fields").$type<Record<string, string>>().notNull(),
+    pendingEvents: jsonb("pending_events").$type<QueuedEvent[]>().notNull().default([]),
+    reportedResult: jsonb("reported_result").$type<ReportedResult>(),
+    outcome: text("outcome"),
+    title: text("title").notNull(),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+    endedAt: ts("ended_at"),
+  },
+  (t) => [index("workflow_runs_workflow_status_idx").on(t.workflowId, t.status), index("workflow_runs_status_due_idx").on(t.status, t.dueAt)],
+);
+
+export const workflowRunEvents = pgTable(
+  "workflow_run_events",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull().references(() => workflowRuns.id),
+    nodeId: text("node_id").notNull(),
+    kind: text("kind").notNull(), // step | result | wait | event | move | approval | ask | needs_person
+    result: text("result"),
+    reason: text("reason"),
+    data: jsonb("data"),
+    at: ts("at").notNull().defaultNow(),
+  },
+  (t) => [index("workflow_run_events_run_idx").on(t.runId)],
+);
+
+/** An approval or ask card waiting for a person; the id doubles as the card action id. */
+export const workflowPending = pgTable(
+  "workflow_pending",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull().references(() => workflowRuns.id),
+    nodeId: text("node_id").notNull(),
+    kind: text("kind").notNull(), // approval | ask | match (which run a new email belongs to)
+    toolName: text("tool_name"),
+    input: jsonb("input"),
+    inputHash: text("input_hash"),
+    auditId: text("audit_id"), // the held call's audit row, denied if a reply cancels the hold
+    choices: jsonb("choices").$type<string[]>(),
+    askPersonId: text("ask_person_id").references(() => people.id),
+    status: text("status").notNull().default("pending"), // pending | approved | declined | answered | cancelled
+    answeredByPersonId: text("answered_by_person_id").references(() => people.id),
+    answer: text("answer"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("workflow_pending_run_idx").on(t.runId)],
+);
+
+export type Workflow = typeof workflows.$inferSelect;
+export type WorkflowVersion = typeof workflowVersions.$inferSelect;
+export type WorkflowRun = typeof workflowRuns.$inferSelect;
+export type WorkflowRunEvent = typeof workflowRunEvents.$inferSelect;
+export type WorkflowPending = typeof workflowPending.$inferSelect;

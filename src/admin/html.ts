@@ -92,9 +92,10 @@ const navIcons: Record<string, string> = {
 const navIcon = (name: string) =>
   `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${navIcons[name] ?? ""}</svg>`;
 
-// The design system files change only on a re-sync (VERSION); the app's own stylesheet is versioned by its content.
-const appCss = createHash("sha1").update(readFileSync(`${assetsDir}admin.css`)).digest("hex").slice(0, 8);
-const href = (file: string) => `/admin/assets/${file}?v=${file === "admin.css" ? appCss : version}`;
+// The design system files change only on a re-sync (VERSION); the app's own files are versioned by their content.
+const hashes = new Map<string, string>();
+const hashOf = (file: string) => hashes.get(file) ?? hashes.set(file, createHash("sha1").update(readFileSync(`${assetsDir}${file}`)).digest("hex").slice(0, 8)).get(file)!;
+export const href = (file: string) => `/admin/assets/${file}?v=${file.startsWith("be/") ? version : hashOf(file)}`;
 
 // 16px line icons in the text colour: a screen (follow the device), a sun, a moon
 const svg = (d: string) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
