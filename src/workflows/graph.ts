@@ -38,6 +38,7 @@ export function checkGraph(g: WorkflowGraph): string[] {
       for (const r of n.results) if (r.name === NEEDS_PERSON || r.name === NEW_MESSAGE) problems.push(`"${n.label}" has a result named "${r.name}", which is reserved`);
       dupes(n.results.map((r) => r.name)).forEach((d) => problems.push(`"${n.label}" has two results named "${d}"`));
     }
+    if (n.type !== "end" && !g.edges.some((e) => e.from === n.id)) problems.push(`"${n.label}" leads nowhere`);
     if (n.type === "wait" && n.minutes < 1) problems.push(`"${n.label}" must wait at least 1 minute`);
     if (n.type === "ask") {
       if (n.choices.length === 0) problems.push(`"${n.label}" has no choices`);

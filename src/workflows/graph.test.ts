@@ -35,6 +35,12 @@ describe("nextNode", () => {
 });
 
 describe("checkGraph", () => {
+  it("a step with no linked exit leads nowhere", () => {
+    const g = valid();
+    g.edges = g.edges.filter((e) => e.from !== "a");
+    expect(checkGraph(g)).toContain('"x" leads nowhere');
+    expect(checkGraph(valid())).toEqual([]); // the End node has no exits and is fine
+  });
   it("accepts a valid graph", () => expect(checkGraph(valid())).toEqual([]));
   it("flags two triggers", () => {
     const g = valid();

@@ -1,5 +1,6 @@
-import { and, eq, notInArray } from "drizzle-orm";
-import { botDefinitions, chatAssignments, chats as chatsT, workflowRunEvents, workflowRuns, workflows, workflowVersions } from "../db/schema.js";
+import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { botDefinitions, chatAssignments, chats as chatsT, people, workflowRunEvents, workflowRuns, workflows, workflowVersions } from "../db/schema.js";
 import type { Workflow } from "../db/schema.js";
 import type { Db } from "../db/client.js";
 import { DirectoryError } from "../org/directory.js";
@@ -32,10 +33,55 @@ export async function createWorkflow(
   return row;
 }
 
-export async function saveDraft(db: Db, tenantId: string, workflowId: string, graph: unknown): Promise<void> {
+export const draftHash = (graph: WorkflowGraph) => createHash("sha256").update(JSON.stringify(graph)).digest("hex");
+
+/** Thrown when a save was made against a draft that has since changed. */
+export class StaleDraft extends Error {
+  constructor() {
+    super("This workflow was changed somewhere else. Reload to see the latest.");
+  }
+}
+
+/** Saves the draft and returns its hash. With `base` (the hash the editor loaded) the save is refused if the draft has changed since. */
+export async function saveDraft(db: Db, tenantId: string, workflowId: string, graph: unknown, base?: string): Promise<string> {
   const draft = parseGraph(graph);
-  const rows = await db.update(workflows).set({ draft }).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId))).returning({ id: workflows.id });
-  if (rows.length === 0) throw new DirectoryError("No such workflow");
+  return db.transaction(async (tx) => {
+    const [w] = await tx.select({ draft: workflows.draft }).from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId))).for("update");
+    if (!w) throw new DirectoryError("No such workflow");
+    if (base !== undefined && base !== draftHash(w.draft)) throw new StaleDraft();
+    // hash what the database stores: jsonb reorders keys, so the input's own order would never match a later load
+    const [saved] = await tx.update(workflows).set({ draft }).where(eq(workflows.id, workflowId)).returning({ draft: workflows.draft });
+    return draftHash(saved.draft);
+  });
+}
+
+const setDraft = async (db: Db, tenantId: string, workflowId: string, draft: (published: WorkflowGraph | undefined) => WorkflowGraph | undefined) => {
+  const [w] = await db.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId)));
+  if (!w) throw new DirectoryError("No such workflow");
+  const graph = draft(await graphOf(db, workflowId, w.publishedVersion));
+  if (!graph) throw new DirectoryError("No such version");
+  await db.update(workflows).set({ draft: graph }).where(eq(workflows.id, workflowId));
+};
+
+/** Throws away the draft's changes: it becomes the published graph, or empty if never published. */
+export const discardDraft = (db: Db, tenantId: string, workflowId: string) => setDraft(db, tenantId, workflowId, (published) => published ?? emptyGraph());
+
+export async function listVersions(db: Db, tenantId: string, workflowId: string): Promise<{ version: number; publishedAt: Date; publishedBy: string; live: boolean }[]> {
+  const [w] = await db.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.tenantId, tenantId)));
+  if (!w) throw new DirectoryError("No such workflow");
+  const rows = await db
+    .select({ version: workflowVersions.version, publishedAt: workflowVersions.publishedAt, publishedBy: people.name })
+    .from(workflowVersions)
+    .innerJoin(people, eq(people.id, workflowVersions.publishedByPersonId))
+    .where(eq(workflowVersions.workflowId, workflowId))
+    .orderBy(desc(workflowVersions.version));
+  return rows.map((r) => ({ ...r, live: r.version === w.publishedVersion }));
+}
+
+/** Copies a published version into the draft; it goes live only when published again. */
+export async function restoreVersion(db: Db, tenantId: string, workflowId: string, version: number): Promise<void> {
+  const [v] = await db.select({ graph: workflowVersions.graph }).from(workflowVersions).where(and(eq(workflowVersions.workflowId, workflowId), eq(workflowVersions.version, version)));
+  await setDraft(db, tenantId, workflowId, () => v?.graph);
 }
 
 async function graphOf(db: Pick<Db, "select">, workflowId: string, version: number | null): Promise<WorkflowGraph | undefined> {
@@ -76,6 +122,12 @@ export async function publish(db: Db, tenantId: string, workflowId: string, pers
     const draft = w.draft;
     const problems = checkGraph(draft);
     if (problems.length > 0) throw new DirectoryError(problems.join("; "));
+    const askPeople = draft.nodes.flatMap((n) => (n.type === "ask" && n.personId ? [n] : []));
+    if (askPeople.length) {
+      const known = await tx.select({ id: people.id }).from(people).where(and(eq(people.tenantId, tenantId), inArray(people.id, askPeople.map((n) => n.personId!))));
+      const ids = new Set(known.map((p) => p.id));
+      for (const n of askPeople) if (!ids.has(n.personId!)) throw new DirectoryError(`"${n.label}" asks someone who isn't in this company`);
+    }
     if (hasEmailTrigger(draft)) {
       const others = await tx.select().from(workflows).where(and(eq(workflows.definitionId, w.definitionId), eq(workflows.tenantId, tenantId)));
       for (const o of others) {
@@ -122,6 +174,8 @@ export async function publish(db: Db, tenantId: string, workflowId: string, pers
     const version = (w.publishedVersion ?? 0) + 1;
     await tx.insert(workflowVersions).values({ workflowId, version, graph: draft, publishedByPersonId: personId });
     await tx.update(workflows).set({ publishedVersion: version }).where(eq(workflows.id, workflowId));
+    // A workflow answers the mail now, so the bot must not also act on it.
+    if (hasEmailTrigger(draft)) await tx.update(botDefinitions).set({ mailMode: "notify" }).where(eq(botDefinitions.id, w.definitionId));
     return version;
   });
 }
