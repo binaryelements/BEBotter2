@@ -1,0 +1,99 @@
+{
+  "holidays": ["2026-12-25", "2026-12-28", "2027-01-01", "2027-01-26", "2027-03-08", "2027-03-26", "2027-03-29"],
+  "nodes": [
+    { "id": "issue", "type": "trigger", "label": "issue reported", "x": 0, "y": 300, "trigger": "email" },
+    {
+      "id": "triage", "type": "ai", "label": "first five minutes", "x": 300, "y": 300,
+      "instruction": "Someone emailed about an IT problem. Read troubleshooting/mickey-playbook.md first, then the whole email thread.\nDo the first-five-minutes checks (playbook §3): who and what is affected (one user, one customer, or many), where it lives (§1), whether its host is OK, and whether something changed just before (recent cluster tasks, a deploy, the 21:00–01:00 Melbourne backup window).\nPost what you found in this chat before you change anything. Never print passwords, keys, tokens or .env files.\nReport ours if it's a system in §1. Report hand_over if it isn't in §1, or if many things are failing at once (likely a host, a router or NEXTDC). Report no_action if it's only for information, an alert that has already cleared, or spam.",
+      "success": "We know who and what is affected and whether it's ours, and the findings are in this chat.",
+      "results": [
+        { "name": "ours", "meaning": "it's a system Mickey can reach (§1)" },
+        { "name": "hand_over", "meaning": "not ours, or many things failing at once" },
+        { "name": "no_action", "meaning": "nothing to do: for information, already cleared, or spam" }
+      ],
+      "saves": ["system", "affected"]
+    },
+    {
+      "id": "diagnose", "type": "ai", "label": "find the fault", "x": 600, "y": 300,
+      "instruction": "Find the fault using the playbook section for {system} (§4 VMs, §5 Maptco SAP, §6 phones, §7 CVP2, §8 BE Hub, §9 Bepoz).\nOnly look: logs, status and config. Follow every rule in §2: never restart anything carrying live calls, never touch the routers or the never-touch list, no logins to live Bepoz SQL.\nWhen you know the fix, write it up in this chat as:\nWhat's broken: <who/what, since when>\nChecked: <commands run and what they showed>\nI think: <your best guess>\nSuggest: <the fix, and whose OK it needs (§11)>\nReport allowed only if the fix is starting a service that has already stopped (an SAP service, the Shopify sync, BE Agent, b2brestapi). Report needs_ok for any other change. Report cleared if it's working now and nothing needs changing. Report stuck if you've spent 15 minutes and don't know where the fault is, or it turns out not to be ours.",
+      "success": "The fault and the suggested fix are written up in this chat, or it's working again, or we know we're stuck.",
+      "results": [
+        { "name": "allowed", "meaning": "the fix is starting a service that has already stopped" },
+        { "name": "needs_ok", "meaning": "the fix needs Martin's or Joy's OK" },
+        { "name": "cleared", "meaning": "it's working now, nothing to change" },
+        { "name": "stuck", "meaning": "fault not found in 15 minutes, or not ours" }
+      ],
+      "saves": ["fix"]
+    },
+    {
+      "id": "ask-ok", "type": "ask", "label": "OK to fix?", "x": 900, "y": 120,
+      "question": "Martin or Joy: Mickey's findings and suggested fix are just above in this chat (What's broken / Checked / I think / Suggest). Should Mickey make the change?",
+      "choices": ["go ahead", "I'll do it", "leave it"], "timeoutMinutes": 120
+    },
+    {
+      "id": "fix", "type": "ai", "label": "make the fix", "x": 1200, "y": 300,
+      "instruction": "Make only the fix that was agreed in this chat (or, without an OK, only start the service that had stopped).\nBefore a real change to a VM, snapshot it: qm snapshot <vmid> pre-<what>-<date>. For a small in-guest config edit, back up the file instead.\nThen check it worked, the same way you found the fault.\nSay in this chat what you changed and how you checked it. If you started a stopped service without an OK, tell Martin or Joy.",
+      "success": "The change is made and checked, and this chat says what changed and how it was checked.",
+      "results": [
+        { "name": "fixed", "meaning": "the fix worked" },
+        { "name": "failed", "meaning": "the fix didn't work or couldn't be made" }
+      ]
+    },
+    {
+      "id": "reply", "type": "ai", "label": "tell the reporter", "x": 1500, "y": 300,
+      "instruction": "Email the person who reported it (for approval): what was wrong and what was done, or that it's working now and nothing needed changing. Ask them to reply if it's still not right.\nPlain words: no commands, IP addresses or secrets. Sign off as \"Mickey, BE IT support\". Never claim to be a person.",
+      "success": "The reporter has our reply.",
+      "results": [{ "name": "sent", "meaning": "the reply was sent" }]
+    },
+    { "id": "wait-confirm", "type": "wait", "label": "wait a business day", "x": 1800, "y": 300, "minutes": 480, "businessHours": true },
+    {
+      "id": "check-reply", "type": "ai", "label": "read their reply", "x": 1800, "y": 600,
+      "instruction": "They wrote back. Read the new message.\nIf it's still not working, or there's a new symptom, post it in this chat and report still_broken.\nIf they say it's working, or just thank us, report ok.",
+      "success": "We know whether it's fixed for them.",
+      "results": [
+        { "name": "ok", "meaning": "it's working for them" },
+        { "name": "still_broken", "meaning": "still not working, or a new symptom" }
+      ]
+    },
+    {
+      "id": "hand-over", "type": "ai", "label": "hand over", "x": 900, "y": 600,
+      "instruction": "Hand this to a person (playbook §10). In this chat, tag Martin or Joy with:\nWhat's broken: <who/what, since when>\nChecked: <commands run and what they showed>\nI think: <your best guess, or \"don't know\">\nSuggest: <the fix, and whose OK it needs>\nand say whether the ops session should take it.\nThen email the person who reported it (for approval) that someone at BE is taking it over. Sign off as \"Mickey, BE IT support\".",
+      "success": "Martin or Joy has the hand-over note in this chat, and the reporter knows a person is taking it.",
+      "results": [{ "name": "done", "meaning": "handed over" }]
+    },
+    { "id": "end-fixed", "type": "end", "label": "fixed", "x": 2100, "y": 300, "outcome": "fixed" },
+    { "id": "end-handed", "type": "end", "label": "handed over", "x": 1200, "y": 600, "outcome": "handed over" },
+    { "id": "end-none", "type": "end", "label": "no action", "x": 600, "y": 0, "outcome": "no action needed" },
+    { "id": "end-person", "type": "end", "label": "a person is fixing it", "x": 1200, "y": 0, "outcome": "a person is fixing it" },
+    { "id": "end-left", "type": "end", "label": "left as is", "x": 1200, "y": 120, "outcome": "left as is" }
+  ],
+  "edges": [
+    { "from": "issue", "exit": "next", "to": "triage" },
+    { "from": "triage", "exit": "ours", "to": "diagnose" },
+    { "from": "triage", "exit": "hand_over", "to": "hand-over" },
+    { "from": "triage", "exit": "no_action", "to": "end-none" },
+    { "from": "triage", "exit": "new_message", "to": "triage" },
+    { "from": "diagnose", "exit": "allowed", "to": "fix" },
+    { "from": "diagnose", "exit": "needs_ok", "to": "ask-ok" },
+    { "from": "diagnose", "exit": "cleared", "to": "reply" },
+    { "from": "diagnose", "exit": "stuck", "to": "hand-over" },
+    { "from": "diagnose", "exit": "new_message", "to": "diagnose" },
+    { "from": "ask-ok", "exit": "go ahead", "to": "fix" },
+    { "from": "ask-ok", "exit": "I'll do it", "to": "end-person" },
+    { "from": "ask-ok", "exit": "leave it", "to": "end-left" },
+    { "from": "ask-ok", "exit": "no_answer", "to": "hand-over" },
+    { "from": "ask-ok", "exit": "new_message", "to": "diagnose" },
+    { "from": "fix", "exit": "fixed", "to": "reply" },
+    { "from": "fix", "exit": "failed", "to": "hand-over" },
+    { "from": "fix", "exit": "new_message", "to": "fix" },
+    { "from": "reply", "exit": "sent", "to": "wait-confirm" },
+    { "from": "reply", "exit": "new_message", "to": "check-reply" },
+    { "from": "wait-confirm", "exit": "time_up", "to": "end-fixed" },
+    { "from": "wait-confirm", "exit": "new_message", "to": "check-reply" },
+    { "from": "check-reply", "exit": "ok", "to": "end-fixed" },
+    { "from": "check-reply", "exit": "still_broken", "to": "diagnose" },
+    { "from": "check-reply", "exit": "new_message", "to": "check-reply" },
+    { "from": "hand-over", "exit": "done", "to": "end-handed" },
+    { "from": "hand-over", "exit": "new_message", "to": "hand-over" }
+  ]
+}
