@@ -1,7 +1,7 @@
 // The workflow canvas: drop steps from the palette, link exits to steps, edit a step in the inspector,
 // save the draft, publish it. Shell copied from BE Voice's routing canvas.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, useReactFlow, useNodesInitialized } from "@xyflow/react";
+import { ReactFlow, Background, ControlButton, Controls, MiniMap, useNodesState, useEdgesState, useReactFlow, useNodesInitialized } from "@xyflow/react";
 import { EXITS, NAMES, graphProblems, newNode, openExits, relink, tidy, toFlow, toGraph, whyNot } from "./model.js";
 import { Ctx, nodeTypes } from "./nodes.jsx";
 import { Inspector } from "./Inspector.jsx";
@@ -33,6 +33,28 @@ export function Editor({ init }) {
     setFitted(true);
     flow.fitView({ padding: 0.08, maxZoom: 1 });
   }, [measured, fitted, flow]);
+
+  // fullscreen: the canvas covers the window (and the screen where the browser allows it); Esc or the button leaves
+  const box = useRef(null);
+  const [full, setFull] = useState(false);
+  const toggleFull = () => {
+    if (!full) box.current.requestFullscreen?.().catch(() => {});
+    else if (document.fullscreenElement) document.exitFullscreen();
+    setFull(!full);
+  };
+  useEffect(() => {
+    if (!full) return;
+    const left = () => { if (!document.fullscreenElement) setFull(false); };
+    const esc = (e) => { if (e.key === "Escape" && !document.querySelector("dialog[open]")) { if (document.fullscreenElement) document.exitFullscreen(); setFull(false); } };
+    document.addEventListener("fullscreenchange", left);
+    addEventListener("keydown", esc);
+    return () => { document.removeEventListener("fullscreenchange", left); removeEventListener("keydown", esc); };
+  }, [full]);
+  const sized = useRef(false);
+  useEffect(() => {
+    if (!sized.current) { sized.current = true; return; } // the first fit waits for measuring, above
+    setTimeout(() => flow.fitView({ padding: 0.08, maxZoom: 1 }), 120);
+  }, [full, flow]);
 
   const graph = useMemo(() => toGraph(nodes, edges, init.draft.holidays), [nodes, edges, init]);
   const dirty = JSON.stringify(graph) !== saved;
@@ -143,7 +165,7 @@ export function Editor({ init }) {
 
   return (
     <Ctx.Provider value={ctx}>
-      <div className={"wf" + (readOnly ? " ro" : "") + (node || versions ? " has-sel" : "")}>
+      <div ref={box} className={"wf" + (full ? " full" : "") + (readOnly ? " ro" : "") + (node || versions ? " has-sel" : "")}>
         <div className="wf-bar">
           <span className={"wf-pill" + (dirty ? " dirty" : "")}>{dirty ? "not saved" : "saved"}</span>
           {open ? <span className="hint">{open} open {open === 1 ? "exit goes" : "exits go"} to a person</span> : null}
@@ -183,9 +205,15 @@ export function Editor({ init }) {
             onConnect={onConnect} isValidConnection={valid} onConnectStart={onConnectStart} onConnectEnd={() => setWiring(null)} onSelectionChange={onSelectionChange}
             onDrop={onDrop} onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
             nodesDraggable={!readOnly} nodesConnectable={!readOnly} elementsSelectable deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
-            minZoom={0.2} maxZoom={1.6} colorMode={theme} connectionRadius={28}>
+            minZoom={0.1} maxZoom={1.6} colorMode={theme} connectionRadius={28}>
             <Background gap={22} size={1} />
-            <Controls showInteractive={false} />
+            <Controls showInteractive={false} showFitView={false}>
+              <ControlButton className="wf-full-btn" onClick={toggleFull} title={full ? "leave full screen" : "full screen"} aria-label={full ? "leave full screen" : "full screen"}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d={full ? "M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6" : "M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"} />
+                </svg>
+              </ControlButton>
+            </Controls>
             <MiniMap pannable zoomable className="wf-minimap" style={{ width: 130, height: 84 }} />
           </ReactFlow>
           {stranded ? (

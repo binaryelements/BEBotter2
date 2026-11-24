@@ -4,6 +4,9 @@
 .content:has(#wf-canvas) { max-width: none; }
 .wf { display: grid; grid-template-columns: 150px minmax(0, 1fr) 320px; grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar bar" "palette flow inspector";
   height: calc(100dvh - 200px); min-height: 480px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
+/* full screen: covers the window, and the whole screen where the browser allows it */
+.wf.full { position: fixed; inset: 0; z-index: 1000; height: auto; min-height: 0; border: 0; border-radius: 0; }
+.wf .wf-full-btn svg { fill: none; }
 .wf.ro { grid-template-columns: minmax(0, 1fr) 320px; grid-template-areas: "bar bar" "flow inspector"; }
 .wf .hint { font: 12px var(--font-sans); color: var(--muted); }
 .wf .hint.warn { color: var(--warn); }
