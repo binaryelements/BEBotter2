@@ -512,7 +512,7 @@ main h2, main h3 {
 .conn-desc { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-width: 46ch; }
 .conn-target { max-width: 260px; overflow-wrap: anywhere; }
 .conn-edit { margin-top: 6px; }
-.conn-edit > summary { font: 11px var(--font-mono); color: var(--ui-accent); cursor: pointer; }
+.conn-edit > summary, .conn-edit-open { font: 11px var(--font-mono); color: var(--ui-accent); cursor: pointer; background: none; border: 0; padding: 0; }
 .conn-edit form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .conn-edit textarea { width: 100%; min-height: 72px; }
 .conn-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
