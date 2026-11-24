@@ -59,6 +59,13 @@ describe("workflows screens", () => {
     await upsertChat(db, { id: "chat-1", tenantId: T, conversationType: "groupChat" });
     await assignToChat(db, "chat-1", bot);
     const app = express();
+    // like the Teams SDK's app-level parser in production (Express 5): reads a JSON body without the mark Express 4 checks
+    app.use((req, _res, next) => {
+      // (bodies over its 100kb limit fail there before reaching the admin; not modelled, so the admin's own limit stays tested)
+      if (!req.is("application/json") || Number(req.headers["content-length"]) > 100_000) return next();
+      let text = "";
+      req.on("data", (c) => (text += c)).on("end", () => { req.body = JSON.parse(text || "{}"); next(); });
+    });
     app.use("/admin", adminRouter({ db, config, exchangeCode: async () => ({ id_token: "x" }), verifyIdToken: async () => ({ oid: "", tid: "", name: "", email: "" }), botName: "Bot", defaultModel: "m", fetchUsers: async () => [] }));
     ({ url, close } = await serve(app));
   });

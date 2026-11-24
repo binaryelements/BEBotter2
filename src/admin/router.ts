@@ -106,8 +106,10 @@ export function adminRouter(deps: AdminDeps): Router {
   });
   router.use(express.urlencoded({ extended: false }));
   // the workflow canvas posts JSON; its csrf rides in the body like a form's
-  // note: the app-level express.json() in agents-hosting-express's startServer parses first (100kb default), so this parser rarely runs
-  router.use(express.json({ limit: "1mb" }));
+  // In production the Teams SDK's app-level express.json() (Express 5, 100kb default) has already read a JSON body but leaves
+  // no mark Express 4's parser knows, so reading again fails with "stream is not readable": skip a body that was read.
+  const json = express.json({ limit: "1mb" });
+  router.use((req, res, next) => (req.readableEnded ? next() : json(req, res, next)));
   router.use(withShell);
   // before the admin guard: any signed-in person of the tenant may open their own secret link
   router.use(secretRoutes(db, deps.config.secretsKey));
