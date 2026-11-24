@@ -11,8 +11,8 @@ import { listMcpToolInfo } from "../connections/http.js";
 import { accessToken, beginSignIn, discover, finishSignIn, LOOPBACK_REDIRECT, oauthOf, OAuthError } from "../connections/oauth.js";
 import { activeMcp, adminVerify, callHandoversFor, ConnectionError, connectionGrantsFor, createConnection, listConnections, listConnectionsFor, mcpReadOnly, listRingGroups, resetHostKey, revokeConnection, setCallHandover, setConnectionGrant, setConnectionMode, setDescription, setLinked, updateConnection } from "../connections/store.js";
 import type { ConnectionGrantMode, ConnectionKind, ConnectionMode } from "../connections/store.js";
-import { SQL_ENGINES } from "../connections/sql.js";
-import type { SqlRunner } from "../connections/sql.js";
+import { DEFAULT_PORT, querySql, realSql, SQL_ENGINES } from "../connections/sql.js";
+import type { SqlConfig, SqlEngine, SqlRunner } from "../connections/sql.js";
 import { systemSsh } from "../connections/ssh.js";
 import { newHookSecret } from "../hooks/inbound.js";import type { SshRunner } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
@@ -221,7 +221,7 @@ ${c.kind === "mcp" && !oauth ? html`<label>tools that only read<span class="hint
 <td>${bots.length ? bots.map((b, i) => html`${i ? ", " : ""}<a href="/admin/bots/${b.id}?tab=connections">${b.name ? `${b.name} · ${b.label}` : b.label}</a>`) : html`<span class="muted">no bot</span>`}</td>
 <td><div class="conn-actions">${test}${c.status === "revoked" ? "" : html`<form method="post" action="/admin/connections/${c.id}/revoke">${csrf}<button class="be-btn sm danger" title="switches it off for every bot and deletes its secret">revoke</button></form>`}</div></td></tr>`;
       });
-      render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1><p class="meta">The systems the bots can reach, and what they may do there.</p></div><div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d) d.open=true;">Add a connection</a></div></header>
+      render(res, "Connections", html`<header class="be-pagehead"><div class="pt"><h1>Connections</h1><p class="meta">The systems the bots can reach, and what they may do there.</p></div><div class="act"><a class="be-btn primary" href="#add" onclick="var d=document.getElementById('add'); if(d){ event.preventDefault(); d.showModal(); }">Add a connection</a></div></header>
 ${saved ? html`<div class="be-notice good"><div class="grow"><b>Connection saved.</b><div class="meta">Press test on its row when you are ready.</div></div></div>` : ""}
 ${unblocked ? html`<div class="be-notice good"><div class="grow"><b>Connection unblocked.</b><div class="meta">The current host key was pinned and the connection was tested.</div></div></div>` : ""}
 ${unblockError ? html`<div class="be-notice bad"><div class="grow"><b>Could not unblock</b><div class="meta">${unblockError}</div></div></div>` : ""}
@@ -230,10 +230,12 @@ ${error ? html`<div class="be-notice bad"><div class="grow"><b>Connection not sa
 <input id="connections-q" class="be-input" type="search" name="q" value="${q}" placeholder="Search by name, kind, target or bot…" aria-label="Search connections" data-live-filter="#connections-table" data-live-count="#connections-count">
 <button class="be-btn">search</button>${q ? html`<a class="be-btn quiet" href="/admin/connections">clear</a>` : ""}
 </form><span class="spacer"></span><span class="muted" id="connections-count">${filtered.length} of ${conns.length}</span></div>
-${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>Used by</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`) : conns.length ? html`<div class="be-empty">No connections match “${q}”. <a href="/admin/connections">clear the search</a></div>` : html`<div class="be-empty">no connections yet: add one below, or a bot sets one up when asked in chat</div>`}
-<details class="add" id="add"${add ? raw(" open") : ""}><summary class="be-btn">add a connection…</summary>
-<form method="post" action="/admin/connections" data-connection-kind autocomplete="off">${csrf}
-<p><label>paste a claude mcp add command<span class="hint">optional: fills in the name, kind, target, header and secret below; the secret is stored encrypted</span><textarea name="commandLine" rows="3" autocomplete="off" spellcheck="false" placeholder="claude mcp add --transport http name https://… --header &quot;Authorization: Bearer …&quot;"></textarea></label></p>
+${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Mode</th><th>Status</th><th>What it is for</th><th>Used by</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`) : conns.length ? html`<div class="be-empty">No connections match “${q}”. <a href="/admin/connections">clear the search</a></div>` : html`<div class="be-empty">no connections yet: press Add a connection, or a bot sets one up when asked in chat</div>`}
+<dialog class="conn-dialog" id="add" aria-labelledby="add-title"${add ? raw(" data-open") : ""}>
+<div class="conn-dialog-head"><h2 id="add-title">Add a connection</h2><button type="button" class="be-btn sm quiet" onclick="this.closest('dialog').close()">close</button></div>
+<form method="post" action="/admin/connections" data-connection-kind data-stay autocomplete="off">${csrf}
+<div class="be-notice bad" data-form-error role="alert" hidden></div>
+<div class="fields"><label class="wide">paste a claude mcp add command<span class="hint">optional: fills in the name, kind, target, header and secret below; the secret is stored encrypted</span><textarea name="commandLine" rows="3" autocomplete="off" spellcheck="false" placeholder="claude mcp add --transport http name https://… --header &quot;Authorization: Bearer …&quot;"></textarea></label></div>
 <fieldset class="conn-group"><legend>Basics</legend><div class="fields">
 <label>name<span class="hint">lowercase, digits and dashes</span><input name="name" pattern="[a-z0-9][a-z0-9-]{0,62}" title="Lowercase letters, digits and dashes, starting with a letter or digit" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
 <label>kind<span class="hint">what it connects to</span><select name="kind"><option value="ssh">ssh</option><option value="sql">sql database</option><option value="mcp">MCP server</option><option value="http">http API</option></select></label>
@@ -261,8 +263,8 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
 <p class="give-to"><span>give to:</span>${defs.map((d) => html`<label><input type="checkbox" name="definitionId" value="${d.id}"> ${botName(d)}</label>`)}</p>
 <div class="fields">${onlyFor(null)}</div>
 <p class="muted" data-kind="ssh">ssh: a key pair is made for the connection; install its public key on the target, then press test.</p>
-<div class="savebar"><button class="be-btn primary">add connection</button></div>
-</form></details>`);
+<div class="savebar"><label class="be-toggle" title="sql and MCP servers with a header are tried before anything is saved; ssh is tested after its key is installed"><input type="checkbox" name="testFirst" value="on" checked> test before saving</label><button class="be-btn primary">add connection</button></div>
+</form></dialog>`);
     }),
   );
 
@@ -272,7 +274,12 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       const { actor } = adminOf(res);
       if (!isAdmin(actor)) return deny(res);
       // a bad name, target, secret or pasted command belongs on the form that was just sent, not on an error page
-      const formError = (message: string) => res.redirect(303, `/admin/connections?error=${encodeURIComponent(message)}&add=1`);
+      // the popup posts in the background and keeps what was typed; without script the page reloads with the reason
+      const popup = (req.get("accept") ?? "").includes("application/json");
+      const formError = (message: string) => popup ? res.status(422).json({ error: message }) : res.redirect(303, `/admin/connections?error=${encodeURIComponent(message)}&add=1`);
+      const done = (url: string) => popup ? res.json({ redirect: url }) : res.redirect(url.startsWith("/") ? 303 : 302, url);
+      const testFirst = field(req, "testFirst") === "on";
+      const why = (e: unknown) => (e instanceof Error && e.message ? e.message : "it could not be reached");
       // a pasted `claude mcp add` command stands in for the name, kind, target, header and secret fields
       let cmd: ReturnType<typeof parseMcpAdd> | undefined;
       try {
@@ -289,7 +296,8 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       if (privateTo && !(await getDefinition(db, actor.tenantId, privateTo))) return formError("That bot does not exist");
       const kind = cmd ? "mcp" : (field(req, "kind") as ConnectionKind);
       const target = cmd?.url ?? field(req, "target").trim();
-      const name = cmd ? cmd.name.toLowerCase() : field(req, "name").trim();
+      // a pasted name like be_direct becomes be-direct instead of being refused
+      const name = cmd ? cmd.name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+/, "") : field(req, "name").trim();
       const port = field(req, "port").trim() ? Number(field(req, "port")) : undefined;
       const headerName = cmd ? pastedHeader?.[0] : field(req, "headerName").trim() || undefined;
       const secret = cmd ? (pastedHeader?.[1] ?? "") : field(req, "secret");
@@ -306,8 +314,13 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
         config = { oauth, readOnlyTools: [] };
       } else if (kind === "mcp") {
         // the server's own read-only marks decide which tools run without a card; an unreachable server is still saved
-        const tools = await listMcpToolInfo(fetchFn, { target, headers: headerName && secret ? { [headerName]: secret } : {} }).catch(() => []);
-        config = { ...(headerName ? { headerName } : {}), readOnlyTools: tools.filter((t) => t.readOnly).map((t) => t.name) };
+        const listed = await listMcpToolInfo(fetchFn, { target, headers: headerName && secret ? { [headerName]: secret } : {} }).then((tools) => ({ tools, error: "" }), (e: unknown) => ({ tools: [], error: why(e) }));
+        if (testFirst && listed.error) return formError(`The test failed, so nothing was saved: ${listed.error}. Fix it, or untick "test before saving".`);
+        config = { ...(headerName ? { headerName } : {}), readOnlyTools: listed.tools.filter((t) => t.readOnly).map((t) => t.name) };
+      } else if (kind === "sql" && testFirst) {
+        // shortcut: ssh needs its new key installed and http a probe path, so only sql and header mcp are tried before saving
+        const failed = await querySql(connDeps.sql ?? realSql, { ...(config as SqlConfig), port: port ?? DEFAULT_PORT[config.engine as SqlEngine] ?? 0, host: target, password: secret }, "SELECT 1", true).then(() => "", why);
+        if (failed) return formError(`The test failed, so nothing was saved: ${failed}. Fix it, or untick "test before saving".`);
       }
       let c: Connection;
       try {
@@ -320,8 +333,8 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
         if (e instanceof ConnectionError || e instanceof DirectoryError) return formError(e.message);
         throw e;
       }
-      if (oauthOf(c)) return res.redirect(302, beginSignIn(c, oauthRedirect));
-      return res.redirect(303, "/admin/connections?saved=1");
+      if (oauthOf(c)) return done(beginSignIn(c, oauthRedirect));
+      return done("/admin/connections?saved=1");
     }),
   );
 

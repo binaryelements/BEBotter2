@@ -52,11 +52,11 @@ describe("bots screen", () => {
   afterAll(() => close());
 
   const get = (path: string, who: string) => fetch(url + path, { redirect: "manual", headers: { cookie: sessionCookie(secretsKey, T, id[who]) } });
-  const post = (path: string, who: string, body: [string, string][]) =>
+  const post = (path: string, who: string, body: [string, string][], headers: Record<string, string> = {}) =>
     fetch(url + path, {
       method: "POST",
       redirect: "manual",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, id[who]) },
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie(secretsKey, T, id[who]), ...headers },
       body: new URLSearchParams([["csrf", "csrf-1"], ...body]).toString(),
     });
   const def = async (name: string) => (await listDefinitions(db, T)).find((d) => d.name === name)!;
@@ -119,8 +119,21 @@ describe("bots screen", () => {
     const duplicatePage = await (await get(duplicateError, "Ann")).text();
     expect(duplicatePage).toContain("Connection not saved");
     expect(duplicatePage).toContain("already exists");
-    expect(duplicatePage).toContain('id="add" open');
+    expect(duplicatePage).toContain('id="add" aria-labelledby="add-title" data-open');
     expect((await post("/admin/connections", "Hal", [["name", "x"], ["kind", "http"], ["target", "https://x.test/"], ["mode", "read-only"]])).status).toBe(403);
+    // the popup posts for JSON: a refusal comes back as a reason, the test runs before anything is saved
+    const popup = (body: [string, string][]) => post("/admin/connections", "Ann", body, { accept: "application/json" });
+    const badName = await popup([["name", "Bad Name"], ["kind", "sql"], ["target", "x"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"]]);
+    expect(badName.status).toBe(422);
+    expect((await badName.json()).error).toContain("Invalid connection name");
+    const command = 'claude mcp add --transport http be_direct https://d.example.test/mcp --header "Authorization: Bearer t"';
+    const unreachable = await popup([["commandLine", command], ["mode", "read-only"], ["testFirst", "on"]]);
+    expect(unreachable.status).toBe(422);
+    expect((await unreachable.json()).error).toContain("The test failed, so nothing was saved");
+    expect(await getConnection(db, T, "be-direct")).toBeFalsy();
+    expect(await (await popup([["commandLine", command], ["mode", "read-only"]])).json()).toEqual({ redirect: "/admin/connections?saved=1" });
+    expect((await getConnection(db, T, "be-direct"))?.target).toBe("https://d.example.test/mcp"); // be_direct pasted, be-direct saved
+    expect(await (await popup([["name", "sap-tested"], ["kind", "sql"], ["target", "sql2.example.test"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"], ["testFirst", "on"]])).json()).toEqual({ redirect: "/admin/connections?saved=1" });
   });
 
   it("an admin pastes a claude mcp add command and gets an MCP connection with its header secret", async () => {

@@ -209,6 +209,26 @@ document.querySelectorAll("form[data-connection-kind]").forEach(function (f) {
   k.addEventListener("change", apply);
   apply();
 });
+// a popup form opens from a link to it, or when the page came back to it
+document.querySelectorAll("dialog[id]").forEach(function (d) {
+  if ((d.hasAttribute("data-open") || location.hash === "#" + d.id) && d.showModal && !d.open) d.showModal();
+});
+// a form that stays open: it posts in the background, keeps what was typed and shows why it was not saved
+document.querySelectorAll("form[data-stay]").forEach(function (f) {
+  var out = f.querySelector("[data-form-error]");
+  f.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var b = f.querySelector("button:not([type=button])");
+    if (b) { b.disabled = true; b.setAttribute("aria-busy", "true"); }
+    if (out) out.hidden = true;
+    var fail = function (msg) { if (out) { out.textContent = msg; out.hidden = false; out.scrollIntoView({ block: "nearest" }); } };
+    fetch(f.action, { method: "POST", credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(new FormData(f)) })
+      .then(function (r) { return r.json().catch(function () { return { error: "BE Teammate answered " + r.status + ". Nothing was saved." }; }); })
+      .then(function (j) { if (j.redirect) location.href = j.redirect; else fail(j.error || "Not saved"); },
+            function () { fail("BE Teammate could not be reached. Nothing was saved; try again."); })
+      .then(function () { if (b) { b.disabled = false; b.removeAttribute("aria-busy"); } });
+  });
+});
 document.querySelectorAll("[data-live-filter]").forEach(function (input) {
   var target = document.querySelector(input.getAttribute("data-live-filter"));
   if (!target) return;
