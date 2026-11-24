@@ -398,6 +398,7 @@ describe("bots screen", () => {
       await recordTools(db, d.id, ["mcp__conn-bevoice__place_call"]);
       const page = await (await get(`/admin/bots/${d.id}?tab=connections`, "Ann")).text();
       expect(page).toContain("Calls: transfer to a person");
+      expect(page.indexOf("Calls: transfer to a person")).toBeLessThan(page.indexOf("Connections this bot uses")); // top of the tab, not under the tables
       expect(page).toContain("Ring groups could not be listed"); // this app's fetch is down: the page still renders
       expect((await post(`/admin/bots/${d.id}/connections/${c}/handover`, "Hal", [["target", "ring_group:rg_1"], ["then", ""]])).status).toBe(403);
       expect((await post(`/admin/bots/${d.id}/connections/${c}/handover`, "Ann", [["target", "ring_group:rg_1"], ["then", "ext: 101"]])).status).toBe(303);
