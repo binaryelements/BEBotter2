@@ -65,9 +65,7 @@ export async function tidy(nodes, edges, elk) {
     id: "root",
     layoutOptions: { "elk.algorithm": "layered", "elk.direction": "RIGHT", "elk.spacing.nodeNode": "24", "elk.layered.spacing.nodeNodeBetweenLayers": "56",
       // loops back (a reply restarts the chase) are reversed from the trigger outwards, so the flow reads from the trigger
-      "elk.layered.cycleBreaking.strategy": "DEPTH_FIRST",
-      // a long flow wraps onto rows, like lines of text, instead of one strip too thin to read
-      "elk.layered.wrapping.strategy": "MULTI_EDGE", "elk.aspectRatio": "1.6" },
+      "elk.layered.cycleBreaking.strategy": "DEPTH_FIRST" },
     children, edges: links,
   });
   const at = new Map(out.children.map((c) => [c.id, c]));
