@@ -745,6 +745,11 @@ main form.inline-edit { display: inline-flex; gap: 6px; align-items: center; mar
 .new-note-form .field { flex: 1; min-width: 240px; }
 details.add { margin: 12px 0; }
 details.add > summary { cursor: pointer; font: 500 12.5px var(--font-mono); color: var(--ui-accent); }
+dialog.conn-dialog { width: min(920px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 20px; border: 1px solid var(--ui-line); border-radius: 12px; background: var(--ui-panel); color: var(--ui-ink); }
+dialog.conn-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
+.conn-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.conn-dialog-head h2 { margin: 0; }
+.conn-dialog .savebar { display: flex; align-items: center; justify-content: flex-end; gap: 16px; flex-wrap: wrap; }
 .js form[data-autosave] .auto { display: none; }
 
 /* ---------- toggle, tabs, segmented, kv ---------- */
