@@ -76,6 +76,3 @@ use-sync-external-store/cjs/use-sync-external-store-shim/with-selector.productio
    * This source code is licensed under the MIT license found in the
    * LICENSE file in the root directory of this source tree.
    */
-
-@dagrejs/dagre/dist/dagre.esm.js:
-  /*! For license information please see dagre.esm.js.LEGAL.txt */

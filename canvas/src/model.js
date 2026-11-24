@@ -1,5 +1,4 @@
 // Pure canvas model (no React). Exits and publish checks come from the server's own rules, bundled in.
-import { graphlib, layout } from "@dagrejs/dagre";
 import { exitsOf, graphProblems } from "../../src/workflows/check.ts";
 
 export const EXITS = exitsOf;
@@ -49,14 +48,28 @@ export function relink(edges, id, exits, renamed = {}) {
     .filter((e) => e.source !== id || exits.includes(e.sourceHandle));
 }
 
-// Lays the steps out left to right in columns that follow the links. Only positions change; sizes are the rendered ones when known.
-export function tidy(nodes, edges) {
-  const g = new graphlib.Graph().setGraph({ rankdir: "LR", nodesep: 24, ranksep: 56 }).setDefaultEdgeLabel(() => ({}));
-  for (const n of nodes) g.setNode(n.id, { width: n.measured?.width ?? 210, height: n.measured?.height ?? 60 });
-  for (const e of edges) g.setEdge(e.source, e.target);
-  layout(g);
-  return nodes.map((n) => {
-    const p = g.node(n.id);
-    return { ...n, position: { x: Math.round(p.x - p.width / 2), y: Math.round(p.y - p.height / 2) } };
+// Lays the steps out left to right with ELK, which keeps each step's exits in their order so fewer links cross.
+// elk is an ELK instance (fetched on first use in the browser). Only positions change; sizes are the rendered ones when known.
+export async function tidy(nodes, edges, elk) {
+  const ports = new Set();
+  const children = nodes.map((n) => {
+    const exits = EXITS(n.data).map((x, i) => ({ id: `${n.id}>${x}`, layoutOptions: { "elk.port.side": "EAST", "elk.port.index": String(i) } }));
+    for (const p of [`${n.id}>in`, ...exits.map((p) => p.id)]) ports.add(p);
+    return { id: n.id, width: n.measured?.width ?? 210, height: n.measured?.height ?? 60, layoutOptions: { "elk.portConstraints": "FIXED_ORDER" },
+      ports: [{ id: `${n.id}>in`, layoutOptions: { "elk.port.side": "WEST" } }, ...exits] };
   });
+  const links = edges
+    .map((e) => ({ id: e.id, sources: [`${e.source}>${e.sourceHandle}`], targets: [`${e.target}>in`] }))
+    .filter((e) => ports.has(e.sources[0]) && ports.has(e.targets[0]));
+  const out = await elk.layout({
+    id: "root",
+    layoutOptions: { "elk.algorithm": "layered", "elk.direction": "RIGHT", "elk.spacing.nodeNode": "24", "elk.layered.spacing.nodeNodeBetweenLayers": "56",
+      // loops back (a reply restarts the chase) are reversed from the trigger outwards, so the flow reads from the trigger
+      "elk.layered.cycleBreaking.strategy": "DEPTH_FIRST",
+      // a long flow wraps onto rows, like lines of text, instead of one strip too thin to read
+      "elk.layered.wrapping.strategy": "MULTI_EDGE", "elk.aspectRatio": "1.6" },
+    children, edges: links,
+  });
+  const at = new Map(out.children.map((c) => [c.id, c]));
+  return nodes.map((n) => ({ ...n, position: { x: Math.round(at.get(n.id).x), y: Math.round(at.get(n.id).y) } }));
 }

@@ -75,7 +75,7 @@ export function workflowRoutes(db: Db, notify: Notify = async () => {}): Router 
       const trace = mine ? await tracePath(db, actor.tenantId, mine.id) : undefined;
       // a trace shows the graph the run executed, so it draws the published one (read-only), else the draft
       const shown = (trace && (await publishedGraph(db, w.id))) || w.draft;
-      const init = { workflowId: w.id, name: w.name, draft: shown, base: draftHash(w.draft), published: w.publishedVersion !== null, people: ppl, csrf, readOnly: !isAdmin(actor) || !!trace, ...(trace ? { trace } : {}) };
+      const init = { workflowId: w.id, name: w.name, elkSrc: href("workflows/elk.js"), draft: shown, base: draftHash(w.draft), published: w.publishedVersion !== null, people: ppl, csrf, readOnly: !isAdmin(actor) || !!trace, ...(trace ? { trace } : {}) };
       // inside a script element only "</script" can end it early, so every "<" is escaped
       const json = JSON.stringify(init).replace(/</g, "\\u003c");
       const body = html`<header class="be-pagehead"><div class="pt"><nav class="crumb" aria-label="breadcrumb"><a href="/admin/bots">bots</a> / <a href="/admin/bots/${def.id}?tab=workflows">${def.displayName ?? def.name}</a> / <span aria-current="page">${w.name}</span></nav><h1>${w.name}</h1></div></header>

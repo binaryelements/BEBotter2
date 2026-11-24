@@ -7,6 +7,16 @@ import { Ctx, nodeTypes } from "./nodes.jsx";
 import { Inspector } from "./Inspector.jsx";
 import { Versions } from "./Versions.jsx";
 
+// elkjs is 1.6 MB, so it is fetched the first time someone tidies, not with the page
+let elkLoading;
+const loadElk = (src) => (elkLoading ??= new Promise((ok, fail) => {
+  const s = document.createElement("script");
+  s.src = src;
+  s.onload = () => ok(new window.ELK());
+  s.onerror = () => { elkLoading = undefined; s.remove(); fail(new Error("elk")); };
+  document.head.append(s);
+}));
+
 const PALETTE = ["trigger", "ai", "wait", "ask", "end"];
 const edgeOf = (c) => ({ id: `${c.source}:${c.sourceHandle}`, source: c.source, sourceHandle: c.sourceHandle, target: c.target });
 const others = (edges, c) => edges.filter((e) => !(e.source === c.source && e.sourceHandle === c.sourceHandle));
@@ -139,8 +149,25 @@ export function Editor({ init }) {
     setStranded(null);
     setNote(status === 200 ? ["good", `published v${data.version}`] : ["bad", data.error]);
   };
-  // fit after the moved nodes have rendered
-  const tidyUp = () => { setNodes((ns) => tidy(ns, edges)); requestAnimationFrame(() => flow.fitView({ padding: 0.08, maxZoom: 1, duration: 300 })); };
+  // fit once the moved nodes have rendered
+  const refit = useRef(false);
+  useEffect(() => {
+    if (!refit.current) return;
+    refit.current = false;
+    requestAnimationFrame(() => flow.fitView({ padding: 0.08, maxZoom: 1, duration: 300 }));
+  }, [nodes, flow]);
+  const tidyUp = async () => {
+    setBusy(true);
+    try {
+      const laid = await tidy(nodes, edges, await loadElk(init.elkSrc));
+      refit.current = true;
+      setNodes(laid);
+    } catch {
+      setNote(["bad", "tidy could not load; try again"]);
+    } finally {
+      setBusy(false);
+    }
+  };
   const discard = async () => {
     if (!confirm("Discard the draft? The canvas goes back to what is live.")) return;
     const { status, data } = await api("POST", "discard", { base });

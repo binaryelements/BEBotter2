@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { exitsOf } from "../../src/workflows/graph.ts";
+import ELK from "elkjs/lib/elk.bundled.js";
 import { EXITS, newNode, openExits, relink, tidy, toFlow, toGraph, whyNot } from "../src/model.js";
 
 const node = (type, id, extra) => ({ id, label: id, x: 10, y: 20, type, ...extra });
@@ -73,14 +74,12 @@ describe("canvas model", () => {
 });
 
 describe("tidy", () => {
-  it("lays the steps out left to right along the links and changes nothing else", () => {
+  it("lays the steps out in reading order along the links and changes nothing else", async () => {
     const { nodes: ns, edges: es } = toFlow(graph);
-    const out = tidy(ns, es);
-    const x = Object.fromEntries(out.map((n) => [n.id, n.position.x]));
-    expect(x.t).toBeLessThan(x.a);
-    expect(x.a).toBeLessThan(x.w);
-    expect(x.w).toBeLessThan(x.q);
-    expect(x.q).toBeLessThan(x.e);
+    const out = await tidy(ns, es, new ELK());
+    // reading order: each next step is to the right, or on a lower row when a long flow wraps
+    const at = Object.fromEntries(out.map((n) => [n.id, n.position]));
+    for (const [a, b] of [["t", "a"], ["a", "w"], ["w", "q"], ["q", "e"]]) expect(at[b].x > at[a].x || at[b].y > at[a].y + 60).toBe(true);
     expect(out.map((n) => n.data)).toEqual(ns.map((n) => n.data));
     expect(toGraph(out, es, []).edges).toEqual(graph.edges);
   });
