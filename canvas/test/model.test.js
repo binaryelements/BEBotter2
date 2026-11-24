@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { exitsOf } from "../../src/workflows/graph.ts";
-import { EXITS, newNode, openExits, relink, toFlow, toGraph, whyNot } from "../src/model.js";
+import { EXITS, newNode, openExits, relink, tidy, toFlow, toGraph, whyNot } from "../src/model.js";
 
 const node = (type, id, extra) => ({ id, label: id, x: 10, y: 20, type, ...extra });
 const nodes = [
@@ -69,5 +69,19 @@ describe("canvas model", () => {
     expect(renamed).toHaveLength(4);
     expect(relink(edges, "a", ["bad", "needs_person", "new_message"])).toHaveLength(3);
     expect(relink(edges, "a", ["bad", "needs_person", "new_message"]).some((e) => e.source === "a")).toBe(false);
+  });
+});
+
+describe("tidy", () => {
+  it("lays the steps out left to right along the links and changes nothing else", () => {
+    const { nodes: ns, edges: es } = toFlow(graph);
+    const out = tidy(ns, es);
+    const x = Object.fromEntries(out.map((n) => [n.id, n.position.x]));
+    expect(x.t).toBeLessThan(x.a);
+    expect(x.a).toBeLessThan(x.w);
+    expect(x.w).toBeLessThan(x.q);
+    expect(x.q).toBeLessThan(x.e);
+    expect(out.map((n) => n.data)).toEqual(ns.map((n) => n.data));
+    expect(toGraph(out, es, []).edges).toEqual(graph.edges);
   });
 });
