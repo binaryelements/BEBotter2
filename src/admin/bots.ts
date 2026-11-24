@@ -196,7 +196,12 @@ export function botRoutes(deps: { db: Db; secretsKey: Buffer; publicUrl: string;
         const cfg = c.config as Record<string, unknown>;
         const oauth = oauthOf(c);
         const text = (v: unknown) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v));
-        return html`<details class="conn-edit"><summary>edit</summary><form method="post" action="/admin/connections/${c.id}/update" data-connection-kind>${csrf}
+        // tested before saving like a new one: a sql login, or an MCP server with a header
+        const testable = c.kind === "sql" || (c.kind === "mcp" && !oauth);
+        return html`<div class="conn-edit"><button type="button" class="conn-edit-open" onclick="this.nextElementSibling.showModal()">edit</button><dialog class="conn-dialog" id="edit-${c.id}" aria-labelledby="edit-title-${c.id}">
+<div class="conn-dialog-head"><h2 id="edit-title-${c.id}">Edit ${c.name}</h2><button type="button" class="be-btn sm quiet" onclick="this.closest('dialog').close()">close</button></div>
+<form method="post" action="/admin/connections/${c.id}/update" data-connection-kind data-stay>${csrf}
+<div class="be-notice bad" data-form-error role="alert" hidden></div>
 <div class="fields">
 <label>name<span class="hint">lowercase, digits and dashes</span><input name="name" value="${c.name}" required pattern="[a-z0-9][a-z0-9-]{0,62}" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
 <label>target<span class="hint">host name, or URL</span><input name="target" value="${c.target}" required autocomplete="off"></label>
@@ -209,7 +214,7 @@ ${c.kind === "mcp" && !oauth ? html`<label class="wide">paste a claude mcp add c
 ${c.kind === "mcp" && !oauth ? html`<label>tools that only read<span class="hint">comma separated; they run without a card</span><input name="readOnlyTools" value="${((cfg.readOnlyTools as string[] | undefined) ?? []).join(", ")}" autocomplete="off"></label>` : ""}
 </div>
 <label>what it is for<textarea name="description" rows="3">${c.description ?? ""}</textarea></label>
-<button class="be-btn sm primary">save settings</button></form></details>`;
+<div class="savebar">${testable ? html`<label class="be-toggle"><input type="checkbox" name="testFirst" value="on" checked> test before saving</label>` : ""}<button class="be-btn primary">save settings</button></div></form></dialog></div>`;
       };
       const rows = filtered.map((c) => {
         const bots = links.filter((l) => l.connectionId === c.id);
@@ -348,7 +353,10 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       if (!c) return page(res, 404, "Connection not found.");
       const kind = c.kind as ConnectionKind;
       const prev = c.config as Record<string, unknown>;
-      const formError = (message: string) => res.redirect(303, `/admin/connections?error=${encodeURIComponent(message)}`);
+      // the edit popup posts in the background like the add one, so a refusal keeps what was typed
+      const popup = (req.get("accept") ?? "").includes("application/json");
+      const formError = (message: string) => popup ? res.status(422).json({ error: message }) : res.redirect(303, `/admin/connections?error=${encodeURIComponent(message)}`);
+      const why = (e: unknown) => (e instanceof Error && e.message ? e.message : "it could not be reached");
       // a pasted command replaces the URL, header and secret; the connection keeps its own name
       let cmd: ReturnType<typeof parseMcpAdd> | undefined;
       try {
@@ -374,6 +382,14 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
         const tools = field(req, "readOnlyTools").split(",").map((t) => t.trim()).filter(Boolean);
         config = { ...(headerName ? { headerName } : prev.headerName ? { headerName: prev.headerName } : {}), readOnlyTools: tools.length ? tools : ((prev.readOnlyTools as string[] | undefined) ?? []) };
       }
+      if (field(req, "testFirst") === "on") {
+        // a blank secret keeps the stored one, so that is what the test uses
+        const key = secret || (c.secretCipher ? decrypt(secretsKey, c.secretCipher) : "");
+        const failed = kind === "sql"
+          ? await querySql(connDeps.sql ?? realSql, { ...(config as SqlConfig), port: (config.port as number | undefined) ?? DEFAULT_PORT[config.engine as SqlEngine] ?? 0, host: target, password: key }, "SELECT 1", true).then(() => "", why)
+          : kind === "mcp" && !oauthOf(c) ? await listMcpToolInfo(fetchFn, { target, headers: config.headerName && key ? { [config.headerName as string]: key } : {} }).then(() => "", why) : "";
+        if (failed) return formError(`The test failed, so nothing was saved: ${failed}. Fix it, or untick "test before saving".`);
+      }
       try {
         await updateConnection(connDeps, actor.tenantId, req.params.id, {
           target, mode: (field(req, "mode") as ConnectionMode) || undefined, description: field(req, "description"), config: config as never, secret,
@@ -385,7 +401,7 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
         if (e instanceof ConnectionError || e instanceof DirectoryError) return formError(e.message);
         throw e;
       }
-      res.redirect(303, "/admin/connections?saved=1");
+      return popup ? res.json({ redirect: "/admin/connections?saved=1" }) : res.redirect(303, "/admin/connections?saved=1");
     }),
   );
 

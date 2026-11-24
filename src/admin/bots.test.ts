@@ -134,6 +134,19 @@ describe("bots screen", () => {
     expect(await (await popup([["commandLine", command], ["mode", "read-only"]])).json()).toEqual({ redirect: "/admin/connections?saved=1" });
     expect((await getConnection(db, T, "be-direct"))?.target).toBe("https://d.example.test/mcp"); // be_direct pasted, be-direct saved
     expect(await (await popup([["name", "sap-tested"], ["kind", "sql"], ["target", "sql2.example.test"], ["mode", "read-only"], ["engine", "mysql"], ["database", "d"], ["username", "u"], ["secret", "p"], ["testFirst", "on"]])).json()).toEqual({ redirect: "/admin/connections?saved=1" });
+    // editing works the same way: a popup per connection, tested with the stored secret when none is typed
+    const bd = (await getConnection(db, T, "be-direct"))!;
+    expect(await (await get("/admin/connections", "Ann")).text()).toContain(`<dialog class="conn-dialog" id="edit-${bd.id}"`);
+    const editPopup = (cid: string, body: [string, string][]) => post(`/admin/connections/${cid}/update`, "Ann", body, { accept: "application/json" });
+    const failedEdit = await editPopup(bd.id, [["target", "https://d2.example.test/mcp"], ["testFirst", "on"]]);
+    expect(failedEdit.status).toBe(422);
+    expect((await failedEdit.json()).error).toContain("The test failed, so nothing was saved");
+    expect((await getConnection(db, T, "be-direct"))?.target).toBe("https://d.example.test/mcp");
+    expect(await (await editPopup(bd.id, [["target", "https://d2.example.test/mcp"]])).json()).toEqual({ redirect: "/admin/connections?saved=1" });
+    expect((await getConnection(db, T, "be-direct"))?.target).toBe("https://d2.example.test/mcp");
+    const sapTested = (await getConnection(db, T, "sap-tested"))!;
+    expect(await (await editPopup(sapTested.id, [["database", "d2"], ["testFirst", "on"]])).json()).toEqual({ redirect: "/admin/connections?saved=1" });
+    expect((await editPopup(sapTested.id, [["name", "Bad Name"]])).status).toBe(422);
   });
 
   it("an admin pastes a claude mcp add command and gets an MCP connection with its header secret", async () => {
