@@ -1,5 +1,7 @@
 /* The workflow canvas. Colours come from the admin's tokens (be/tokens.css); the k-* classes set --k, the colour of a step's kind.
    Shape copied from BE Voice's routing canvas. */
+/* the admin caps page width at 1400px; the canvas page uses the whole screen */
+.content:has(#wf-canvas) { max-width: none; }
 .wf { display: grid; grid-template-columns: 150px minmax(0, 1fr) 320px; grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "bar bar bar" "palette flow inspector";
   height: calc(100dvh - 200px); min-height: 480px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
 .wf.ro { grid-template-columns: minmax(0, 1fr) 320px; grid-template-areas: "bar bar" "flow inspector"; }
