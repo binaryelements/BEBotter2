@@ -1,4 +1,5 @@
 // Pure canvas model (no React). Exits and publish checks come from the server's own rules, bundled in.
+import { graphlib, layout } from "@dagrejs/dagre";
 import { exitsOf, graphProblems } from "../../src/workflows/check.ts";
 
 export const EXITS = exitsOf;
@@ -46,4 +47,16 @@ export function relink(edges, id, exits, renamed = {}) {
   return edges
     .map((e) => (e.source === id && renamed[e.sourceHandle] !== undefined ? { ...e, id: `${id}:${renamed[e.sourceHandle]}`, sourceHandle: renamed[e.sourceHandle] } : e))
     .filter((e) => e.source !== id || exits.includes(e.sourceHandle));
+}
+
+// Lays the steps out left to right in columns that follow the links. Only positions change; sizes are the rendered ones when known.
+export function tidy(nodes, edges) {
+  const g = new graphlib.Graph().setGraph({ rankdir: "LR", nodesep: 24, ranksep: 56 }).setDefaultEdgeLabel(() => ({}));
+  for (const n of nodes) g.setNode(n.id, { width: n.measured?.width ?? 210, height: n.measured?.height ?? 60 });
+  for (const e of edges) g.setEdge(e.source, e.target);
+  layout(g);
+  return nodes.map((n) => {
+    const p = g.node(n.id);
+    return { ...n, position: { x: Math.round(p.x - p.width / 2), y: Math.round(p.y - p.height / 2) } };
+  });
 }

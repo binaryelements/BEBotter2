@@ -2,7 +2,7 @@
 // save the draft, publish it. Shell copied from BE Voice's routing canvas.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, useReactFlow, useNodesInitialized } from "@xyflow/react";
-import { EXITS, NAMES, graphProblems, newNode, openExits, relink, toFlow, toGraph, whyNot } from "./model.js";
+import { EXITS, NAMES, graphProblems, newNode, openExits, relink, tidy, toFlow, toGraph, whyNot } from "./model.js";
 import { Ctx, nodeTypes } from "./nodes.jsx";
 import { Inspector } from "./Inspector.jsx";
 import { Versions } from "./Versions.jsx";
@@ -117,6 +117,8 @@ export function Editor({ init }) {
     setStranded(null);
     setNote(status === 200 ? ["good", `published v${data.version}`] : ["bad", data.error]);
   };
+  // fit after the moved nodes have rendered
+  const tidyUp = () => { setNodes((ns) => tidy(ns, edges)); requestAnimationFrame(() => flow.fitView({ padding: 0.08, maxZoom: 1, duration: 300 })); };
   const discard = async () => {
     if (!confirm("Discard the draft? The canvas goes back to what is live.")) return;
     const { status, data } = await api("POST", "discard", { base });
@@ -153,6 +155,7 @@ export function Editor({ init }) {
           <button className={"be-btn sm" + (versions ? " on" : "")} type="button" onClick={() => setVersions(!versions)}>versions</button>
           {readOnly ? null : (
             <>
+              <button className="be-btn sm" type="button" disabled={busy || !nodes.length} onClick={tidyUp} title="Arrange the steps left to right">tidy</button>
               <button className="be-btn sm" type="button" disabled={busy} onClick={discard}>discard</button>
               <button className="be-btn sm" type="button" disabled={busy || !dirty} onClick={save}>save</button>
               <button className="be-btn sm primary" type="button" disabled={busy} onClick={() => publish()}>publish</button>
