@@ -624,6 +624,7 @@ export const workflowRuns = pgTable(
     reportedResult: jsonb("reported_result").$type<ReportedResult>(),
     outcome: text("outcome"),
     title: text("title").notNull(),
+    test: boolean("test").notNull().default(false), // a test run: every wait lasts a minute
     createdAt: createdAt(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
     endedAt: ts("ended_at"),

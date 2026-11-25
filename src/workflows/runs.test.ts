@@ -8,7 +8,7 @@ import { workflowPending, workflowRunEvents, workflowRuns } from "../db/schema.j
 import type { Workflow, WorkflowRun } from "../db/schema.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "./graph.js";
-import { deliverEvent, endRun, enterNode, moveRun, pauseRun, settleStep, startRun, takeExit, takeQueuedEvents } from "./runs.js";
+import { deliverEvent, endRun, enterNode, markTest, moveRun, nodeEntry, pauseRun, settleStep, startRun, takeExit, takeQueuedEvents } from "./runs.js";
 import type { RunEvent } from "./runs.js";
 import { createWorkflow, publish, saveDraft } from "./store.js";
 
@@ -231,6 +231,44 @@ describe("workflow runs", () => {
     expect(await lastEvent(r)).toMatchObject({ kind: "move", reason: "paused", data: { from: "w", to: "needs_person", personId } });
     await pauseRun(db, "t1", r.id, personId); // already parked: no-op
     expect((await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, r.id))).filter((e) => e.reason === "paused")).toHaveLength(1);
+  });
+
+  it("markTest cuts the current wait to a minute, later waits last a minute, and only once", async () => {
+    const r = await waitingRun();
+    const before = Date.now();
+    await markTest(db, "t1", r.id, personId);
+    const t = await reload(r);
+    expect(t).toMatchObject({ test: true, status: "waiting", nodeId: "w" });
+    expect(t.dueAt!.getTime() - before).toBeGreaterThanOrEqual(60_000);
+    expect(t.dueAt!.getTime() - before).toBeLessThan(65_000);
+    expect(await lastEvent(r)).toMatchObject({ kind: "move", reason: "made a test: waits last a minute", data: { personId } });
+    await markTest(db, "t1", r.id, personId); // already a test: no-op
+    expect((await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, r.id))).filter((e) => e.reason?.startsWith("made a test"))).toHaveLength(1);
+    await takeExit(db, t, "new_message", notify);
+    await takeExit(db, await reload(r), "done", notify);
+    const again = await reload(r);
+    expect(again).toMatchObject({ nodeId: "w", status: "waiting", test: true });
+    expect(again.dueAt!.getTime() - again.waitStartedAt!.getTime()).toBe(60_000);
+  });
+
+  it("markTest leaves a wait that is already due within a minute, and a non-wait step", async () => {
+    const r = await waitingRun();
+    const soon = new Date(Date.now() + 10_000);
+    await db.update(workflowRuns).set({ dueAt: soon }).where(eq(workflowRuns.id, r.id));
+    await markTest(db, "t1", r.id, personId);
+    expect((await reload(r)).dueAt).toEqual(soon);
+    const ready = await start(email(2));
+    await markTest(db, "t1", ready.id, personId);
+    expect(await reload(ready)).toMatchObject({ test: true, status: "ready", dueAt: null });
+  });
+
+  it("a test run's waits last a minute whatever their length or hours; ask timeouts stay real", () => {
+    const now = new Date("2026-11-27T06:00:00Z"); // a Friday evening in Melbourne
+    const wait = { ...b, id: "w2", label: "two days", type: "wait" as const, minutes: 960, businessHours: true };
+    expect(nodeEntry(wait, now, "Australia/Melbourne", [], true).dueAt!.getTime() - now.getTime()).toBe(60_000);
+    expect(nodeEntry(wait, now, "Australia/Melbourne", []).dueAt!.getTime() - now.getTime()).toBeGreaterThan(60_000);
+    const ask = { ...b, id: "q", label: "ask", type: "ask" as const, question: "?", choices: ["yes"], timeoutMinutes: 480 };
+    expect(nodeEntry(ask as never, now, "Australia/Melbourne", [], true).dueAt!.getTime() - now.getTime()).toBe(480 * 60_000);
   });
 
   it("pauseRun refuses a running step and an ended run", async () => {

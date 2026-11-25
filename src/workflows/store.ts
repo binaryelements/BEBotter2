@@ -105,7 +105,7 @@ export async function publishedGraph(db: Db, workflowId: string): Promise<Workfl
 async function strandedRuns(db: Pick<Db, "select">, tenantId: string, w: Workflow) {
   const kept = new Set(w.draft.nodes.map((n) => n.id));
   const runs = await db
-    .select({ id: workflowRuns.id, nodeId: workflowRuns.nodeId })
+    .select({ id: workflowRuns.id, nodeId: workflowRuns.nodeId, test: workflowRuns.test })
     .from(workflowRuns)
     .where(and(eq(workflowRuns.workflowId, w.id), eq(workflowRuns.tenantId, tenantId), notInArray(workflowRuns.status, [...CLOSED, "needs_person"])));
   return runs.filter((r) => !kept.has(r.nodeId));
@@ -161,7 +161,7 @@ export async function publish(db: Db, tenantId: string, workflowId: string, pers
       const parked = !target || target.type === "ask";
       await tx
         .update(workflowRuns)
-        .set(parked ? { status: "needs_person", dueAt: null, updatedAt: now } : { ...nodeEntry(target, now, tz, draft.holidays), nodeId: to, updatedAt: now })
+        .set(parked ? { status: "needs_person", dueAt: null, updatedAt: now } : { ...nodeEntry(target, now, tz, draft.holidays, r.test), nodeId: to, updatedAt: now })
         .where(eq(workflowRuns.id, r.id));
       const reason = target?.type === "ask" ? "moved onto an Ask step" : undefined;
       await tx.insert(workflowRunEvents).values({ id: crypto.randomUUID(), runId: r.id, nodeId: r.nodeId, kind: "move", reason, data: { from: r.nodeId, to } });
@@ -173,7 +173,7 @@ export async function publish(db: Db, tenantId: string, workflowId: string, pers
       const waiting = await tx
         .select({ id: workflowRuns.id, started: workflowRuns.waitStartedAt })
         .from(workflowRuns)
-        .where(and(eq(workflowRuns.workflowId, workflowId), eq(workflowRuns.nodeId, n.id), eq(workflowRuns.status, "waiting")));
+        .where(and(eq(workflowRuns.workflowId, workflowId), eq(workflowRuns.nodeId, n.id), eq(workflowRuns.status, "waiting"), eq(workflowRuns.test, false)));
       for (const r of waiting) {
         if (r.started) await tx.update(workflowRuns).set({ dueAt: waitUntil(r.started, n.minutes, n.businessHours, tz, draft.holidays), updatedAt: now }).where(eq(workflowRuns.id, r.id));
       }

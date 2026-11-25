@@ -6,7 +6,7 @@ import type { Db } from "../db/client.js";
 import type { BotDefinition, Workflow } from "../db/schema.js";
 import { botDefinitions, people, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
 import { DirectoryError } from "../org/directory.js";
-import { endRun, moveRun, pauseRun } from "../workflows/runs.js";
+import { endRun, markTest, moveRun, pauseRun } from "../workflows/runs.js";
 import type { Notify } from "../workflows/runs.js";
 import { inOrder, tracePath } from "../workflows/trace.js";
 import { createWorkflow, discardDraft, draftHash, listVersions, publish, publishedGraph, restoreVersion, runsOnRemovedNodes, saveDraft, StaleDraft } from "../workflows/store.js";
@@ -17,6 +17,8 @@ import type { SafeHtml } from "./html.js";
 import { adminOf, wrap } from "./http.js";
 import { page } from "./oidc.js";
 import { whenFor } from "./words.js";
+
+const testChip = html`<span class="be-chip c" title="a test run: every wait lasts a minute">test</span>`;
 
 /** The bot's Workflows tab: its workflows with their runs, and the form that starts a new one. */
 export async function workflowsSection(db: Db, def: BotDefinition, chats: { id: string; label: string; lastSeenAt?: Date | null }[], csrf: SafeHtml): Promise<SafeHtml> {
@@ -116,7 +118,7 @@ export function workflowRoutes(db: Db, notify: Notify = async () => {}): Router 
       const when = await whenFor(db, actor.tenantId);
       const base = `/admin/bots/${def.id}/workflows/${w.id}/runs`;
       const tab = (key: string, text: string) => html`<a class="be-btn sm${show === key ? " on" : ""}" href="${base}?show=${key}">${text}</a>`;
-      const row = (r: (typeof runs)[number]) => html`<tr><td><a href="/admin/workflow-runs/${r.id}">${r.title}</a></td><td>${label(r.nodeId)}</td><td>${chip(r.status)}</td><td>${when(r.dueAt)}</td><td>${reasons.get(r.id) ?? ""}</td></tr>`;
+      const row = (r: (typeof runs)[number]) => html`<tr><td><a href="/admin/workflow-runs/${r.id}">${r.title}</a></td><td>${label(r.nodeId)}</td><td>${chip(r.status)}${r.test ? html` ${testChip}` : ""}</td><td>${when(r.dueAt)}</td><td>${reasons.get(r.id) ?? ""}</td></tr>`;
       const body = html`<header class="be-pagehead"><div class="pt">${crumb(def, w, "runs")}<h1>Runs</h1></div></header>
 <p class="bot-chips">${tab("open", "open")}${tab("needs_person", "needs a person")}${tab("all", "all")}</p>
 ${runs.length ? scroll(html`<table class="be-table"><thead><tr><th>Run</th><th>Step</th><th>Status</th><th>Next due</th><th>Last result</th></tr></thead><tbody>${runs.map(row)}</tbody></table>`) : html`<div class="be-empty">No runs.</div>`}
@@ -146,10 +148,10 @@ ${runs.length ? scroll(html`<table class="be-table"><thead><tr><th>Run</th><th>S
       const act = `/admin/workflow-runs/${run.id}`;
       const button = (verb: string) => html`<form method="post" action="${act}/${verb}" style="display:inline-flex;gap:6px">${csrf}<button class="be-btn sm">${verb}</button></form>`;
       const admin = isAdmin(actor);
-      const buttons = html`${admin && (run.status === "ready" || run.status === "waiting") ? button("pause") : ""}${admin && !["running", "done", "failed"].includes(run.status) ? button("end") : ""}${admin && run.status === "needs_person" ? html`<form method="post" action="${act}/move" style="display:inline-flex;gap:6px">${csrf}<select class="be-select" name="nodeId" aria-label="step" required>${nodes.filter((n) => n.type !== "trigger").map((n) => html`<option value="${n.id}">${n.label}</option>`)}</select><button class="be-btn sm">move</button></form>` : ""}<a class="be-btn sm" href="/admin/bots/${def.id}/workflows/${w.id}?trace=${run.id}">trace</a>`;
+      const buttons = html`${admin && !run.test && !["running", "done", "failed"].includes(run.status) ? button("test") : ""}${admin && (run.status === "ready" || run.status === "waiting") ? button("pause") : ""}${admin && !["running", "done", "failed"].includes(run.status) ? button("end") : ""}${admin && run.status === "needs_person" ? html`<form method="post" action="${act}/move" style="display:inline-flex;gap:6px">${csrf}<select class="be-select" name="nodeId" aria-label="step" required>${nodes.filter((n) => n.type !== "trigger").map((n) => html`<option value="${n.id}">${n.label}</option>`)}</select><button class="be-btn sm">move</button></form>` : ""}<a class="be-btn sm" href="/admin/bots/${def.id}/workflows/${w.id}?trace=${run.id}">trace</a>`;
       const row = (e: (typeof events)[number]) => html`<tr><td>${when(e.at)}</td><td>${label(e.nodeId)}</td><td>${e.kind}</td><td>${e.result ?? ""}</td><td>${e.reason ?? ""}</td></tr>`;
       const body = html`<header class="be-pagehead"><div class="pt">${crumb(def, w, run.title)}<h1>${run.title}</h1></div><div class="act">${buttons}</div></header>
-<p>${chip(run.status)} ${label(run.nodeId)}${run.dueAt ? html` · due ${when(run.dueAt)}` : ""}${run.outcome ? html` · ${run.outcome}` : ""}</p>
+<p>${chip(run.status)}${run.test ? html` ${testChip}` : ""} ${label(run.nodeId)}${run.dueAt ? html` · due ${when(run.dueAt)}` : ""}${run.outcome ? html` · ${run.outcome}` : ""}</p>
 ${events.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Step</th><th>Kind</th><th>Result</th><th>Reason</th></tr></thead><tbody>${events.map(row)}</tbody></table>`) : html`<div class="be-empty">No history.</div>`}`;
       res.type("html").send(layout({ title: run.title, body, actor, csrf }));
     }),
@@ -164,6 +166,7 @@ ${events.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><t
       await fn(req.params.runId, req.body ?? {}, actor);
       res.redirect(303, `/admin/workflow-runs/${req.params.runId}`);
     });
+  router.post("/workflow-runs/:runId/test", act((id, _b, a) => markTest(db, a.tenantId, id, a.personId)));
   router.post("/workflow-runs/:runId/pause", act((id, _b, a) => pauseRun(db, a.tenantId, id, a.personId)));
   router.post("/workflow-runs/:runId/end", act((id, _b, a) => endRun(db, a.tenantId, id, a.personId)));
   router.post("/workflow-runs/:runId/move", act((id, b, a) => moveRun(db, a.tenantId, id, String(b.nodeId ?? ""), a.personId, notify)));
