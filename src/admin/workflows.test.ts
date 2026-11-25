@@ -309,6 +309,15 @@ describe("workflows screens", () => {
       expect((await get(`/admin/workflow-runs/nope`)).status).toBe(404);
     });
 
+    it("run page buttons carry the csrf token as a hidden field, not as text", async () => {
+      const wid = await live("csrf");
+      const rid = await run(wid, "w1", "waiting", "Tokened");
+      const page = await (await get(`/admin/workflow-runs/${rid}`)).text();
+      const forms = page.match(/<form method="post" action="\/admin\/workflow-runs\/[^"]+"[^>]*>.*?<\/form>/g) ?? [];
+      expect(forms.length).toBeGreaterThanOrEqual(3);
+      for (const f of forms) expect(f).toMatch(/^<form[^>]*><input type="hidden" name="csrf" value="csrf-1">/);
+    });
+
     it("pause then move a run from the run page", async () => {
       const wid = await live("move");
       const rid = await run(wid, "w1", "waiting", "Mover");
