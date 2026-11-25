@@ -324,6 +324,21 @@ describe("workflows screens", () => {
       expect((await db.select().from(workflowRuns).where(eq(workflowRuns.id, rid)))[0]).toMatchObject({ nodeId: "e", status: "done" });
     });
 
+    it("test button makes a run a test once, and the run page and list say so", async () => {
+      const wid = await live("tester");
+      const rid = await run(wid, "w1", "waiting", "Tester");
+      expect(await (await get(`/admin/workflow-runs/${rid}`)).text()).toContain(">test<");
+      expect((await form(`/admin/workflow-runs/${rid}/test`, [], "Hal")).status).toBe(403);
+      const res = await form(`/admin/workflow-runs/${rid}/test`, []);
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe(`/admin/workflow-runs/${rid}`);
+      expect((await db.select().from(workflowRuns).where(eq(workflowRuns.id, rid)))[0].test).toBe(true);
+      const page = await (await get(`/admin/workflow-runs/${rid}`)).text();
+      expect(page).toContain("a test run: every wait lasts a minute");
+      expect(page).not.toContain(`${rid}/test"`);
+      expect(await (await get(`/admin/bots/${bot}/workflows/${wid}/runs`)).text()).toContain("a test run: every wait lasts a minute");
+    });
+
     it("end refuses a running run with a message", async () => {
       const wid = await live("end");
       const rid = await run(wid, "a", "running", "Busy");

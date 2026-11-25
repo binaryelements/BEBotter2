@@ -22,9 +22,12 @@ export function setPostAsk(fn: typeof postAskHook): void {
 
 type Entry = { status: string; dueAt: Date | null; waitStartedAt: Date | null; stepStartedAt: null; reportedResult: null; attempts?: number; outcome?: string | null; endedAt?: Date | null };
 
-/** The run fields a node sets when a run lands on it. */
-export function nodeEntry(node: WorkflowNode, now: Date, timezone: string, holidays: string[]): Entry {
+export const TEST_WAIT_MS = 60_000;
+
+/** The run fields a node sets when a run lands on it; on a test run every wait lasts a minute. */
+export function nodeEntry(node: WorkflowNode, now: Date, timezone: string, holidays: string[], test = false): Entry {
   const e = nodeFields(node, now, timezone, holidays);
+  if (test && node.type === "wait") e.dueAt = new Date(now.getTime() + TEST_WAIT_MS);
   return { ...e, stepStartedAt: null, reportedResult: null };
 }
 
@@ -161,7 +164,7 @@ async function enter(tx: Tx, run: WorkflowRun, nodeId: string, notify: Notify, r
   const now = new Date();
   const [updated] = await tx
     .update(workflowRuns)
-    .set({ ...nodeEntry(node, now, tz, graph.holidays), nodeId: node.id, updatedAt: now })
+    .set({ ...nodeEntry(node, now, tz, graph.holidays, run.test), nodeId: node.id, updatedAt: now })
     .where(eq(workflowRuns.id, run.id))
     .returning();
   await addEvent(tx, run.id, node.id, node.type === "wait" ? "wait" : node.type === "ask" ? "ask" : "step", { reason, data: node.type === "end" ? { outcome: node.outcome } : undefined });
@@ -285,6 +288,19 @@ export const pauseRun = (db: Db, tenantId: string, runId: string, personId: stri
     await tx.update(workflowRuns).set({ status: "needs_person", dueAt: null, updatedAt: new Date() }).where(eq(workflowRuns.id, run.id));
     await revokeApprovals(tx, run.id); // a held write must not be replayed when the run comes back to this step
     await addEvent(tx, run.id, run.nodeId, "move", { reason: "paused", data: { from: run.nodeId, to: NEEDS_PERSON, personId } });
+  });
+
+/** Makes an open run a test for good: its waits last a minute, the one it is on now included. */
+export const markTest = (db: Db, tenantId: string, runId: string, personId: string) =>
+  stoppable(db, tenantId, runId, async (tx, run) => {
+    if (run.test) return;
+    const now = new Date();
+    const soon = new Date(now.getTime() + TEST_WAIT_MS);
+    const { graph } = await context(tx, run);
+    const onWait = run.status === "waiting" && graph?.nodes.find((n) => n.id === run.nodeId)?.type === "wait";
+    const dueAt = onWait && run.dueAt && run.dueAt > soon ? soon : run.dueAt;
+    await tx.update(workflowRuns).set({ test: true, dueAt, updatedAt: now }).where(eq(workflowRuns.id, run.id));
+    await addEvent(tx, run.id, run.nodeId, "move", { reason: "made a test: waits last a minute", data: { personId } });
   });
 
 /** Ends an open run by hand, closing its cards and revoking its held approvals. */
