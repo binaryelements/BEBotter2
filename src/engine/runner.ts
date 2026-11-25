@@ -7,6 +7,7 @@ import { toolLabel } from "../teams/cards.js";
 import { trackTurn } from "./live.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
 import { tellMcpServer } from "../bots/tell.js";
+import { listeningMcpServer } from "../bots/listening.js";
 import { assistantMcpServer } from "../bots/assistant.js";
 import { todoMcpServer } from "../todos/mcp.js";
 import { connectionGrantForTool } from "../connections/store.js";
@@ -201,6 +202,8 @@ async function engineSetup(deps: RunnerDeps, tenantId: string, chatId: string, d
       connections: connectionsMcpServer(deps, ctx),
       routine: routineMcpServer(deps, ctx),
       ...(workflow ? { workflow: workflowMcpServer({ db }, workflow) } : {}),
+      // the bot judges "we've got it from here" itself; the name-plus-stop-word shortcut lives in the Teams handler
+      ...(routine ? {} : { listening: listeningMcpServer({ chatId, definitionId: definition.id }) }),
       attachments: attachmentsMcpServer(deps, ctx),
       learnings: learningsMcpServer(deps, ctx, personal),
       // one bot tells another: the told bot runs its own turn here, for the same person, one hop at most

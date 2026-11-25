@@ -14,6 +14,7 @@ import { recentAttachments, storeAttachments, withAttachments } from "./attachme
 import type { IncomingAttachment } from "./attachments.js";
 import type { AdaptiveCard } from "./cards.js";
 import { clickApproval } from "../workflows/approvals.js";
+import { stopListening, stoppedAt } from "../bots/listening.js";
 
 export type IncomingMessage = {
   tenantId: string;
@@ -353,7 +354,7 @@ export async function handleMessage(
   }
   // "Mickey, ignore": the chat is done with the bot for now, so nothing until its next answer counts as a follow-up
   if (msg.conversationType !== "personal" && definition && ((msg.mentioned && STOP.test(msg.text)) || toldToStop(msg.text, definition))) {
-    stoppedAt.set(`${msg.chatId}:${definition.id}`, (msg.receivedAt ?? new Date()).getTime());
+    stopListening(msg.chatId, definition.id, (msg.receivedAt ?? new Date()).getTime());
     return void (await io.send("Okay, I'll stay out of it. Say my name when you need me."));
   }
   // a group chat the bot may hear in full: it answers only when @mentioned or addressed by name, and keeps the rest as context
@@ -549,13 +550,12 @@ export const confirmationWord = (text: string): "yes" | "no" | undefined => {
 };
 
 /** What follows the bot's name in "Mickey, ignore" or "@Mickey stop listening". */
-const STOP = /^\W*(?:ignore(?: (?:that|this|me|us|it|all that))?|stop(?: listening)?|shush|shh+|quiet|be quiet|never ?mind|nvm|that'?s all|go away|not you|not for you|leave it|you can go)\W*$/iu;
+// polite words around it are fine ("ok mickey, thanks, that's all"); anything more is a request, not a stop
+const STOP = /^\W*(?:(?:ok(?:ay)?|thanks|thank you|cheers|please)\W+)*(?:ignore(?: (?:that|this|me|us|it|all that|everything))?|stop(?: (?:listening|it|now|that|there))?|quit|cancel|enough|that'?s enough|shush|hush|shh+|quiet|be quiet|shut up|zip it|never ?mind|nvm|forget it|that'?s (?:all|it)|(?:we'?re |i'?m |all )?done|go away|go to sleep|sleep|bye|goodbye|see ya|later|not now|not you|not for you|leave it|leave us|you can go|dismiss(?:ed)?|stand down|back off|pause|off)(?:\W+(?:please|thanks|thank you|now|for now|mate|cheers))*\W*$/iu;
 export const toldToStop = (text: string, d: { displayName: string | null; label: string }): boolean => {
   const re = nameRe(d);
   return !!re?.test(text) && STOP.test(text.replace(re, ""));
 };
-/** When each group chat told its bot to stop listening, keyed chat:bot. shortcut: in memory, so a restart forgets it; the window is at most 30 minutes, store it if that ever matters. */
-const stoppedAt = new Map<string, number>();
 /** For this long after the bot answers someone in a group chat, their next messages are follow-ups and need no name. */
 const FOLLOW_UP_MS = 15 * 60_000;
 /** A bot that ended on a question is waiting for an answer; do not stop listening after two minutes. */
@@ -563,11 +563,12 @@ const QUESTION_FOLLOW_UP_MS = 30 * 60_000;
 /** A group-chat message is a follow-up when the bot answered its sender within the window and it is not aimed at someone else. */
 async function followUp(db: Db, msg: IncomingMessage, definitionId: string, personId: string): Promise<boolean> {
   if (msg.mentionedOthers) return false;
-  const [last] = await db.select({ at: auditEvents.finishedAt }).from(auditEvents)
+  const [last] = await db.select({ at: auditEvents.finishedAt, began: auditEvents.startedAt }).from(auditEvents)
     .where(and(eq(auditEvents.chatId, msg.chatId), eq(auditEvents.definitionId, definitionId), eq(auditEvents.personId, personId), eq(auditEvents.kind, "message"), isNotNull(auditEvents.finishedAt)))
     .orderBy(desc(auditEvents.finishedAt)).limit(1);
   if (!last?.at) return false;
-  if ((stoppedAt.get(`${msg.chatId}:${definitionId}`) ?? 0) >= last.at.getTime()) return false;
+  // against when that answer began: a stop_listening call inside it lands before it finishes
+  if (stoppedAt(msg.chatId, definitionId) >= last.began.getTime()) return false;
   // the bot's last reply is the best signal: a question is still waiting for an answer after the ordinary window
   const [session] = await db.select({ messages: sessions.messages }).from(sessions).where(and(eq(sessions.chatId, msg.chatId), eq(sessions.definitionId, definitionId)));
   const lastReply = [...(session?.messages ?? [])].reverse().find((m) => m.role === "assistant" && (m.text ?? "").trim())?.text?.trim();
