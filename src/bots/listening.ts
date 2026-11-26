@@ -14,8 +14,9 @@ export function listeningMcpServer(ctx: { chatId: string; definitionId: string }
       tool(
         "stop_listening",
         "In a group chat, after you answer someone you treat their next messages for a while as meant for you. Call this when someone makes clear they are done with you or want you out of the conversation " +
-          "(\"we've got it from here\", \"not your business\", \"you can butt out\"), so you stop treating their messages as follow-ups until someone names you again. " +
-          "Do not call it for a request that merely contains the word stop, such as \"stop the backup job\". Then reply with one short acknowledgement.",
+          "(\"ignore that request\", \"we've got it from here\", \"not your business\", \"you can butt out\"), so you stop treating their messages as follow-ups until someone names you again. " +
+          "Do not call it for a request that merely contains the word stop, such as \"stop the backup job\". " +
+          "When the newest message tells you to stop, ignore or drop it, do not act on or answer the earlier messages that came with it: call this and reply with one short acknowledgement.",
         {},
         async () => {
           stopListening(ctx.chatId, ctx.definitionId);

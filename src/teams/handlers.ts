@@ -14,7 +14,7 @@ import { recentAttachments, storeAttachments, withAttachments } from "./attachme
 import type { IncomingAttachment } from "./attachments.js";
 import type { AdaptiveCard } from "./cards.js";
 import { clickApproval } from "../workflows/approvals.js";
-import { stopListening, stoppedAt } from "../bots/listening.js";
+import { stoppedAt } from "../bots/listening.js";
 
 export type IncomingMessage = {
   tenantId: string;
@@ -352,11 +352,6 @@ export async function handleMessage(
     const aimed = msg.conversationType === "personal" || msg.mentioned || (definition && addressedByName(msg.text, definition));
     if (aimed) return void (await io.send("I'm waiting for your confirmation on the card above. Say yes or no, or use the buttons."));
   }
-  // "Mickey, ignore": the chat is done with the bot for now, so nothing until its next answer counts as a follow-up
-  if (msg.conversationType !== "personal" && definition && ((msg.mentioned && STOP.test(msg.text)) || toldToStop(msg.text, definition))) {
-    stopListening(msg.chatId, definition.id, (msg.receivedAt ?? new Date()).getTime());
-    return void (await io.send("Okay, I'll stay out of it. Say my name when you need me."));
-  }
   // a group chat the bot may hear in full: it answers only when @mentioned or addressed by name, and keeps the rest as context
   if (msg.conversationType !== "personal" && msg.mentioned === false && !(definition && (addressedByName(msg.text, definition) || (await followUp(db, msg, definition.id, person.id))))) {
     // a photo alone still says something; kept only where the chat is listened to, like the words
@@ -549,13 +544,6 @@ export const confirmationWord = (text: string): "yes" | "no" | undefined => {
   return undefined;
 };
 
-/** What follows the bot's name in "Mickey, ignore" or "@Mickey stop listening". */
-// polite words around it are fine ("ok mickey, thanks, that's all"); anything more is a request, not a stop
-const STOP = /^\W*(?:(?:ok(?:ay)?|thanks|thank you|cheers|please)\W+)*(?:ignore(?: (?:that|this|me|us|it|all that|everything))?|stop(?: (?:listening|it|now|that|there))?|quit|cancel|enough|that'?s enough|shush|hush|shh+|quiet|be quiet|shut up|zip it|never ?mind|nvm|forget it|that'?s (?:all|it)|(?:we'?re |i'?m |all )?done|go away|go to sleep|sleep|bye|goodbye|see ya|later|not now|not you|not for you|leave it|leave us|you can go|dismiss(?:ed)?|stand down|back off|pause|off)(?:\W+(?:please|thanks|thank you|now|for now|mate|cheers))*\W*$/iu;
-export const toldToStop = (text: string, d: { displayName: string | null; label: string }): boolean => {
-  const re = nameRe(d);
-  return !!re?.test(text) && STOP.test(text.replace(re, ""));
-};
 /** For this long after the bot answers someone in a group chat, their next messages are follow-ups and need no name. */
 const FOLLOW_UP_MS = 15 * 60_000;
 /** A bot that ended on a question is waiting for an answer; do not stop listening after two minutes. */
