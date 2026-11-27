@@ -13,7 +13,7 @@ import type { AdaptiveCard } from "../teams/cards.js";
 import { askCard } from "../workflows/ask.js";
 import { matchEmail, startFromEmail } from "../workflows/match.js";
 import type { EmailEvent } from "../workflows/match.js";
-import { deliverEvent, emailAddress, emailDomain } from "../workflows/runs.js";
+import { deliverEvent, emailAddress, emailDomain, resumeEndedRun } from "../workflows/runs.js";
 import type { Notify } from "../workflows/runs.js";
 import { emailWorkflowFor } from "../workflows/store.js";
 
@@ -68,6 +68,8 @@ async function route(db: Db, wf: Workflow, mail: EmailEvent, send: InboundDeps["
   const match = await matchEmail(db, wf.id, mail);
   // shortcut: no per-run wake bound; add one if auto-reply loops appear
   if (match.kind === "wake" && (await deliverEvent(db, match.runId, mail, notify))) return;
+  // the run ended at a step whose "new message" exit is linked: it carries on there, and nobody is asked
+  if (match.kind === "ask" && match.why === "ended" && (await resumeEndedRun(db, match.runId, mail, notify))) return;
   if (!underCap()) return void (await notify(wf.chatId, `Too many new emails this hour; ${plain(mail.from)} about ${plain(mail.subject)} wasn't started. Start it by hand.`));
   if (match.kind !== "ask") return void (await startFromEmail(db, wf, mail, notify));
   // shortcut: match questions never expire and each email from the same unmatched sender posts another card; expire or merge them if chats get noisy
