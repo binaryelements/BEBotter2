@@ -15,7 +15,8 @@ import { setAllowedDepartments } from "../bots/definitions.js";
 import { auditEvents, botDefinitions, chatAssignments, chats } from "../db/schema.js";
 import { createDepartment, setMembership, setPersonalBot, setRole } from "../org/directory.js";
 import { recordChatOwner, saveConversationReference, setTenantSettings, upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
-import { SLOW_NOTE, addressedByName, toldToStop, choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
+import { stopListening } from "../bots/listening.js";
+import { SLOW_NOTE, addressedByName, choosePayload, clickPayload, handleChoose, handleConfirmClick, handleInstall, handleMessage, membersAddedGreeting, needsSignIn, tenantBotName } from "./handlers.js";
 import { confirmerPolicy } from "../admin/access.js";
 import type { IncomingMessage } from "./handlers.js";
 
@@ -950,22 +951,24 @@ describe("choosing the bot in a one-to-one chat", () => {
     expect(s.runTurn).toHaveBeenCalledTimes(before + 1); // a follow-up: no name needed
     await group("Ann, can you check the toner", false, "u2");
     expect(s.runTurn).toHaveBeenCalledTimes(before + 1); // aimed at a colleague
-    // "mickey, ignore" ends the window early: the next message is overheard although it is still inside it
-    await group("mickey, ignore", false, "u2");
-    expect(s.sent.at(-1)).toBe("Okay, I'll stay out of it. Say my name when you need me.");
-    await group("what about the toner", false, "u2");
-    expect(s.runTurn).toHaveBeenCalledTimes(before + 1);
     await s.db.update(auditEvents).set({ finishedAt: new Date(Date.now() - 16 * 60_000) }).where(eq(auditEvents.id, answered));
     await group("still there?", false, "u2");
     expect(s.runTurn).toHaveBeenCalledTimes(before + 1); // too late to be a follow-up
     await group("mickey, still there?", false, "u2");
     expect(s.runTurn).toHaveBeenCalledTimes(before + 2); // named, so it answers
+    // a new answer opens the window again; the bot's own stop_listening, called inside an answer, keeps it shut
+    const reopened = await beginAction(s.db, { tenantId: "t1", chatId: "c1", definitionId: a.id, personId: bob.id, kind: "message", summary: "still there" });
+    await completeAction(s.db, reopened, { status: "done" });
+    await group("one more thing", false, "u2");
+    expect(s.runTurn).toHaveBeenCalledTimes(before + 3);
+    const toldOff = await beginAction(s.db, { tenantId: "t1", chatId: "c1", definitionId: a.id, personId: bob.id, kind: "message", summary: "we've got it from here, thanks" });
+    stopListening("c1", a.id);
+    await completeAction(s.db, toldOff, { status: "done" });
+    await group("and another", false, "u2");
+    expect(s.runTurn).toHaveBeenCalledTimes(before + 3);
     expect(addressedByName("Hey Mickey: help", { displayName: "Mickey", label: "IT" })).toBe(true);
     expect(addressedByName("Mickeys are mice", { displayName: "Mickey", label: "IT" })).toBe(false);
     expect(addressedByName("it support, help", { displayName: null, label: "IT Support" })).toBe(true);
-    const mickey = { displayName: "Mickey", label: "IT" };
-    expect([toldToStop("Mickey ignore", mickey), toldToStop("hey mickey, stop listening!", mickey), toldToStop("Mickey, never mind", mickey)]).toEqual([true, true, true]);
-    expect([toldToStop("Mickey, ignore the printer error", mickey), toldToStop("ignore", mickey)]).toEqual([false, false]);
   });
 
   it("accepts a typed yes/no for a pending confirmation", async () => {
