@@ -319,13 +319,13 @@ describe("workflows screens", () => {
         startedBy: "Background job", model: "m", systemPrompt: "You are <b>Jimmy</b>.", sentCount: 1, stopReason: "text", inputTokens: 10, outputTokens: 5, costUsd: "0.001",
         messages: [
           { role: "user" as const, text },
-          { role: "assistant" as const, text: "Checking.", toolCalls: [{ id: "c1", name: "mcp__mail__reply_mail", input: { body: "Hi <Sam>" } }] },
+          { role: "assistant" as const, text: "Checking.", toolCalls: [{ id: "c1", name: "mcp__mail__reply_mail", input: { body: "Hi <Sam>,\nthanks" } }] },
           { role: "tool" as const, toolCallId: "c1", text: "Sent for approval.", isError: true },
         ],
       });
       await db.insert(turnLogs).values([log(1, "first try"), log(2, "second try")]);
       const page = await (await get(`/admin/workflow-runs/${rid}`)).text();
-      expect(page).toContain(`href="/admin/turn-logs/log-${rid}-1">log<`);
+      expect(page).toContain(`href="/admin/turn-logs/log-${rid}-1">log 1<`);
       expect(page).toContain(`href="/admin/turn-logs/log-${rid}-2">log 2<`);
       expect(page).toContain(`/admin/activity?run=${rid}`);
       const headPage = await (await get(`/admin/workflow-runs/${rid}`, "Hal")).text();
@@ -335,8 +335,9 @@ describe("workflows screens", () => {
       expect(view).toContain("Sent to the AI");
       expect(view).toContain("second try");
       expect(view).toContain("AI called <code>mcp__mail__reply_mail</code>");
-      expect(view).toContain("Hi &lt;Sam&gt;");
-      expect(view).toContain("<code>mcp__mail__reply_mail</code> returned an error");
+      expect(view).toContain("Hi &lt;Sam&gt;,\nthanks");
+      expect(view).toContain("<code>mcp__mail__reply_mail</code> held for approval");
+      expect(view).not.toContain("returned an error");
       expect(view).toContain("You are &lt;b&gt;Jimmy&lt;/b&gt;.");
       expect(view).toContain(`href="/admin/workflow-runs/${rid}"`);
       expect((await get(`/admin/turn-logs/log-${rid}-2`, "Hal")).status).toBe(404);

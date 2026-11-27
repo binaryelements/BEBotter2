@@ -158,7 +158,11 @@ ${runs.length ? scroll(html`<table class="be-table"><thead><tr><th>Run</th><th>S
         const step = events.filter((e) => e.kind === "step" && e.nodeId === l.nodeId && e.at.getTime() <= at).at(-1);
         if (step) logsOf.set(step.id, [...(logsOf.get(step.id) ?? []), l.id]);
       }
-      const logLinks = (e: (typeof events)[number]) => (logsOf.get(e.id) ?? []).map((id, i) => html`${i ? " " : ""}<a href="/admin/turn-logs/${id}">${i ? `log ${i + 1}` : "log"}</a>`);
+      // one attempt reads "log"; a step that ran again reads "log 1 · log 2"
+      const logLinks = (e: (typeof events)[number]) => {
+        const ids = logsOf.get(e.id) ?? [];
+        return ids.map((id, i) => html`${i ? " · " : ""}<a href="/admin/turn-logs/${id}">${ids.length > 1 ? `log ${i + 1}` : "log"}</a>`);
+      };
       const row = (e: (typeof events)[number]) => html`<tr><td>${when(e.at)}</td><td>${label(e.nodeId)}</td><td>${e.kind}</td><td>${e.result ?? ""}</td><td>${e.reason ?? ""}</td>${admin ? html`<td class="be-nowrap">${logLinks(e)}</td>` : ""}</tr>`;
       const body = html`<header class="be-pagehead"><div class="pt">${crumb(def, w, run.title)}<h1>${run.title}</h1></div><div class="act">${buttons}</div></header>
 <p>${chip(run.status)}${run.test ? html` ${testChip}` : ""} ${label(run.nodeId)}${run.dueAt ? html` · due ${when(run.dueAt)}` : ""}${run.outcome ? html` · ${run.outcome}` : ""}${admin ? html` · <a href="/admin/activity?run=${run.id}">actions</a>` : ""}</p>

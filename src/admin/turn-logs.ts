@@ -18,18 +18,26 @@ import { whenFor } from "./words.js";
 const block = (kind: string, title: SafeHtml | string, body: string, bad = false) =>
   html`<section class="tlog-msg tlog-${kind}${bad ? " bad" : ""}"><h3>${title}</h3><pre>${body}</pre></section>`;
 
+// line breaks inside values (an email body) are shown as breaks, so the text reads as written
 const json = (v: unknown) => {
   try {
-    return JSON.stringify(v, null, 2) ?? "";
+    return (JSON.stringify(v, null, 2) ?? "").replace(/(?<!\\)\\n/g, "\n");
   } catch {
     return String(v);
   }
 };
 
+// a write held for a person's approval comes back to the AI as an error result, but nothing went wrong
+const HELD = /^Sent for approval\b/;
+
 /** One message as a person reads it. `userTitle` names a user message; a tool result is named after the call it answers. */
 function message(m: EngineMessage, callName: Map<string, string>, userTitle: string): SafeHtml[] {
   if (m.role === "user") return [block(userTitle === "Image from a tool" ? "tool" : "sent", userTitle, m.text || "[image]")];
-  if (m.role === "tool") return [block("tool", html`<code>${callName.get(m.toolCallId) ?? "tool"}</code> returned${m.isError ? " an error" : ""}`, m.text, !!m.isError)];
+  if (m.role === "tool") {
+    const name = callName.get(m.toolCallId) ?? "tool";
+    if (HELD.test(m.text)) return [block("tool", html`<code>${name}</code> held for approval`, m.text)];
+    return [block("tool", html`<code>${name}</code> returned${m.isError ? " an error" : ""}`, m.text, !!m.isError)];
+  }
   return [
     ...(m.text ? [block("ai", "AI said", m.text)] : []),
     ...(m.toolCalls ?? []).map((c) => block("call", html`AI called <code>${c.name}</code>`, json(c.input))),
