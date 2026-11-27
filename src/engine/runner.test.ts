@@ -14,7 +14,7 @@ import type { BotDefinitionInput } from "../bots/definitions.js";
 import { fakeDockerClient } from "../computer/docker.js";
 import { fakeSsh } from "../connections/ssh.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, chats, connections, mailboxes, sessions, workflowRuns } from "../db/schema.js";
+import { botDefinitions, chats, connections, mailboxes, sessions, turnLogs, workflowRuns } from "../db/schema.js";
 import { createWorkflow } from "../workflows/store.js";
 import { addLearning } from "../learnings/store.js";
 import { writeNote } from "../knowledge/store.js";
@@ -898,6 +898,64 @@ describe("runTurn", () => {
       await Promise.all([turn("r1"), turn("r2")]);
       const rows = await db.select().from(workflowRuns);
       expect(Object.fromEntries(rows.map((r) => [r.id, r.reportedResult?.reason]))).toEqual({ r1: "r1", r2: "r2" });
+    });
+  });
+
+  describe("turn logs", () => {
+    /** An engine that writes, calls one tool with a token in its input, and gets a long result back. */
+    const talker = (result: Partial<EngineResult> = {}): Engine => ({
+      async run(input) {
+        const history: EngineMessage[] = [...input.history];
+        history.push({ role: "assistant", text: "Looking it up.", toolCalls: [{ id: "c1", name: "mcp__computer__bash", input: { command: "curl -H 'token: abc123def'" } }] });
+        await input.authoriseTool("c1", "mcp__computer__bash", { command: "uptime" });
+        await input.completeTool("c1", "done");
+        history.push({ role: "tool", toolCallId: "c1", text: "x".repeat(25_000) });
+        history.push({ role: "assistant", text: "All done." });
+        return { text: "All done.", messages: history, usage: { inputTokens: 120, outputTokens: 30, costUsd: 0.002 }, steps: 2, stopReason: "text", ...result };
+      },
+    });
+
+    it("saves the system prompt, what was sent and everything that came back, linked to the message row", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const r = await runTurn(deps(db, talker()), { tenantId: "t1", chatId: "c1", definition, person, text: "check the server", askConfirmation: async () => {} });
+      const [log] = await db.select().from(turnLogs);
+      expect(log!.auditId).toBe(r.auditId);
+      expect(log!.systemPrompt).toContain("You run ops.");
+      expect(log!.startedBy).toBe("Ann");
+      expect(log!.sentCount).toBe(1);
+      const sent = log!.messages[0]!;
+      expect(sent.role === "user" && sent.text.endsWith("check the server")).toBe(true);
+      expect(log!.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+      expect(JSON.stringify(log!.messages)).not.toContain("abc123def");
+      const tool = log!.messages[2]!;
+      expect(tool.role === "tool" && tool.text.length < 21_000 && tool.text.endsWith("[cut: 5 KB more]")).toBe(true);
+      expect([log!.inputTokens, log!.outputTokens, Number(log!.costUsd)]).toEqual([120, 30, 0.002]);
+    });
+
+    it("logs a superseded turn too, with no message row", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      const r = await runTurn(deps(db, talker({ stopReason: "aborted" })), { tenantId: "t1", chatId: "c1", definition, person, text: "hi", askConfirmation: async () => {} });
+      expect(r.aborted).toBe(true);
+      const [log] = await db.select().from(turnLogs);
+      expect([log!.stopReason, log!.auditId]).toEqual(["aborted", null]);
+    });
+
+    it("marks a workflow step's log with its run, step and attempt", async () => {
+      const db = await testDb();
+      const { definition, person } = await setup(db);
+      await assignToChat(db, "c1", definition.id);
+      const wf = await createWorkflow(db, "t1", { definitionId: definition.id, name: "wf", chatId: "c1", runAsPersonId: person.id });
+      const at = new Date("2026-11-20T01:00:00.000Z");
+      await db.insert(workflowRuns).values({ id: "r1", tenantId: "t1", workflowId: wf.id, nodeId: "a", status: "running", stepStartedAt: at, title: "r1", keys: { threadIds: [], emails: [], domain: null }, fields: {} });
+      await runTurn(deps(db, talker()), {
+        tenantId: "t1", chatId: "c1", definition, person, text: "step", askConfirmation: async () => {},
+        routine: { id: "wf:r1", grantPersonId: null, post: async () => {}, background: true },
+        workflow: { runId: "r1", nodeId: "a", stepStartedAt: at.toISOString(), results: ["done"], saves: [] },
+      });
+      const [log] = await db.select().from(turnLogs);
+      expect([log!.workflowRunId, log!.nodeId, log!.stepStartedAt?.toISOString(), log!.startedBy]).toEqual(["r1", "a", at.toISOString(), "Background job"]);
     });
   });
 });

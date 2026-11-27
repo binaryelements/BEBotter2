@@ -9,6 +9,13 @@ const PATTERNS: [RegExp, string][] = [
 const ASSIGNED = /(password|passwd|secret|token)["']?[ \t]*[:=][ \t]*["']?(<[^>\n]*>|[^\s"',;]*)/gi;
 const PLACEHOLDER = /^(<.*>|\*+|\[redacted\])$/i;
 
+/** The text with each secret-looking value replaced by [redacted]; a password or token label keeps its name. */
+export function maskSecrets(text: string): string {
+  let out = text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY( BLOCK)?-----|$)/g, "[redacted]");
+  for (const [re] of PATTERNS.slice(1)) out = out.replace(new RegExp(re.source, "g"), "[redacted]");
+  return out.replace(ASSIGNED, (m, _name: string, value: string) => (value && !PLACEHOLDER.test(value) ? m.slice(0, m.length - value.length) + "[redacted]" : m));
+}
+
 /** A short reason when the text looks like it holds a secret, otherwise undefined. */
 export function findSecret(text: string): string | undefined {
   for (const [re, reason] of PATTERNS) if (re.test(text)) return reason;

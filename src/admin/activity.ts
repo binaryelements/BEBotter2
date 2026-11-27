@@ -1,9 +1,9 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import express from "express";
 import type { Request, Router } from "express";
 import { listActions } from "../audit/audit.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, definitionDepartments, departmentMembers, people } from "../db/schema.js";
+import { botDefinitions, definitionDepartments, departmentMembers, people, turnLogs } from "../db/schema.js";
 import type { AuditEvent } from "../db/schema.js";
 import { toolLabel } from "../teams/cards.js";
 import { isAdmin } from "./access.js";
@@ -17,7 +17,7 @@ import { page } from "./oidc.js";
 
 const PAGE = 100;
 const CSV_MAX = 10_000;
-const FILTERS = ["bot", "person", "chat", "status", "q"] as const;
+const FILTERS = ["bot", "person", "chat", "status", "q", "run"] as const;
 
 const q = (req: Request, name: string) => {
   const v = req.query[name];
@@ -111,6 +111,7 @@ export function activityRoutes(db: Db): Router {
       tenantId: actor.tenantId,
       definitionId: q(req, "bot"),
       chatId: q(req, "chat"),
+      workflowRunId: q(req, "run"),
       status: q(req, "status"),
       q: q(req, "q"),
       personId,
@@ -135,18 +136,23 @@ export function activityRoutes(db: Db): Router {
       const keep =new URLSearchParams(FILTERS.flatMap((f) => (q(req, f) ? [[f, q(req, f)!]] : [])));
       const older = rows.length === PAGE ? new URLSearchParams([...keep, ["before", rows[rows.length - 1].id]]).toString() : "";
       const csv = keep.toString();
+      // a turn's full conversation, for admins only: it can hold whatever a tool returned
+      const auditIds = isAdmin(actor) ? rows.filter((e) => e.kind === "message").map((e) => e.id) : [];
+      const logOf = new Map((auditIds.length ? await db.select({ id: turnLogs.id, auditId: turnLogs.auditId }).from(turnLogs).where(and(eq(turnLogs.tenantId, actor.tenantId), inArray(turnLogs.auditId, auditIds))) : []).map((l) => [l.auditId, l.id]));
       const tr = rows.map((e) => {
         const c = cells(e, n, when);
+        const log = logOf.get(e.id);
         const cls = ["be-mono be-nowrap", "", "", "", ""];
         // the error sits under the tool, which is always on screen; the summary wraps instead of widening the table
-        return html`<tr>${c.slice(0, 4).map((v, i) => (cls[i] ? html`<td class="${cls[i]}">${v}</td>` : html`<td>${v}</td>`))}<td>${c[4]}${e.error ? html`<div class="be-hint be-bad act-error">${e.error}</div>` : ""}</td><td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td class="act-sum">${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
+        return html`<tr>${c.slice(0, 4).map((v, i) => (cls[i] ? html`<td class="${cls[i]}">${v}</td>` : html`<td>${v}</td>`))}<td>${c[4]}${log ? html` · <a href="/admin/turn-logs/${log}">log</a>` : ""}${e.error ? html`<div class="be-hint be-bad act-error">${e.error}</div>` : ""}</td><td>${chip(e.status)}${e.kind === "admin" ? html` ${chip("changed")}` : ""}</td><td class="act-sum">${c[6]}</td><td>${timingBar(e)}</td><td>${c[7] ? `confirmed by ${c[7]}` : ""}</td></tr>`;
       });
       const sel = { bot: q(req, "bot"), person: q(req, "person"), chat: q(req, "chat") };
       res.type("html").send(
         layout({
           title: "Activity",
           body: html`${pageHead("Activity", html`<a class="be-btn" href="/admin/activity.csv${csv ? `?${csv}` : ""}">export csv</a>`)}
-<form class="row" method="get" action="/admin/activity"><input class="be-input" type="search" name="q" value="${q(req, "q") ?? ""}" placeholder="search summaries…" aria-label="Search"> ${pick("bot", "bot", n.bot, sel.bot)} ${pick("person", "person", n.person, sel.person)} ${pick("chat", "chat", n.chat, sel.chat)} <select class="be-select" name="status" aria-label="Status"><option value="">any status</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
+${q(req, "run") ? html`<div class="be-notice"><div class="grow">Showing the actions of one workflow run. <a href="/admin/workflow-runs/${q(req, "run")!}">back to the run</a> · <a href="/admin/activity">show all</a></div></div>` : ""}
+<form class="row" method="get" action="/admin/activity">${q(req, "run") ? html`<input type="hidden" name="run" value="${q(req, "run")!}">` : ""}<input class="be-input" type="search" name="q" value="${q(req, "q") ?? ""}" placeholder="search summaries…" aria-label="Search"> ${pick("bot", "bot", n.bot, sel.bot)} ${pick("person", "person", n.person, sel.person)} ${pick("chat", "chat", n.chat, sel.chat)} <select class="be-select" name="status" aria-label="Status"><option value="">any status</option>${["pending", "done", "denied", "expired", "failed"].map((s) => html`<option ${s === q(req, "status") ? "selected" : ""}>${s}</option>`)}</select> <button class="be-btn primary">filter</button></form>
 ${tr.length ? scroll(html`<table class="be-table activity"><thead><tr><th>Time</th><th>Person</th><th>Bot</th><th>Chat</th><th>Tool</th><th>Status</th><th>Summary</th><th>Timing</th><th>Confirmed</th></tr></thead><tbody>${tr}</tbody></table>`) : html`<div class="be-empty">Nothing here.</div>`}
 ${older ? html`<p><a href="/admin/activity?${older}">older</a></p>` : ""}`,
           actor,
