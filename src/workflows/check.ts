@@ -10,7 +10,8 @@ export function exitsOf(n: WorkflowNode): string[] {
     case "ai": return [...n.results.map((r) => r.name), NEEDS_PERSON, NEW_MESSAGE];
     case "wait": return ["time_up", NEW_MESSAGE];
     case "ask": return [...n.choices, "no_answer", NEW_MESSAGE];
-    case "end": return [];
+    // a reply after the run ended: linked, the run carries on there; open, a person is asked to reopen or start new
+    case "end": return [NEW_MESSAGE];
   }
 }
 

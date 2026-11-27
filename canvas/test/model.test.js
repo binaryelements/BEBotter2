@@ -33,7 +33,7 @@ describe("canvas model", () => {
 
   it("EXITS matches exitsOf for every node type", () => {
     for (const n of nodes) expect(EXITS(n)).toEqual(exitsOf(n));
-    expect(EXITS(nodes[4])).toEqual([]);
+    expect(EXITS(nodes[4])).toEqual(["new_message"]);
   });
 
   it("openExits lists unlinked exits but not new_message", () => {
@@ -48,7 +48,8 @@ describe("canvas model", () => {
     const { nodes: n, edges: e } = toFlow(graph);
     expect(whyNot({ source: "a", sourceHandle: "bad", target: "t" }, n, e)).toBe("nothing links into the trigger");
     expect(whyNot({ source: "a", sourceHandle: "ok", target: "e" }, n, e)).toBe("that exit is already linked");
-    expect(whyNot({ source: "e", sourceHandle: "x", target: "w" }, n, e)).toBe("nothing leaves End");
+    // an end's new message exit can be linked, so a reply after the run ended carries on there
+    expect(whyNot({ source: "e", sourceHandle: "new_message", target: "w" }, n, e)).toBeNull();
     expect(whyNot({ source: "a", sourceHandle: "bad", target: "e" }, n, e)).toBeNull();
   });
 

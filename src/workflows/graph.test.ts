@@ -23,7 +23,7 @@ describe("exitsOf", () => {
     expect(exitsOf(ai)).toEqual(["done", "needs_person", "new_message"]);
     expect(exitsOf(wait)).toEqual(["time_up", "new_message"]);
     expect(exitsOf(ask)).toEqual(["yes", "no", "no_answer", "new_message"]);
-    expect(exitsOf(end)).toEqual([]);
+    expect(exitsOf(end)).toEqual(["new_message"]);
   });
 });
 

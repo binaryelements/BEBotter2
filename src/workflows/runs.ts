@@ -256,6 +256,34 @@ export async function reopenRun(db: Db, runId: string, event: RunEvent, notify: 
   return reopened;
 }
 
+/**
+ * A reply to a run that finished at an end step whose "new message" exit is linked: the run reopens and goes there at once,
+ * with the email queued for the step, and no person is asked. False when the run is not finished at such an end.
+ */
+export async function resumeEndedRun(db: Db, runId: string, event: RunEvent, notify: Notify): Promise<boolean> {
+  let resumed = false;
+  await atomically(db, runId, async (tx, run, after) => {
+    // a failed run stopped mid-step; only a run that reached an end carries on by itself
+    if (run.status !== "done") return;
+    const { wf, graph } = await context(tx, run);
+    const end = graph?.nodes.find((n) => n.id === run.nodeId);
+    if (!graph || end?.type !== "end") return;
+    const to = nextNode(graph, end.id, NEW_MESSAGE);
+    if (to === NEEDS_PERSON) return;
+    resumed = true;
+    const [reopened] = await tx
+      .update(workflowRuns)
+      .set({ status: "waiting", outcome: null, endedAt: null, dueAt: null, keys: withEmail(run.keys, event), pendingEvents: [...run.pendingEvents, { ...event, woke: true }], updatedAt: new Date() })
+      .where(eq(workflowRuns.id, run.id))
+      .returning();
+    await addEvent(tx, run.id, run.nodeId, "event", { data: event, reason: "a reply after it ended" });
+    const label = graph.nodes.find((n) => n.id === to)?.label ?? to;
+    after.push(() => notify(wf.chatId, `${plain(run.title)} had a reply after it ${end.outcome ? `ended as ${plain(end.outcome)}` : "ended"}, so it carries on at ${plain(label)}.`));
+    await step(tx, reopened, NEW_MESSAGE, notify, undefined, after);
+  });
+  return resumed;
+}
+
 export async function moveRun(db: Db, tenantId: string, runId: string, nodeId: string, personId: string, notify: Notify): Promise<void> {
   const [found] = await db.select().from(workflowRuns).where(and(eq(workflowRuns.id, runId), eq(workflowRuns.tenantId, tenantId)));
   if (!found) throw new DirectoryError("No such run");

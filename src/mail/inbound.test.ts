@@ -116,6 +116,37 @@ describe("mail inbound with an email workflow", () => {
     expect(all[0]).toMatchObject({ nodeId: "r", status: "done" });
   });
 
+  it("a reply after the run ended asks Reopen or Start new when the end's new message exit is open", async () => {
+    const { db, post } = await setup();
+    await withWorkflow(db);
+    await post(event({ thread: "th1" }));
+    await post(event({ id: "ev2", thread: "th1" }));
+    await post(event({ id: "ev3", thread: "th1" }));
+    const [p] = await db.select().from(workflowPending);
+    expect(p).toMatchObject({ kind: "match", choices: ["Reopen", "Start new"], status: "pending" });
+    expect((await db.select().from(workflowRuns))[0]).toMatchObject({ nodeId: "r", status: "done" });
+  });
+
+  it("a reply after the run ended carries on at the step linked to the end's new message exit, with no card", async () => {
+    const { db, sent, post } = await setup();
+    const wf = await withWorkflow(db, false);
+    await saveDraft(db, "t1", wf.id, { ...emailGraph, edges: [...emailGraph.edges, { from: "r", exit: "new_message", to: "w" }] });
+    const ann = (await upsertPerson(db, { tenantId: "t1", aadObjectId: "aad-ann", name: "Ann" })).id;
+    await publish(db, "t1", wf.id, ann, {});
+    await post(event({ thread: "th1" }));
+    await post(event({ id: "ev2", thread: "th1" }));
+    expect((await db.select().from(workflowRuns))[0]).toMatchObject({ nodeId: "r", status: "done", outcome: "replied" });
+    await post(event({ id: "ev3", thread: "th1" }));
+    const all = await db.select().from(workflowRuns);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ nodeId: "w", status: "waiting", outcome: null, endedAt: null });
+    expect(await db.select().from(workflowPending)).toEqual([]);
+    const reasons = (await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.runId, all[0]!.id))).map((e) => [e.nodeId, e.kind, e.result ?? e.reason ?? ""]);
+    expect(reasons).toContainEqual(["r", "event", "a reply after it ended"]);
+    expect(reasons).toContainEqual(["r", "result", "new_message"]);
+    expect(sent.some(([c, m]) => c === "c1" && typeof m === "string" && m.endsWith("had a reply after it ended as replied, so it carries on at Wait."))).toBe(true);
+  });
+
   it("a repeated delivery wakes once", async () => {
     const { db, post } = await setup();
     await withWorkflow(db);

@@ -8,7 +8,7 @@ import { workflowPending, workflowRunEvents, workflowRuns } from "../db/schema.j
 import type { Workflow, WorkflowRun } from "../db/schema.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
 import type { WorkflowGraph } from "./graph.js";
-import { deliverEvent, endRun, enterNode, markTest, moveRun, nodeEntry, pauseRun, settleStep, startRun, takeExit, takeQueuedEvents } from "./runs.js";
+import { deliverEvent, endRun, enterNode, markTest, moveRun, nodeEntry, pauseRun, resumeEndedRun, settleStep, startRun, takeExit, takeQueuedEvents } from "./runs.js";
 import type { RunEvent } from "./runs.js";
 import { createWorkflow, publish, saveDraft } from "./store.js";
 
@@ -51,6 +51,41 @@ describe("workflow runs", () => {
     wf = await createWorkflow(db, "t1", { definitionId: defId, name: "wf", chatId: "c1", runAsPersonId: personId });
     await saveDraft(db, "t1", wf.id, graph);
     await publish(db, "t1", wf.id, personId, {});
+  });
+
+  describe("a reply after the run ended", () => {
+    const linked = async () => {
+      await saveDraft(db, "t1", wf.id, { ...graph, edges: [...graph.edges, { from: "e", exit: "new_message", to: "a" }] });
+      await publish(db, "t1", wf.id, personId, {});
+    };
+    const ended = async () => {
+      const r = await start();
+      await takeExit(db, r, "stop", notify);
+      return reload(r);
+    };
+
+    it("carries on at the linked step with the email queued for it", async () => {
+      await linked();
+      const r = await ended();
+      expect(r).toMatchObject({ nodeId: "e", status: "done", outcome: "all good" });
+      expect(await resumeEndedRun(db, r.id, email(2, "th9"), notify)).toBe(true);
+      const now = await reload(r);
+      expect(now).toMatchObject({ nodeId: "a", status: "ready", outcome: null, endedAt: null, attempts: 0 });
+      expect(now.pendingEvents.map((e) => e.type === "email" && e.messageId)).toContain("m2");
+      expect(now.keys).toMatchObject({ threadIds: ["th9"], emails: ["bob@acme.com"] });
+      expect(sent.at(-1)).toEqual(["c1", "Acme order had a reply after it ended as all good, so it carries on at Read."]);
+    });
+
+    it("does nothing when the end's new message exit is open, or the run failed", async () => {
+      const r = await ended();
+      expect(await resumeEndedRun(db, r.id, email(2), notify)).toBe(false);
+      expect(await reload(r)).toMatchObject({ nodeId: "e", status: "done" });
+      await linked();
+      const f = await start();
+      await db.update(workflowRuns).set({ status: "failed" }).where(eq(workflowRuns.id, f.id));
+      expect(await resumeEndedRun(db, f.id, email(3), notify)).toBe(false);
+      expect(await resumeEndedRun(db, (await start()).id, email(4), notify)).toBe(false); // still open
+    });
   });
 
   it("startRun lands on the first ai step", async () => {

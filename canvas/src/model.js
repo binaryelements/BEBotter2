@@ -24,7 +24,6 @@ export const openExits = (g) =>
 
 export function whyNot(c, nodes, edges) {
   if (nodes.find((n) => n.id === c.target)?.type === "trigger") return "nothing links into the trigger";
-  if (nodes.find((n) => n.id === c.source)?.type === "end") return "nothing leaves End";
   if (edges.some((e) => e.source === c.source && e.sourceHandle === c.sourceHandle)) return "that exit is already linked";
   return null;
 }
