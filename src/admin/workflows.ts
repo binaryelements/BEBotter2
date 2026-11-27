@@ -4,7 +4,7 @@ import { and, asc, count, desc, eq, inArray, notInArray } from "drizzle-orm";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import type { BotDefinition, Workflow } from "../db/schema.js";
-import { botDefinitions, people, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
+import { botDefinitions, people, turnLogs, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
 import { DirectoryError } from "../org/directory.js";
 import { endRun, markTest, moveRun, pauseRun } from "../workflows/runs.js";
 import type { Notify } from "../workflows/runs.js";
@@ -150,10 +150,19 @@ ${runs.length ? scroll(html`<table class="be-table"><thead><tr><th>Run</th><th>S
       const button = (verb: string) => html`<form method="post" action="${act}/${verb}" style="display:inline-flex;gap:6px">${csrfField}<button class="be-btn sm">${verb}</button></form>`;
       const admin = isAdmin(actor);
       const buttons = html`${admin && !run.test && !["running", "done", "failed"].includes(run.status) ? button("test") : ""}${admin && (run.status === "ready" || run.status === "waiting") ? button("pause") : ""}${admin && !["running", "done", "failed"].includes(run.status) ? button("end") : ""}${admin && run.status === "needs_person" ? html`<form method="post" action="${act}/move" style="display:inline-flex;gap:6px">${csrfField}<select class="be-select" name="nodeId" aria-label="step" required>${nodes.filter((n) => n.type !== "trigger").map((n) => html`<option value="${n.id}">${n.label}</option>`)}</select><button class="be-btn sm">move</button></form>` : ""}<a class="be-btn sm" href="/admin/bots/${def.id}/workflows/${w.id}?trace=${run.id}">trace</a>`;
-      const row = (e: (typeof events)[number]) => html`<tr><td>${when(e.at)}</td><td>${label(e.nodeId)}</td><td>${e.kind}</td><td>${e.result ?? ""}</td><td>${e.reason ?? ""}</td></tr>`;
+      // each AI attempt's full conversation, for admins: hung on the step row it ran under (the latest one of that step before it started)
+      const logs = admin ? await db.select({ id: turnLogs.id, nodeId: turnLogs.nodeId, startedAt: turnLogs.stepStartedAt, createdAt: turnLogs.createdAt }).from(turnLogs).where(and(eq(turnLogs.workflowRunId, run.id), eq(turnLogs.tenantId, actor.tenantId))).orderBy(asc(turnLogs.createdAt)) : [];
+      const logsOf = new Map<string, string[]>();
+      for (const l of logs) {
+        const at = (l.startedAt ?? l.createdAt).getTime();
+        const step = events.filter((e) => e.kind === "step" && e.nodeId === l.nodeId && e.at.getTime() <= at).at(-1);
+        if (step) logsOf.set(step.id, [...(logsOf.get(step.id) ?? []), l.id]);
+      }
+      const logLinks = (e: (typeof events)[number]) => (logsOf.get(e.id) ?? []).map((id, i) => html`${i ? " " : ""}<a href="/admin/turn-logs/${id}">${i ? `log ${i + 1}` : "log"}</a>`);
+      const row = (e: (typeof events)[number]) => html`<tr><td>${when(e.at)}</td><td>${label(e.nodeId)}</td><td>${e.kind}</td><td>${e.result ?? ""}</td><td>${e.reason ?? ""}</td>${admin ? html`<td class="be-nowrap">${logLinks(e)}</td>` : ""}</tr>`;
       const body = html`<header class="be-pagehead"><div class="pt">${crumb(def, w, run.title)}<h1>${run.title}</h1></div><div class="act">${buttons}</div></header>
-<p>${chip(run.status)}${run.test ? html` ${testChip}` : ""} ${label(run.nodeId)}${run.dueAt ? html` · due ${when(run.dueAt)}` : ""}${run.outcome ? html` · ${run.outcome}` : ""}</p>
-${events.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Step</th><th>Kind</th><th>Result</th><th>Reason</th></tr></thead><tbody>${events.map(row)}</tbody></table>`) : html`<div class="be-empty">No history.</div>`}`;
+<p>${chip(run.status)}${run.test ? html` ${testChip}` : ""} ${label(run.nodeId)}${run.dueAt ? html` · due ${when(run.dueAt)}` : ""}${run.outcome ? html` · ${run.outcome}` : ""}${admin ? html` · <a href="/admin/activity?run=${run.id}">actions</a>` : ""}</p>
+${events.length ? scroll(html`<table class="be-table"><thead><tr><th>Time</th><th>Step</th><th>Kind</th><th>Result</th><th>Reason</th>${admin ? html`<th>AI</th>` : ""}</tr></thead><tbody>${events.map(row)}</tbody></table>`) : html`<div class="be-empty">No history.</div>`}`;
       res.type("html").send(layout({ title: run.title, body, actor, csrf }));
     }),
   );

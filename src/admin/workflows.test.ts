@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { assignToChat, setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
-import { botDefinitions, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
+import { botDefinitions, turnLogs, workflowRunEvents, workflowRuns, workflows } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
@@ -307,6 +307,40 @@ describe("workflows screens", () => {
       expect(page).toContain(`/admin/bots/${bot}/workflows/${wid}?trace=${rid}`);
       expect((await get(`/admin/workflow-runs/${rid}`, "Eve")).status).toBe(404);
       expect((await get(`/admin/workflow-runs/nope`)).status).toBe(404);
+    });
+
+    it("an admin opens each AI attempt's log from its step row; a head sees neither the links nor the log", async () => {
+      const wid = await live("logs");
+      const rid = await run(wid, "a", "waiting", "Logged");
+      const stepAt = new Date(Date.now() - 60_000);
+      await db.insert(workflowRunEvents).values({ id: crypto.randomUUID(), runId: rid, nodeId: "a", kind: "step", at: stepAt });
+      const log = (n: number, text: string) => ({
+        id: `log-${rid}-${n}`, tenantId: T, definitionId: bot, chatId: "chat-1", workflowRunId: rid, nodeId: "a", stepStartedAt: new Date(stepAt.getTime() + n * 1000),
+        startedBy: "Background job", model: "m", systemPrompt: "You are <b>Jimmy</b>.", sentCount: 1, stopReason: "text", inputTokens: 10, outputTokens: 5, costUsd: "0.001",
+        messages: [
+          { role: "user" as const, text },
+          { role: "assistant" as const, text: "Checking.", toolCalls: [{ id: "c1", name: "mcp__mail__reply_mail", input: { body: "Hi <Sam>" } }] },
+          { role: "tool" as const, toolCallId: "c1", text: "Sent for approval.", isError: true },
+        ],
+      });
+      await db.insert(turnLogs).values([log(1, "first try"), log(2, "second try")]);
+      const page = await (await get(`/admin/workflow-runs/${rid}`)).text();
+      expect(page).toContain(`href="/admin/turn-logs/log-${rid}-1">log<`);
+      expect(page).toContain(`href="/admin/turn-logs/log-${rid}-2">log 2<`);
+      expect(page).toContain(`/admin/activity?run=${rid}`);
+      const headPage = await (await get(`/admin/workflow-runs/${rid}`, "Hal")).text();
+      expect(headPage).not.toContain("/admin/turn-logs/");
+
+      const view = await (await get(`/admin/turn-logs/log-${rid}-2`)).text();
+      expect(view).toContain("Sent to the AI");
+      expect(view).toContain("second try");
+      expect(view).toContain("AI called <code>mcp__mail__reply_mail</code>");
+      expect(view).toContain("Hi &lt;Sam&gt;");
+      expect(view).toContain("<code>mcp__mail__reply_mail</code> returned an error");
+      expect(view).toContain("You are &lt;b&gt;Jimmy&lt;/b&gt;.");
+      expect(view).toContain(`href="/admin/workflow-runs/${rid}"`);
+      expect((await get(`/admin/turn-logs/log-${rid}-2`, "Hal")).status).toBe(404);
+      expect((await get(`/admin/turn-logs/nope`)).status).toBe(404);
     });
 
     it("run page buttons carry the csrf token as a hidden field, not as text", async () => {

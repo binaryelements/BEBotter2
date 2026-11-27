@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import { confirmerPolicy } from "../admin/access.js";
 import { auditInput, beginAction, completeAction, recordAuthority, summarise } from "../audit/audit.js";
+import { linkTurnLog, saveTurnLog } from "./turn-log.js";
 import { toolLabel } from "../teams/cards.js";
 import { trackTurn } from "./live.js";
 import { mcpServerConfigs } from "../bots/definitions.js";
@@ -532,11 +533,14 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
   let registry: McpRegistry | undefined;
   let tools: EngineTool[] = [];
 
+  // the system prompt exactly as the model got it, for the turn's log
+  let sentSystemPrompt = "";
   const runEngine = (): Promise<EngineResult> => {
     const history: EngineMessage[] = [...(session?.messages ?? []), { role: "user", text: prompt }];
     const systemPrompt = session?.summary
       ? `${setup.processOptions.systemPrompt}\n\nEarlier in this conversation:\n${session.summary}${memoryText}`
       : `${setup.processOptions.systemPrompt}${memoryText}`;
+    sentSystemPrompt = systemPrompt;
     const input: EngineRunInput = {
       ...setup.processOptions,
       systemPrompt,
@@ -570,6 +574,11 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
     registry = new McpRegistry(setup.processOptions.mcpServers, { fetch: deps.fetchFn, key, pool: deps.mcpPool });
     tools = await registry.listTools();
     const result = await runEngine();
+    // every turn is logged in full for admins, a superseded one too, since it may have called tools before it stopped
+    const logId = await saveTurnLog(db, {
+      tenantId, definitionId: definition.id, chatId, startedBy, model: definition.model, systemPrompt: sentSystemPrompt, prompt, result,
+      ...(turn.workflow ? { workflow: { runId: turn.workflow.runId, nodeId: turn.workflow.nodeId, stepStartedAt: turn.workflow.stepStartedAt } } : {}),
+    });
     // a superseded turn leaves no trace: no session, no message audit row, no reply
     if (result.stopReason === "aborted" || signal.aborted)
       return { text: "", costUsd: result.usage.costUsd, changed, timings, auditId: "", aborted: true };
@@ -610,6 +619,7 @@ export async function runTurn(deps: RunnerDeps, turn: RunTurnInput): Promise<Run
         });
     const why = ok ? undefined : result.stopReason === "max-steps" ? "Stopped: it used all its steps for this turn." : (result.error ?? "The model returned an error.");
     const auditId = await auditMessage(text, ok ? "done" : "failed", costUsd, timings, why);
+    await linkTurnLog(db, logId, auditId);
     return { text, costUsd, changed, timings, auditId, ...(signInLost ? { signInLost } : {}) };
   } finally {
     liveDone();

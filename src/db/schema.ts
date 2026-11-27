@@ -647,6 +647,33 @@ export const workflowRunEvents = pgTable(
   (t) => [index("workflow_run_events_run_idx").on(t.runId)],
 );
 
+/** One AI turn in full, for admins debugging a bot: what was sent to the model and everything that came back. Kept 30 days. */
+export const turnLogs = pgTable(
+  "turn_logs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    definitionId: text("definition_id").notNull().references(() => botDefinitions.id),
+    chatId: text("chat_id").references(() => chats.id),
+    auditId: text("audit_id"), // the turn's message row in audit_events; null when the turn was superseded
+    workflowRunId: text("workflow_run_id"),
+    nodeId: text("node_id"),
+    stepStartedAt: ts("step_started_at"), // with run and node, which attempt of a workflow step this was
+    startedBy: text("started_by").notNull(),
+    model: text("model").notNull(),
+    systemPrompt: text("system_prompt").notNull(),
+    messages: jsonb("messages").$type<EngineMessage[]>().notNull(),
+    sentCount: integer("sent_count").notNull(), // the first sentCount messages were sent; the rest came back
+    stopReason: text("stop_reason").notNull(),
+    error: text("error"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("turn_logs_audit_idx").on(t.auditId), index("turn_logs_workflow_run_idx").on(t.workflowRunId), index("turn_logs_tenant_created_idx").on(t.tenantId, t.createdAt)],
+);
+
 /** An approval or ask card waiting for a person; the id doubles as the card action id. */
 export const workflowPending = pgTable(
   "workflow_pending",
@@ -674,3 +701,4 @@ export type WorkflowVersion = typeof workflowVersions.$inferSelect;
 export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type WorkflowRunEvent = typeof workflowRunEvents.$inferSelect;
 export type WorkflowPending = typeof workflowPending.$inferSelect;
+export type TurnLog = typeof turnLogs.$inferSelect;

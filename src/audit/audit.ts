@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { pruneAttachments } from "../teams/attachments.js";
 import { pruneOverheard } from "../teams/overheard.js";
+import { pruneTurnLogs } from "../engine/turn-log.js";
 import { auditEvents, tenants } from "../db/schema.js";
 import type { Authority, AuditEvent, TurnTimings } from "../db/schema.js";
 
@@ -60,11 +61,12 @@ export async function recordAuthority(db: Db, id: string, authority: Authority):
 
 export async function listActions(
   db: Db,
-  filter: { tenantId: string; chatId?: string; definitionId?: string; personId?: string; personIds?: string[]; definitionIds?: string[]; status?: string; q?: string; before?: string; /* id of the last row of the previous page */ limit?: number },
+  filter: { tenantId: string; chatId?: string; workflowRunId?: string; definitionId?: string; personId?: string; personIds?: string[]; definitionIds?: string[]; status?: string; q?: string; before?: string; /* id of the last row of the previous page */ limit?: number },
 ): Promise<AuditEvent[]> {
   if (filter.personIds?.length === 0 || filter.definitionIds?.length === 0) return [];
   const conditions = [eq(auditEvents.tenantId, filter.tenantId)];
   if (filter.chatId) conditions.push(eq(auditEvents.chatId, filter.chatId));
+  if (filter.workflowRunId) conditions.push(eq(auditEvents.workflowRunId, filter.workflowRunId));
   if (filter.definitionId) conditions.push(eq(auditEvents.definitionId, filter.definitionId));
   if (filter.personId) conditions.push(eq(auditEvents.personId, filter.personId));
   if (filter.personIds) conditions.push(inArray(auditEvents.personId, filter.personIds));
@@ -99,7 +101,7 @@ export function startAuditPruning(db: Db, intervalMs: number, log: (line: string
   const run = async () => {
     try {
       const counts = [];
-      for (const t of await db.select({ id: tenants.id, days: tenants.retentionDays }).from(tenants)) counts.push(`${t.id}=${await pruneAudit(db, t.id, t.days)}+${await pruneOverheard(db, t.id, t.days)}+${await pruneAttachments(db, t.id, t.days)}`);
+      for (const t of await db.select({ id: tenants.id, days: tenants.retentionDays }).from(tenants)) counts.push(`${t.id}=${await pruneAudit(db, t.id, t.days)}+${await pruneOverheard(db, t.id, t.days)}+${await pruneAttachments(db, t.id, t.days)}+${await pruneTurnLogs(db, t.id)}`);
       log(`audit prune: ${counts.join(" ")}`);
     } catch (err) {
       console.error("audit prune failed", err);

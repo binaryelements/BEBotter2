@@ -13,6 +13,7 @@ import { DirectoryError } from "../org/directory.js";
 import type { FetchUsers } from "../org/directory-sync.js";
 import { isAdmin, loadActor, mayEnter } from "./access.js";
 import { activityRoutes } from "./activity.js";
+import { turnLogRoutes } from "./turn-logs.js";
 import { assignmentRoutes } from "./assignments.js";
 import { assistantRoutes } from "./assistants.js";
 import { todoRoutes } from "./todos.js";
@@ -160,6 +161,7 @@ export function adminRouter(deps: AdminDeps): Router {
   router.use(tryRoutes({ db, runTurn: deps.runTurn, confirmations: deps.confirmations }));
   router.use(assignmentRoutes(db));
   router.use(activityRoutes(db));
+  router.use(turnLogRoutes(db));
   router.use(knowledgeRoutes(db, deps.config.secretsKey));
   router.use(runbookRoutes({ db, key: deps.config.secretsKey, defaultModel: deps.defaultModel, models: deps.models, engine: deps.engine }));
   router.use(routineRoutes(db));

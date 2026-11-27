@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { beginAction, completeAction } from "../audit/audit.js";
 import { setAllowedDepartments, upsertDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
-import { auditEvents } from "../db/schema.js";
+import { auditEvents, turnLogs } from "../db/schema.js";
 import { testDb } from "../db/test-db.js";
 import { createDepartment, setMembership, setRole } from "../org/directory.js";
 import { upsertChat, upsertPerson, upsertTenant } from "../org/org.js";
@@ -164,5 +164,22 @@ describe("activity screen", () => {
       path = t.match(/href="([^"]+)">older/)?.[1].replaceAll("&amp;", "&");
     }
     expect(seen.sort()).toEqual([...Array(105).keys()].map((i) => `tie-${i}`).sort());
+  });
+
+  it("filters to one workflow run, and links a message row to its turn log for admins only", async () => {
+    const msg = await beginAction(db, { tenantId: T, chatId: "chat-1", definitionId: bot, personId: id.Sam, kind: "message", summary: "run-msg", workflowRunId: "run-x" });
+    await completeAction(db, msg, { status: "done" });
+    const tool = await beginAction(db, { tenantId: T, chatId: "chat-1", definitionId: bot, personId: id.Sam, kind: "tool", toolName: "mcp__x__z", summary: "run-tool", workflowRunId: "run-x" });
+    await completeAction(db, tool, { status: "done" });
+    await db.insert(turnLogs).values({ id: "tl-1", tenantId: T, definitionId: bot, chatId: "chat-1", auditId: msg, workflowRunId: "run-x", startedBy: "Sam", model: "m", systemPrompt: "s", messages: [], sentCount: 0, stopReason: "text" });
+    const t = await (await get("/admin/activity?run=run-x", "Ann")).text();
+    expect(t).toContain("run-msg");
+    expect(t).toContain("run-tool");
+    expect(t).not.toContain("oz-alpha");
+    expect(t).toContain('href="/admin/turn-logs/tl-1"');
+    expect(t).toContain('<input type="hidden" name="run" value="run-x">');
+    const head = await (await get("/admin/activity?run=run-x", "Hal")).text();
+    expect(head).toContain("run-msg");
+    expect(head).not.toContain("/admin/turn-logs/");
   });
 });
