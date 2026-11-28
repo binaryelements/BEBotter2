@@ -379,6 +379,9 @@ describe("connections store", () => {
     expect(await adminVerify(deps, "t1", pve.id, personId)).toMatch(/^Connected/);
     expect((await getConnection(db, "t1", "pve2"))!.status).toBe("active");
     expect(await adminVerify(deps, "t1", (await createConnection(deps, "t1", { ...base, kind: "http", name: "api", target: "https://api.example.test/", config: {} })).id, personId)).toMatch(/probe path/);
+    const unifi = await createConnection(deps, "t1", { ...base, kind: "http", name: "unifi", target: "https://10.0.0.1:11443/", config: { auth: { in: "header", name: "X-API-KEY" }, selfSigned: true } as never, secret: "k" });
+    expect(unifi.config).toEqual({ auth: { in: "header", name: "X-API-KEY" }, selfSigned: true });
+    expect((await updateConnection(deps, "t1", unifi.id, { config: { selfSigned: false } as never })).config).toEqual({ auth: { in: "header", name: "X-API-KEY" } });
   });
 
   it("keeps a per-bot permission per connection and reads it for a tool call", async () => {

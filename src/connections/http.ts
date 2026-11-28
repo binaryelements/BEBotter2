@@ -1,6 +1,10 @@
+import { Agent } from "undici";
 import { ConnectionError } from "./store.js";
 
-export type HttpConfig = { auth?: { in: "header" | "query"; name: string; prefix?: string } };
+export type HttpConfig = { auth?: { in: "header" | "query"; name: string; prefix?: string }; selfSigned?: boolean };
+
+// shortcut: a selfSigned connection trusts any certificate its target shows (Martin's call, for self-signed consoles); pin a fingerprint if one ever needs more
+const anyCertificate = new Agent({ connect: { rejectUnauthorized: false } });
 export type HttpRequest = { method: string; path: string; query?: Record<string, string>; headers?: Record<string, string>; body?: string };
 
 const MAX_OUTPUT = 20_000;
@@ -116,7 +120,7 @@ export async function sendHttp(
     if (auth.in === "header") headers.set(auth.name, (auth.prefix ?? "") + conn.secret);
     else url.searchParams.set(auth.name, conn.secret);
   }
-  const res = await send(fetchFn, url, { method: req.method, headers, ...(req.body !== undefined ? { body: req.body } : {}) }, scrub, timeoutMs, signal);
+  const res = await send(fetchFn, url, { method: req.method, headers, ...(req.body !== undefined ? { body: req.body } : {}), ...(conn.config.selfSigned ? { dispatcher: anyCertificate } : {}) } as RequestInit, scrub, timeoutMs, signal);
   const location = res.headers.get("location");
   const head = `HTTP ${res.status} ${res.statusText}\n${location ? `Location: ${location}\n` : ""}`;
   const body = await readCapped(res, MAX_OUTPUT + scrub.longest);
