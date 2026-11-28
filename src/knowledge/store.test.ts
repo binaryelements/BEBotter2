@@ -25,7 +25,7 @@ describe("knowledge store", () => {
     expect(await searchNotes(db, key, "t1", "SECON")).toEqual([{ path: "a/one", snippet: "second" }]);
   });
 
-  it("a bot's runbook index lists its own and the shared runbooks by their first line, nothing else", async () => {
+  it("a bot's index lists its own and the shared notes by their first line, runbooks first, never another bot's", async () => {
     await upsertTenant(db, { id: "t3" });
     const a = await upsertDefinition(db, key, "t3", { name: "bot-a", label: "A", persona: "p" });
     const b = await upsertDefinition(db, key, "t3", { name: "bot-b", label: "B", persona: "p" });
@@ -36,12 +36,13 @@ describe("knowledge store", () => {
     await writeNote(db, key, "t3", "troubleshooting/vpn.md", "Use when the VPN drops.", {});
     await writeNote(db, key, "t3", "customers/acme.md", "Acme details", { definitionId: a.id });
     const index = await runbookIndex(db, key, "t3", a.id);
-    expect(index).toContain("Your runbooks.");
+    expect(index).toContain("Your runbooks and notes.");
     expect(index).toContain("- troubleshooting/voice.md: Use when calls to BE Voice numbers fail\n");
     expect(index).toContain("- troubleshooting/quote.md: Use when a customer asks for a hardware quote.");
     expect(index).toContain("- troubleshooting/vpn.md: Use when the VPN drops.");
     expect(index).not.toContain("printer");
-    expect(index).not.toContain("acme");
+    // other notes are listed too, after the runbooks even when they sort first
+    expect(index.indexOf("- customers/acme.md: Acme details")).toBeGreaterThan(index.indexOf("troubleshooting/vpn.md"));
     // a written description wins over the first line, and an edit that doesn't mention it keeps it
     await writeNote(db, key, "t3", "troubleshooting/quote.md", "Steps...", { definitionId: a.id }, "Hardware quotes");
     await writeNote(db, key, "t3", "troubleshooting/quote.md", "Steps, edited", { definitionId: a.id });
@@ -62,6 +63,11 @@ describe("knowledge store", () => {
     expect((await readNote(db, key, "t1", "shared/x", a.id))?.body).toBe("for everyone");
     expect(await readNote(db, key, "t1", "theirs/x", a.id)).toBeUndefined();
     expect(await searchNotes(db, key, "t1", "for b", 20, a.id)).toEqual([]);
+    // words need not be together, but each must start a word, and another bot's note stays hidden
+    await writeNote(db, key, "t1", "mine/pbx", "The Yeastar trunk is down when the SIP register fails.", { definitionId: a.id });
+    await writeNote(db, key, "t1", "theirs/pbx", "Yeastar trunk down", { definitionId: b.id });
+    expect((await searchNotes(db, key, "t1", "yeastar trunk down", 20, a.id)).map((h) => h.path)).toEqual(["mine/pbx"]);
+    expect(await searchNotes(db, key, "t1", "yeastar own", 20, a.id)).toEqual([]);
     // an admin asks with no bot and sees every note, with its owner
     const all = (await listNotes(db, key, "t1")).filter((n) => n.path.endsWith("/x"));
     expect(all.map((n) => [n.path, n.definitionId]).sort()).toEqual([["mine/x", a.id], ["shared/x", null], ["theirs/x", b.id]].sort());
