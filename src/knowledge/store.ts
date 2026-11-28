@@ -53,33 +53,39 @@ export async function readNote(db: Db, key: Buffer, tenantId: string, path: stri
   return row && { path, version: row.version, body: decrypt(key, row.bodyCipher), definitionId: row.definitionId, description: row.descriptionCipher ? decrypt(key, row.descriptionCipher) : undefined };
 }
 
-/** The runbooks a bot can use, one line each (path: its description or first line), for the end of its instructions; "" when it has none. */
+/** The notes a bot can use, runbooks (troubleshooting/) first, one line each (path: its description or first line), for the end of its instructions; "" when it has none. */
 export async function runbookIndex(db: Db, key: Buffer, tenantId: string, definitionId: string): Promise<string> {
-  // shortcut: the first 20 by path; rank by use when a bot has more than that.
-  const rows = (await latestRows(db, tenantId, definitionId)).filter((r) => r.path.startsWith("troubleshooting/")).slice(0, 20);
+  const all = await latestRows(db, tenantId, definitionId);
+  const isRunbook = (p: string) => p.startsWith("troubleshooting/");
+  // shortcut: the first 30, runbooks first then by path; rank by use when a bot has more than that.
+  const rows = [...all.filter((r) => isRunbook(r.path)), ...all.filter((r) => !isRunbook(r.path))].slice(0, 30);
   if (!rows.length) return "";
   const lines = rows.map((r) => {
     // the description written for it, else the runbook's own first line
     const first = (r.descriptionCipher ? decrypt(key, r.descriptionCipher) : "") || (decrypt(key, r.bodyCipher).split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) ?? "");
     return `- ${r.path}: ${first.slice(0, 120)}`;
   });
-  return `\n\nYour runbooks. Before you start a task one of these covers, read it with knowledge read and follow it:\n${lines.join("\n")}`;
+  return `\n\nYour runbooks and notes. Before you start a task one of these covers, read it with knowledge read and follow it:\n${lines.join("\n")}`;
 }
 
 export async function searchNotes(db: Db, key: Buffer, tenantId: string, query: string, limit = 20, definitionId?: string): Promise<{ path: string; snippet: string }[]> {
   const q = query.toLowerCase();
+  // the exact phrase first; else notes where every word of the query starts a word, so "trunk down" finds "trunk is down" but "for b" doesn't find "for everyone"
+  const words = q.split(/\s+/).filter(Boolean).map((w) => new RegExp(`(^|[^\\p{L}\\p{N}])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "u"));
+  const near = (body: string, at: number) => body.slice(Math.max(0, at - 80), Math.max(0, at - 80) + 200);
   const hits: { path: string; snippet: string }[] = [];
+  const loose: { path: string; snippet: string }[] = [];
   // shortcut: decrypts every latest note per search; add an index when a tenant holds thousands of notes.
   for (const r of await latestRows(db, tenantId, definitionId)) {
     if (hits.length >= limit) break;
     const body = decrypt(key, r.bodyCipher);
-    const at = body.toLowerCase().indexOf(q);
-    if (at >= 0) {
-      const from = Math.max(0, at - 80);
-      hits.push({ path: r.path, snippet: body.slice(from, from + 200) });
-    } else if (r.path.includes(q)) hits.push({ path: r.path, snippet: body.slice(0, 200) });
+    const lower = body.toLowerCase();
+    const at = lower.indexOf(q);
+    if (at >= 0) hits.push({ path: r.path, snippet: near(body, at) });
+    else if (r.path.includes(q)) hits.push({ path: r.path, snippet: body.slice(0, 200) });
+    else if (words.length > 1 && words.every((w) => w.test(lower) || w.test(r.path))) loose.push({ path: r.path, snippet: near(body, Math.max(0, lower.search(words[0]!))) });
   }
-  return hits;
+  return [...hits, ...loose].slice(0, limit);
 }
 
 const isUniqueViolation = (e: unknown): boolean =>
