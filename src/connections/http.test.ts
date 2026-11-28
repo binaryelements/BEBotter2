@@ -123,3 +123,24 @@ describe("listMcpTools", () => {
     expect(err).not.toContain(SECRET);
   });
 });
+
+describe("selfSigned", () => {
+  it("reaches a self-signed https server only when the connection accepts it", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, readFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createServer } = await import("node:https");
+    const dir = mkdtempSync(join(tmpdir(), "selfsigned-"));
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-days", "1", "-keyout", join(dir, "k.pem"), "-out", join(dir, "c.pem")], { stdio: "ignore" });
+    const server = createServer({ key: readFileSync(join(dir, "k.pem")), cert: readFileSync(join(dir, "c.pem")) }, (_req, res) => res.end("hello"));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const target = `https://127.0.0.1:${(server.address() as { port: number }).port}/`;
+    try {
+      await expect(callHttp(fetch, { target, config: {} }, { method: "GET", path: "x" })).rejects.toThrow(/Request failed/);
+      expect(await callHttp(fetch, { target, config: { selfSigned: true } }, { method: "GET", path: "x" })).toContain("hello");
+    } finally {
+      server.close();
+    }
+  });
+});

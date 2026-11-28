@@ -210,6 +210,7 @@ ${onlyFor(c.ownerDefinitionId)}
 ${c.kind === "ssh" || c.kind === "sql" ? html`<label>username<input name="username" value="${text(cfg.username)}" autocomplete="off"></label><label>port<input name="port" inputmode="numeric" value="${text(cfg.port)}" autocomplete="off"></label>` : ""}
 ${c.kind === "sql" ? html`<label>engine<select name="engine">${SQL_ENGINES.map((e) => html`<option ${e === cfg.engine ? "selected" : ""}>${e}</option>`)}</select></label><label>database<input name="database" value="${text(cfg.database)}" autocomplete="off"></label>` : ""}
 ${oauth ? html`<label>sign-in<span class="hint">this server signs in with OAuth; changing its address needs a new sign-in</span><span class="be-chip c">OAuth</span></label>` : c.kind === "http" || c.kind === "mcp" ? html`<label>header name<span class="hint">leave blank to keep it as it is</span><input name="headerName" value="${text(cfg.headerName ?? (cfg.auth as { name?: string } | undefined)?.name)}" autocomplete="off"></label><label>new secret<span class="hint">blank keeps the stored one</span><input type="password" name="secret" autocomplete="new-password" data-lpignore="true"></label>` : c.kind === "sql" ? html`<label>new password<span class="hint">blank keeps the stored one</span><input type="password" name="secret" autocomplete="new-password" data-lpignore="true"></label>` : ""}
+${c.kind === "http" ? html`<label class="be-toggle"><input type="checkbox" name="selfSigned" value="on" ${cfg.selfSigned ? "checked" : ""}> accept a self-signed certificate</label>` : ""}
 ${c.kind === "mcp" && !oauth ? html`<label class="wide">paste a claude mcp add command<span class="hint">optional: replaces the URL, header and secret above; the name stays ${c.name}</span><textarea name="commandLine" rows="2" autocomplete="off" spellcheck="false" placeholder="claude mcp add --transport http name https://… --header &quot;Authorization: Bearer …&quot;"></textarea></label>` : ""}
 ${c.kind === "mcp" && !oauth ? html`<label>tools that only read<span class="hint">comma separated; they run without a card</span><input name="readOnlyTools" value="${((cfg.readOnlyTools as string[] | undefined) ?? []).join(", ")}" autocomplete="off"></label>` : ""}
 </div>
@@ -261,6 +262,7 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
 <fieldset class="conn-group" data-kind="http mcp"><legend>Authentication</legend><div class="fields">
 <label>header name<span class="hint">where the secret goes, e.g. Authorization</span><input name="headerName" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true"></label>
 </div>
+<label class="be-toggle" data-kind="http"><input type="checkbox" name="selfSigned" value="on"> accept a self-signed certificate</label>
 <label class="be-toggle" data-kind="mcp"><input type="checkbox" name="oauth" value="on"> sign in instead (OAuth)</label>
 <p class="hint" data-kind="mcp">The server has its own login: you sign in once after adding it, and every bot given the server shares that sign-in.</p>
 </fieldset>
@@ -309,7 +311,7 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       let config: Record<string, unknown> = {};
       if (kind === "ssh") config = { username: field(req, "username").trim(), port: port ?? 22 };
       if (kind === "sql") config = { engine: field(req, "engine"), port, database: field(req, "database").trim(), username: field(req, "username").trim() };
-      if (kind === "http") config = headerName ? { auth: { in: "header", name: headerName } } : {};
+      if (kind === "http") config = { ...(headerName ? { auth: { in: "header", name: headerName } } : {}), selfSigned: field(req, "selfSigned") === "on" };
       let clientSecret: string | undefined;
       if (kind === "mcp" && field(req, "oauth") === "on") {
         // the tools are listed after the sign-in, when the server will talk to us
@@ -377,7 +379,7 @@ ${filtered.length ? scroll(html`<table class="be-table" id="connections-table"><
       let config: Record<string, unknown> = {};
       if (kind === "ssh") config = { username: field(req, "username").trim() || prev.username, port: port ?? prev.port ?? 22 };
       if (kind === "sql") config = { engine: field(req, "engine") || prev.engine, port: port ?? prev.port, database: field(req, "database").trim() || prev.database, username: field(req, "username").trim() || prev.username };
-      if (kind === "http") config = headerName ? { auth: { in: "header", name: headerName } } : prev.auth ? { auth: prev.auth } : {};
+      if (kind === "http") config = { ...(headerName ? { auth: { in: "header", name: headerName } } : prev.auth ? { auth: prev.auth } : {}), selfSigned: field(req, "selfSigned") === "on" };
       if (kind === "mcp") {
         const tools = field(req, "readOnlyTools").split(",").map((t) => t.trim()).filter(Boolean);
         config = { ...(headerName ? { headerName } : prev.headerName ? { headerName: prev.headerName } : {}), readOnlyTools: tools.length ? tools : ((prev.readOnlyTools as string[] | undefined) ?? []) };

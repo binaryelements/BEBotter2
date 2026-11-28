@@ -74,11 +74,12 @@ function checkRequest(input: ConnectionRequest): ConnectionConfig {
   if (input.kind === "http") {
     checkUrl(input.target);
     const auth = c.auth as { in?: unknown; name?: unknown; prefix?: unknown } | undefined;
-    if (!auth) return {};
+    const selfSigned = c.selfSigned ? { selfSigned: true } : {};
+    if (!auth) return selfSigned;
     if (auth.in !== "header" && auth.in !== "query") fail("auth.in must be header or query");
     if (typeof auth.name !== "string" || !HTTP_TOKEN.test(auth.name)) fail("Invalid auth name");
     if (auth.prefix !== undefined && (typeof auth.prefix !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32} ?$/.test(auth.prefix))) fail("Invalid auth prefix");
-    return { auth: { in: auth.in as "header" | "query", name: auth.name as string, ...(auth.prefix !== undefined ? { prefix: auth.prefix as string } : {}) } };
+    return { auth: { in: auth.in as "header" | "query", name: auth.name as string, ...(auth.prefix !== undefined ? { prefix: auth.prefix as string } : {}) }, ...selfSigned };
   }
   if (input.kind === "mcp") {
     checkUrl(input.target);

@@ -147,6 +147,13 @@ describe("bots screen", () => {
     const sapTested = (await getConnection(db, T, "sap-tested"))!;
     expect(await (await editPopup(sapTested.id, [["database", "d2"], ["testFirst", "on"]])).json()).toEqual({ redirect: "/admin/connections?saved=1" });
     expect((await editPopup(sapTested.id, [["name", "Bad Name"]])).status).toBe(422);
+    // a console with its own certificate: the box is saved, and an edit without it clears it
+    await popup([["name", "unifi"], ["kind", "http"], ["target", "https://10.0.0.1:11443/"], ["mode", "read-only"], ["headerName", "X-API-KEY"], ["secret", "k"], ["selfSigned", "on"]]);
+    const unifi = (await getConnection(db, T, "unifi"))!;
+    expect(unifi.config).toEqual({ auth: { in: "header", name: "X-API-KEY" }, selfSigned: true });
+    expect(await (await get("/admin/connections", "Ann")).text()).toContain("accept a self-signed certificate");
+    await editPopup(unifi.id, [["target", "https://10.0.0.1:11443/"]]);
+    expect((await getConnection(db, T, "unifi"))!.config).toEqual({ auth: { in: "header", name: "X-API-KEY" } });
   });
 
   it("an admin pastes a claude mcp add command and gets an MCP connection with its header secret", async () => {
