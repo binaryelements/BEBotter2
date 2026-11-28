@@ -76,6 +76,19 @@ describe("OpenAICompatEngine", () => {
     ]);
   });
 
+  it("keeps each call's exact request and reply", async () => {
+    const client = fakeClient([[toolCall(), chunk({}, { prompt_tokens: 10, completion_tokens: 5 })], [chunk({ content: "Done." })]]);
+    const engine = new OpenAICompatEngine({ providers: { deepseek: { apiKey: "k" } }, client: () => client });
+    const { raw } = await engine.run(input());
+    expect(raw!.calls).toHaveLength(2);
+    // each call sent the shared settings plus the first `sent` messages, byte for byte what the provider got
+    raw!.calls.forEach((c, i) => expect({ ...raw!.request, messages: raw!.messages.slice(0, c.sent) }).toMatchObject(client.bodies[i]!));
+    expect(raw!.calls.map((c) => c.sent)).toEqual([2, 4]);
+    expect(raw!.calls[0]!.reply).toEqual({ content: "", tool_calls: [{ id: "call_1", name: "mcp__knowledge__read", arguments: '{"path":"x"}' }], finish_reason: null, usage: { prompt_tokens: 10, completion_tokens: 5 } });
+    expect(raw!.calls[1]!.reply).toMatchObject({ content: "Done.", tool_calls: [] });
+    expect(JSON.stringify(raw)).not.toContain('"k"');
+  });
+
   it("turns a denied call into a tool error and carries on", async () => {
     const call = vi.fn();
     const complete = vi.fn();

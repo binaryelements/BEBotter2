@@ -6,7 +6,7 @@ import { turnLogs } from "../db/schema.js";
 import { maskSecrets } from "../knowledge/secrets-scan.js";
 import { upsertChat, upsertTenant } from "../org/org.js";
 import type { EngineMessage } from "./engine.js";
-import { forLog, pruneTurnLogs, saveTurnLog, sentCountOf } from "./turn-log.js";
+import { forLog, forRaw, pruneTurnLogs, saveTurnLog, sentCountOf } from "./turn-log.js";
 
 describe("turn logs", () => {
   it("masks secret-looking values and keeps the rest", () => {
@@ -26,6 +26,21 @@ describe("turn logs", () => {
     expect(user).toEqual({ role: "user", text: "hi", images: undefined });
     expect(call).toEqual({ role: "assistant", toolCalls: [{ id: "a", name: "mcp__x__y", input: { nested: { secret: "token=[redacted]" }, n: 3 } }] });
     expect(tool!.role === "tool" && tool!.text.endsWith("[cut: 1 KB more]")).toBe(true);
+  });
+
+  it("stores raw calls with image bytes noted, long tool results cut and secrets masked", () => {
+    const raw = forRaw({
+      request: { model: "m", tools: [{ type: "function" }] },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "password: hunter2" }, { type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(4000)}` } }] },
+        { role: "tool", tool_call_id: "a", content: "y".repeat(20_500) },
+      ],
+      calls: [{ sent: 1, reply: { content: "token=abc999", tool_calls: [], finish_reason: "stop", usage: null } }],
+    });
+    expect(raw.request).toEqual({ model: "m", tools: [{ type: "function" }] });
+    expect(raw.messages[0]).toEqual({ role: "user", content: [{ type: "text", text: "password: [redacted]" }, { type: "image_url", image_url: { url: "[image: 3 KB]" } }] });
+    expect((raw.messages[1] as { content: string }).content.endsWith("[cut: 1 KB more]")).toBe(true);
+    expect(raw.calls[0]!.reply!.content).toBe("token=[redacted]");
   });
 
   it("counts as sent everything up to this turn's own message", () => {

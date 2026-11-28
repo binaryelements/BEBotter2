@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { getDefinition } from "../bots/definitions.js";
 import type { Db } from "../db/client.js";
 import { turnLogs, workflowRuns } from "../db/schema.js";
-import type { EngineMessage } from "../engine/engine.js";
+import type { EngineMessage, RawExchange } from "../engine/engine.js";
 import { TOOL_TEXT_MAX, TURN_LOG_DAYS } from "../engine/turn-log.js";
 import { publishedGraph } from "../workflows/store.js";
 import { isAdmin } from "./access.js";
@@ -42,6 +42,33 @@ function message(m: EngineMessage, callName: Map<string, string>, userTitle: str
     ...(m.text ? [block("ai", "AI said", m.text)] : []),
     ...(m.toolCalls ?? []).map((c) => block("call", html`AI called <code>${c.name}</code>`, json(c.input))),
   ];
+}
+
+const exact = (v: unknown) => JSON.stringify(v, null, 2) ?? "";
+const kb = (v: unknown) => `${Math.max(1, Math.round(exact(v).length / 1000)).toLocaleString("en-AU")} KB`;
+
+/** Every call's full request body and reply, for the download. */
+const rawCalls = (raw: RawExchange) =>
+  raw.calls.map((c, i) => ({ call: i + 1, request: { ...raw.request, messages: raw.messages.slice(0, c.sent) }, reply: c.reply ?? null, ...(c.error ? { error: c.error } : {}) }));
+
+/** The raw section: the shared settings once, then per call only the messages new to it, so a long step stays readable. */
+function rawSection(id: string, raw: RawExchange | null): SafeHtml {
+  if (!raw) return html`<h2 class="tlog-h">Raw calls</h2><p class="muted">Raw calls weren't kept for this turn. It ran before they were saved.</p>`;
+  const used = (u: unknown) => {
+    const x = (u ?? {}) as { prompt_tokens?: number; completion_tokens?: number };
+    return x.prompt_tokens !== undefined ? ` · ${x.prompt_tokens} in · ${x.completion_tokens ?? 0} out` : "";
+  };
+  return html`<h2 class="tlog-h">Raw calls</h2>
+<p class="meta">${raw.calls.length} ${raw.calls.length === 1 ? "call" : "calls"} to the AI. Each one sends the settings and tools below, plus the message list up to that point, exactly as JSON. <a href="/admin/turn-logs/${id}/raw.json" download>download JSON</a> has every call's full request.</p>
+<details class="tlog-fold"><summary>Settings and tools · ${kb(raw.request)}</summary><pre>${exact(raw.request)}</pre></details>
+${raw.calls.map((c, i) => {
+    const from = i === 0 ? 0 : raw.calls[i - 1]!.sent;
+    return html`<details class="tlog-fold"><summary>Call ${i + 1} · sent ${c.sent} messages${i ? ` (${c.sent - from} new)` : ""}${c.reply ? ` · ${c.reply.finish_reason ?? "no finish reason"}${used(c.reply.usage)}` : " · failed"}</summary>
+<section class="tlog-msg tlog-sent"><h3>${i ? "new messages sent" : "messages sent"}</h3><pre>${exact(raw.messages.slice(from, c.sent))}</pre></section>
+${c.reply ? html`<section class="tlog-msg tlog-ai"><h3>reply</h3><pre>${exact(c.reply)}</pre></section>` : ""}
+${c.error ? html`<section class="tlog-msg bad"><h3>error</h3><pre>${c.error}</pre></section>` : ""}
+</details>`;
+  })}`;
 }
 
 /** An admin's view of one AI turn: the system prompt, what was sent and everything that came back. */
@@ -96,8 +123,19 @@ export function turnLogRoutes(db: Db): Router {
 ${earlier.length ? html`<details class="tlog-fold"><summary>Earlier in the chat · ${earlier.length} messages</summary>${earlier.flatMap((m) => message(m, callName, "Earlier message"))}</details>` : ""}
 ${own ? message(own, callName, "Sent to the AI") : html`<p class="muted">The message sent to the AI isn't in this log.</p>`}
 ${reply.length ? reply.flatMap((m) => message(m, callName, "Image from a tool")) : html`<p class="muted">Nothing came back.</p>`}
+${rawSection(log.id, log.raw)}
 </div>`;
       res.type("html").send(layout({ title: "AI turn", body, actor, csrf }));
+    }),
+  );
+
+  router.get(
+    "/turn-logs/:id/raw.json",
+    wrap(async (req, res) => {
+      const { actor } = adminOf(res);
+      const [log] = isAdmin(actor) ? await db.select({ id: turnLogs.id, raw: turnLogs.raw }).from(turnLogs).where(and(eq(turnLogs.id, req.params.id), eq(turnLogs.tenantId, actor.tenantId))) : [];
+      if (!log?.raw) return page(res, 404, "Not found.");
+      res.set({ "Content-Type": "application/json; charset=utf-8", "Content-Disposition": `attachment; filename="ai-turn-${log.id}.json"`, "Cache-Control": "no-store" }).send(exact(rawCalls(log.raw)));
     }),
   );
 

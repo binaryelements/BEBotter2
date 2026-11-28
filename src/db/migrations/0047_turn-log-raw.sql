@@ -1,0 +1,1 @@
+ALTER TABLE "turn_logs" ADD COLUMN "raw" json;

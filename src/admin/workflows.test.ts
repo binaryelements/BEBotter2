@@ -342,6 +342,33 @@ describe("workflows screens", () => {
       expect(view).toContain(`href="/admin/workflow-runs/${rid}"`);
       expect((await get(`/admin/turn-logs/log-${rid}-2`, "Hal")).status).toBe(404);
       expect((await get(`/admin/turn-logs/nope`)).status).toBe(404);
+      expect(view).toContain("Raw calls weren't kept");
+      expect((await get(`/admin/turn-logs/log-${rid}-2/raw.json`)).status).toBe(404);
+    });
+
+    it("an admin reads and downloads each raw call; a head gets neither", async () => {
+      const wid = await live("raw");
+      const rid = await run(wid, "a", "waiting", "Raw");
+      const raw = {
+        request: { model: "deepseek-v4", tools: [{ type: "function", function: { name: "mcp__mail__reply_mail" } }], stream: true },
+        messages: [{ role: "system", content: "You are <b>Jimmy</b>." }, { role: "user", content: "step" }, { role: "assistant", content: null, tool_calls: [{ id: "c1" }] }, { role: "tool", tool_call_id: "c1", content: "ok" }],
+        calls: [
+          { sent: 2, reply: { content: "", tool_calls: [{ id: "c1", name: "mcp__mail__reply_mail", arguments: '{"body":"Hi"}' }], finish_reason: "tool_calls", usage: { prompt_tokens: 900, completion_tokens: 40 } } },
+          { sent: 4, reply: { content: "Sent.", tool_calls: [], finish_reason: "stop", usage: { prompt_tokens: 950, completion_tokens: 3 } } },
+        ],
+      };
+      await db.insert(turnLogs).values({ id: `raw-${rid}`, tenantId: T, definitionId: bot, chatId: "chat-1", workflowRunId: rid, nodeId: "a", startedBy: "Background job", model: "m", systemPrompt: "s", messages: [], sentCount: 0, stopReason: "text", raw });
+      const view = await (await get(`/admin/turn-logs/raw-${rid}`)).text();
+      expect(view).toContain("2 calls to the AI");
+      expect(view).toContain("Call 1 · sent 2 messages · tool_calls · 900 in · 40 out");
+      expect(view).toContain("Call 2 · sent 4 messages (2 new) · stop · 950 in · 3 out");
+      expect(view).toContain("&lt;b&gt;Jimmy&lt;/b&gt;");
+      expect(view).toContain(`href="/admin/turn-logs/raw-${rid}/raw.json"`);
+      const file = await get(`/admin/turn-logs/raw-${rid}/raw.json`);
+      expect(file.headers.get("content-disposition")).toContain("attachment");
+      const calls = (await file.json()) as { call: number; request: { model: string; messages: unknown[] }; reply: { content: string } }[];
+      expect(calls.map((c) => [c.call, c.request.model, c.request.messages.length, c.reply.content])).toEqual([[1, "deepseek-v4", 2, ""], [2, "deepseek-v4", 4, "Sent."]]);
+      expect((await get(`/admin/turn-logs/raw-${rid}/raw.json`, "Hal")).status).toBe(404);
     });
 
     it("run page buttons carry the csrf token as a hidden field, not as text", async () => {
