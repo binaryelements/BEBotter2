@@ -37,7 +37,18 @@ export type EngineResult = {
   steps: number;
   stopReason: "text" | "max-steps" | "aborted" | "error";
   error?: string; // why it stopped, for the activity log only; never shown in the chat
+  /** The turn's calls to the model exactly as sent and received, for the admin log. */
+  raw?: RawExchange;
 };
+
+/** One call to the model: the first `sent` of the exchange's messages went out, and this came back. */
+export type RawCall = {
+  sent: number;
+  reply?: { content: string; tool_calls: { id: string; name: string; arguments: string }[]; finish_reason: string | null; usage: unknown };
+  error?: string;
+};
+/** Every call in a turn shares the same request settings, and each sends a prefix of the one growing message list. */
+export type RawExchange = { request: Record<string, unknown>; messages: unknown[]; calls: RawCall[] };
 
 export type ToolDecision = { allow: true } | { allow: false; message: string };
 

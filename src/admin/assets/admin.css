@@ -986,3 +986,5 @@ details.rule-group > .be-seg, details.rule-group > .rule-search { margin: 8px 0;
 .tlog-ai { border-left-color: var(--ui-ink); }
 .tlog-call { border-left-color: var(--ui-accent); background: color-mix(in srgb, var(--ui-accent) 6%, transparent); }
 .tlog-msg.bad { border-left-color: var(--ui-bad, #d14); }
+.tlog-h { margin: 24px 0 4px; font-size: 15px; }
+.tlog-fold .tlog-msg { margin-top: 8px; }

@@ -2,7 +2,7 @@ import { and, eq, lt } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { turnLogs } from "../db/schema.js";
 import { maskSecrets } from "../knowledge/secrets-scan.js";
-import type { EngineMessage, EngineResult } from "./engine.js";
+import type { EngineMessage, EngineResult, RawExchange } from "./engine.js";
 import { withoutImages } from "./transcript.js";
 
 /** A tool result longer than this is cut: enough to read it, without one product search filling the table. */
@@ -19,7 +19,7 @@ export type TurnLogInput = {
   systemPrompt: string;
   /** The user message this turn added, as the model got it; it marks where sent ends and the reply begins. */
   prompt: string;
-  result: Pick<EngineResult, "messages" | "usage" | "stopReason" | "error">;
+  result: Pick<EngineResult, "messages" | "usage" | "stopReason" | "error" | "raw">;
 };
 
 const cut = (text: string): string =>
@@ -28,6 +28,20 @@ const cut = (text: string): string =>
 /** Every string in a tool input, masked; the shape is kept so it still reads as the call that was made. */
 const maskDeep = (v: unknown): unknown =>
   typeof v === "string" ? maskSecrets(v) : Array.isArray(v) ? v.map(maskDeep) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, maskDeep(x)])) : v;
+
+/** A raw string as stored: image bytes become a note of their size, secret-looking values are masked. */
+const rawString = (s: string): string => (/^data:[^;,]+;base64,/.test(s) ? `[image: ${Math.ceil(((s.length - s.indexOf(",") - 1) * 0.75) / 1000)} KB]` : maskSecrets(s));
+const maskRaw = (v: unknown): unknown =>
+  typeof v === "string" ? rawString(v) : Array.isArray(v) ? v.map(maskRaw) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, maskRaw(x)])) : v;
+
+/** The exact calls as stored: the same masking and tool-result cut as the readable log, nothing else changed. */
+export function forRaw(raw: RawExchange): RawExchange {
+  const messages = raw.messages.map((m) => {
+    const msg = m as { role?: string; content?: unknown };
+    return msg.role === "tool" && typeof msg.content === "string" ? { ...msg, content: cut(msg.content) } : m;
+  });
+  return { request: maskRaw(raw.request) as RawExchange["request"], messages: maskRaw(messages) as unknown[], calls: maskRaw(raw.calls) as RawExchange["calls"] };
+}
 
 /** What is stored: no image bytes, long tool results cut, secret-looking values masked. */
 export function forLog(messages: EngineMessage[]): EngineMessage[] {
@@ -62,6 +76,7 @@ export async function saveTurnLog(db: Db, t: TurnLogInput): Promise<string | und
       systemPrompt: maskSecrets(t.systemPrompt),
       messages: forLog(t.result.messages),
       sentCount: sentCountOf(t.result.messages, t.prompt),
+      raw: t.result.raw ? forRaw(t.result.raw) : null,
       stopReason: t.result.stopReason,
       error: t.result.error?.slice(0, 2000) ?? null,
       inputTokens: t.result.usage.inputTokens,

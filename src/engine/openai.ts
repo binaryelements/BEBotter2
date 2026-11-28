@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { ChatCompletionChunk, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import type { Engine, EngineMessage, EngineResult, EngineRunInput, EngineTool } from "./engine.js";
+import type { Engine, EngineMessage, EngineResult, EngineRunInput, EngineTool, RawCall, RawExchange } from "./engine.js";
 import { FAILED_TEXT } from "./engine.js";
 import { normaliseUsage, priceFor, resolveModel } from "./providers.js";
 import type { NormalisedUsage, ProviderProfile, RawUsage } from "./providers.js";
@@ -104,6 +104,12 @@ export class OpenAICompatEngine implements Engine {
   ) {}
 
   async run(input: EngineRunInput): Promise<EngineResult> {
+    const raw: RawExchange = { request: {}, messages: [], calls: [] };
+    const result = await this.loop(input, raw);
+    return raw.calls.length ? { ...result, raw } : result;
+  }
+
+  private async loop(input: EngineRunInput, raw: RawExchange): Promise<EngineResult> {
     const resolved = resolveModel(input.model);
     if (!resolved) return this.failure(input, `Unknown model ${input.model}`);
     const keys = this.opts.providers[resolved.provider.id];
@@ -115,6 +121,16 @@ export class OpenAICompatEngine implements Engine {
     const openai: ChatCompletionMessageParam[] = [{ role: "system", content: input.systemPrompt }, ...messages.map(toMessage)];
     const usage: NormalisedUsage = { inputTokens: 0, outputTokens: 0 };
     let steps = 0;
+    const params = {
+      model: resolved.model.id,
+      ...(tools.length ? { tools, tool_choice: "auto" } : {}),
+      stream: true,
+      ...(resolved.provider.includeUsage === false ? {} : { stream_options: { include_usage: true } }),
+      [resolved.provider.maxTokensField ?? "max_tokens"]: resolved.model.maxOutput,
+      ...(resolved.provider.thinking ?? {}),
+    };
+    raw.request = { ...(keys.baseUrl ?? resolved.provider.baseUrl ? { url: `${keys.baseUrl ?? resolved.provider.baseUrl}/chat/completions` } : {}), ...params };
+    raw.messages = openai; // the same array the calls send, so it ends holding everything that went out
 
     input.onAttemptStart?.();
     input.onEvent({ kind: "ready" });
@@ -123,23 +139,19 @@ export class OpenAICompatEngine implements Engine {
     try {
       for (; steps < input.maxSteps; steps++) {
         if (input.signal.aborted) return this.result(input, messages, "aborted", usage, steps);
-        const stream = await client.chat.completions.create(
-          {
-            model: resolved.model.id,
-            messages: openai,
-            ...(tools.length ? { tools, tool_choice: "auto" } : {}),
-            stream: true,
-            ...(resolved.provider.includeUsage === false ? {} : { stream_options: { include_usage: true } }),
-            [resolved.provider.maxTokensField ?? "max_tokens"]: resolved.model.maxOutput,
-            ...(resolved.provider.thinking ?? {}),
-          },
-          { signal: input.signal },
-        );
+        const call: RawCall = { sent: openai.length };
+        raw.calls.push(call);
+        const stream = await client.chat.completions.create({ ...params, messages: openai }, { signal: input.signal }).catch((e: unknown) => {
+          call.error = e instanceof Error ? e.message : String(e);
+          throw e;
+        });
 
         let text = "";
         const calls: Call[] = [];
         let stepUsage: RawUsage | undefined;
+        let finish: string | null = null;
         for await (const chunk of stream) {
+          finish = chunk.choices?.[0]?.finish_reason ?? finish;
           const delta = chunk.choices?.[0]?.delta;
           if (delta?.content) {
             text += delta.content;
@@ -154,6 +166,7 @@ export class OpenAICompatEngine implements Engine {
           }
           if (chunk.usage) stepUsage = chunk.usage as unknown as RawUsage;
         }
+        call.reply = { content: text, tool_calls: calls.map((c) => ({ ...c })), finish_reason: finish, usage: stepUsage ?? null };
         const u = normaliseUsage(stepUsage);
         usage.inputTokens += u.inputTokens;
         usage.outputTokens += u.outputTokens;

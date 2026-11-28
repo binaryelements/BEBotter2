@@ -1,6 +1,6 @@
-import { boolean, customType, doublePrecision, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { boolean, customType, doublePrecision, index, integer, json, jsonb, numeric, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { EngineMessage } from "../engine/engine.js";
+import type { EngineMessage, RawExchange } from "../engine/engine.js";
 import type { QueuedEvent, ReportedResult, RunKeys, WorkflowGraph } from "../workflows/types.js";
 
 export type McpServerRecord = {
@@ -664,6 +664,7 @@ export const turnLogs = pgTable(
     systemPrompt: text("system_prompt").notNull(),
     messages: jsonb("messages").$type<EngineMessage[]>().notNull(),
     sentCount: integer("sent_count").notNull(), // the first sentCount messages were sent; the rest came back
+    raw: json("raw").$type<RawExchange>(), // json, not jsonb, so keys keep the order they were sent in; each call to the model as sent and received; null for logs saved before it was kept
     stopReason: text("stop_reason").notNull(),
     error: text("error"),
     inputTokens: integer("input_tokens"),
